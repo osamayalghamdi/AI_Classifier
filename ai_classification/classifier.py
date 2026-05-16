@@ -168,4 +168,35 @@ def classify(title: str, description: str) -> ClassificationResult:
 
     raw = resp.choices[0].message.content
     data = _extract_json(raw)
-    return ClassificationResult(**data)
+
+    # Fallback: if the LLM used a value outside our enums, map it to
+    # "Other" rather than crashing with a 502.
+    try:
+        return ClassificationResult(**data)
+    except Exception:
+        _coerce_enums(data)
+        return ClassificationResult(**data)
+
+
+def _coerce_enums(data: dict) -> None:
+    """Replace enum values that don't match with 'Other'."""
+    valid_systems = {s.value for s in AffectedSystem}
+    valid_types = {t.value for t in IncidentType}
+    valid_severities = {s.value for s in Severity}
+    valid_urgencies = {u.value for u in Urgency}
+    valid_categories = {c.value for c in Category}
+
+    if data.get("affected_system") not in valid_systems:
+        data["affected_system"] = "Other"
+    if data.get("incident_type") not in valid_types:
+        data["incident_type"] = "Degradation"
+    if data.get("severity") not in valid_severities:
+        data["severity"] = "Minor"
+    if data.get("urgency") not in valid_urgencies:
+        data["urgency"] = "Medium"
+    if data.get("category") not in valid_categories:
+        data["category"] = "Other"
+    if isinstance(data.get("service"), list):
+        data["service"] = data["service"][0] if data["service"] else "General / Unspecified"
+    if data.get("service") not in SERVICES_BY_SYSTEM.get(data.get("affected_system"), []):
+        data["service"] = "General / Unspecified"
