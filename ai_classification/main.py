@@ -4,15 +4,26 @@ from fastapi import FastAPI, HTTPException
 from contextlib import asynccontextmanager
 
 from .config import settings
-from .models import ClassifyRequest, ClassifyResponse
+from .models import ClassifyRequest, ClassifyResponse, RelatedIncident
 from .classifier import classify
+from .incident_store import IncidentStore
+
+
+# ── Global store (initialised in lifespan) ────────────────────────────
+
+store = IncidentStore()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print(f"  model … {settings.llm_model}")
     print(f"  host … {settings.host}:{settings.port}")
+    store.setup()
+    print(
+        f"  incident store … {'ready' if store.ready else 'FAILED (embeddings disabled)'}"
+    )
     yield
+    store.close()
 
 
 app = FastAPI(
@@ -27,7 +38,11 @@ app = FastAPI(
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "model": settings.llm_model}
+    return {
+        "status": "ok",
+        "model": settings.llm_model,
+        "store_ready": store.ready,
+    }
 
 
 # ── Classify ─────────────────────────────────────────────────────────
@@ -41,9 +56,28 @@ def classify_incident(req: ClassifyRequest):
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc))
 
+    # ── Semantic similarity search ────────────────────────────────
+    text = f"{req.title} {req.description}"
+    matches = store.find_similar(text)
+    related = [
+        RelatedIncident(
+            id=m.id,
+            title=m.title,
+            similarity=round(m.similarity, 4),
+            classification=m.classification,
+        )
+        for m in matches
+    ]
+
+    # ── Persist ───────────────────────────────────────────────────
+    incident_id = store.generate_id()
+    store.save_incident(incident_id, req.title, req.description, result)
+
     return ClassifyResponse(
         incident_title=req.title,
         classification=result,
+        incident_id=incident_id,
+        related_incidents=related,
     )
 
 
@@ -55,7 +89,24 @@ def classify_incident_get(title: str, description: str = ""):
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc))
 
+    text = f"{title} {description}"
+    matches = store.find_similar(text)
+    related = [
+        RelatedIncident(
+            id=m.id,
+            title=m.title,
+            similarity=round(m.similarity, 4),
+            classification=m.classification,
+        )
+        for m in matches
+    ]
+
+    incident_id = store.generate_id()
+    store.save_incident(incident_id, title, description, result)
+
     return ClassifyResponse(
         incident_title=title,
         classification=result,
+        incident_id=incident_id,
+        related_incidents=related,
     )

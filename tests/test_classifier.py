@@ -1,0 +1,226 @@
+"""Tests for classifier — Pydantic-as-gatekeeper contract."""
+
+import json
+import pytest
+
+from ai_classification.classifier import classify, _extract_json_str
+from ai_classification.models import ClassificationResult
+
+
+# ── _extract_json_str (minimal fence-stripper) ────────────────────────
+
+
+class TestExtractJsonStr:
+    def test_plain_json_passes_through(self):
+        raw = '{"affected_system": "CRM"}'
+        assert _extract_json_str(raw) == raw
+
+    def test_strips_triple_backtick_fences(self):
+        raw = '```json\n{"affected_system": "CRM"}\n```'
+        assert _extract_json_str(raw) == '{"affected_system": "CRM"}'
+
+    def test_strips_fences_without_lang_tag(self):
+        raw = '```\n{"affected_system": "CRM"}\n```'
+        assert _extract_json_str(raw) == '{"affected_system": "CRM"}'
+
+    def test_strips_inline_fences(self):
+        raw = '```{"affected_system": "CRM"}```'
+        assert _extract_json_str(raw) == '{"affected_system": "CRM"}'
+
+    def test_no_fences_strips_whitespace(self):
+        """Surrounding whitespace is stripped — json.loads tolerates it."""
+        assert _extract_json_str('  {"a": 1}  ') == '{"a": 1}'
+
+
+# ── classify() — real integration (mocked LLM) ───────────────────────
+
+
+def make_fake_completion(body: str):
+    """Return a minimal fake for the OpenAI response object."""
+
+    class FakeChoice:
+        class FakeMessage:
+            def __init__(self, content: str):
+                self.content = content
+
+        def __init__(self, content: str):
+            self.message = self.FakeMessage(content)
+
+    class FakeResponse:
+        def __init__(self, content: str):
+            self.choices = [FakeChoice(content)]
+
+    return FakeResponse(body)
+
+
+@pytest.fixture(autouse=True)
+def _patch_completion(monkeypatch):
+    """Replace `completion` so every test controls what the LLM returns.
+
+    Supports retry: stores outputs in a list and pops from the front
+    on each call, so both attempt 1 and retry can return the same data.
+    """
+    import ai_classification.classifier as mod
+
+    outputs = []
+
+    def fake_completion(**kwargs):
+        if outputs:
+            return make_fake_completion(outputs.pop(0))
+        return make_fake_completion("{}")
+
+    monkeypatch.setattr(mod, "completion", fake_completion)
+    return outputs
+
+
+# ── Happy path ────────────────────────────────────────────────────────
+
+
+class TestClassifyHappyPath:
+    def test_valid_full_output(self, _patch_completion):
+        _patch_completion.append(json.dumps({
+            "affected_system": "CRM",
+            "service": "Customer Portal",
+            "incident_type": "Degradation",
+            "severity": "Major",
+            "urgency": "High",
+            "category": "Software",
+            "confidence": "high",
+            "reasoning": "CRM portal slow under load",
+        }))
+        result = classify("CRM slow", "Portal is crawling")
+        assert isinstance(result, ClassificationResult)
+        assert result.affected_system == "CRM"
+        assert result.service == "Customer Portal"
+        assert result.incident_type == "Degradation"
+        assert result.severity == "Major"
+        assert result.urgency == "High"
+        assert result.category == "Software"
+        assert result.confidence == "high"
+        assert result.reasoning == "CRM portal slow under load"
+
+    def test_valid_minimal_no_reasoning(self, _patch_completion):
+        _patch_completion.append(json.dumps({
+            "affected_system": "Infrastructure",
+            "service": "DNS",
+            "incident_type": "Outage",
+            "severity": "Critical",
+            "urgency": "Immediate",
+            "category": "Network Issue",
+            "confidence": "high",
+        }))
+        result = classify("DNS down", "All DNS queries failing")
+        assert result.reasoning is None
+
+    def test_handles_fenced_json(self, _patch_completion):
+        _patch_completion.append(
+            '```json\n{"affected_system": "Email", "service": "SMTP Relay",'
+            '"incident_type": "Unavailability", "severity": "Major",'
+            '"urgency": "High", "category": "Software",'
+            '"confidence": "medium", "reasoning": "SMTP relay unreachable"}\n```'
+        )
+        result = classify("Email down", "Cannot send emails")
+        assert result.affected_system == "Email"
+
+
+# ── Validation errors (strict — no silent coercion) ──────────────────
+
+
+class TestClassifyValidationErrors:
+    def test_non_json_raises(self, _patch_completion):
+        # Supply bad data for both attempt 1 and retry
+        _patch_completion.append("I think this is a CRM issue")
+        _patch_completion.append("Still not JSON either")
+        with pytest.raises(RuntimeError, match="non-JSON"):
+            classify("test", "test")
+
+    def test_invalid_enum_value_raises(self, _patch_completion):
+        bad = json.dumps({
+            "affected_system": "CRM",
+            "service": "Customer Portal",
+            "incident_type": "Degradation",
+            "severity": "SuperCritical",       # not in Severity enum
+            "urgency": "High",
+            "category": "Software",
+            "confidence": "high",
+        })
+        _patch_completion.append(bad)
+        _patch_completion.append(bad)  # retry also fails
+        with pytest.raises(RuntimeError, match="severity|SuperCritical|validation"):
+            classify("test", "test")
+
+    def test_missing_required_field_raises(self, _patch_completion):
+        bad = json.dumps({
+            "affected_system": "CRM",
+            "service": "Customer Portal",
+            # missing incident_type, severity, urgency, category, confidence
+        })
+        _patch_completion.append(bad)
+        _patch_completion.append(bad)
+        with pytest.raises(RuntimeError, match="incident_type|severity|urgency|category|confidence|Field required"):
+            classify("test", "test")
+
+    def test_invalid_confidence_raises(self, _patch_completion):
+        bad = json.dumps({
+            "affected_system": "CRM",
+            "service": "Customer Portal",
+            "incident_type": "Degradation",
+            "severity": "Major",
+            "urgency": "High",
+            "category": "Software",
+            "confidence": "very high",          # not in pattern
+        })
+        _patch_completion.append(bad)
+        _patch_completion.append(bad)
+        with pytest.raises(RuntimeError, match="confidence|very high|pattern"):
+            classify("test", "test")
+
+    def test_empty_json_object_raises(self, _patch_completion):
+        _patch_completion.append("{}")
+        _patch_completion.append("{}")
+        with pytest.raises(RuntimeError, match="Field required|affected_system|incident_type"):
+            classify("test", "test")
+
+
+# ── Typo / extra whitespace in enums — still strict ──────────────────
+
+
+class TestEnumStrictness:
+    def test_case_mismatch_raises(self, _patch_completion):
+        """Pydantic StrEnum is case-sensitive; 'crm' != 'CRM'."""
+        bad = json.dumps({
+            "affected_system": "crm",            # lowercase — won't match
+            "service": "Customer Portal",
+            "incident_type": "Degradation",
+            "severity": "Major",
+            "urgency": "High",
+            "category": "Software",
+            "confidence": "high",
+        })
+        _patch_completion.append(bad)
+        _patch_completion.append(bad)
+        with pytest.raises(RuntimeError, match="crm|affected_system"):
+            classify("test", "test")
+
+
+# ── Retry behaviour ──────────────────────────────────────────────────
+
+
+class TestClassifyRetry:
+    def test_retry_on_first_failure(self, _patch_completion):
+        """First attempt returns bad JSON, retry returns valid JSON."""
+        bad = "not json at all"
+        good = json.dumps({
+            "affected_system": "CRM",
+            "service": "Customer Portal",
+            "incident_type": "Degradation",
+            "severity": "Major",
+            "urgency": "High",
+            "category": "Software",
+            "confidence": "high",
+        })
+        _patch_completion.append(bad)
+        _patch_completion.append(good)
+        result = classify("test", "test")
+        assert isinstance(result, ClassificationResult)
+        assert result.affected_system == "CRM"

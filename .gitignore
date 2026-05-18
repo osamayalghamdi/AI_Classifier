@@ -25,3 +25,8 @@ Thumbs.db
 
 # Git
 .git/
+
+# Database (created at runtime)
+*.db
+*.db-wal
+*.db-shm

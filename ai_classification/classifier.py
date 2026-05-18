@@ -8,9 +8,7 @@ touch.
 """
 
 import json
-import re
 
-import litellm
 from litellm import completion
 
 from .config import settings
@@ -25,7 +23,81 @@ from .schemas import (
 )
 
 
+# ── Few‑shot examples ────────────────────────────────────────────────
+# Small models benefit heavily from concrete examples. These cover the
+# most common incident patterns so the model has a strong reference.
+
+
+FEW_SHOT_EXAMPLES = [
+    {
+        "title": "Checkout timeouts for 20% of users",
+        "description": (
+            "Users in the EU region see 504 errors when completing "
+            "purchases. Payment provider reports no outage."
+        ),
+        "output": {
+            "affected_system": "Payment Gateway",
+            "service": "Checkout",
+            "incident_type": "Degradation",
+            "severity": "Major",
+            "urgency": "High",
+            "category": "Performance",
+            "confidence": "high",
+            "reasoning": "Partial degradation of checkout, not a full outage.",
+        },
+    },
+    {
+        "title": "VPN tunnel to branch office flapping",
+        "description": (
+            "Site‑to‑site VPN between HQ and Dubai office drops and "
+            "reconnects every 5 minutes. Affects 50 users."
+        ),
+        "output": {
+            "affected_system": "Network",
+            "service": "VPN",
+            "incident_type": "Degradation",
+            "severity": "Major",
+            "urgency": "High",
+            "category": "Network Issue",
+            "confidence": "high",
+            "reasoning": "VPN flapping degrades connectivity for a branch office.",
+        },
+    },
+    {
+        "title": "Expired SSL certificate on customer portal",
+        "description": (
+            "Users see a security warning when visiting the portal. "
+            "Certificate expired 2 days ago."
+        ),
+        "output": {
+            "affected_system": "CRM",
+            "service": "Customer Portal",
+            "incident_type": "Unavailability",
+            "severity": "Major",
+            "urgency": "High",
+            "category": "Configuration",
+            "confidence": "medium",
+            "reasoning": "Expired cert blocks HTTPS access, but portal backend is healthy.",
+        },
+    },
+]
+
+
 # ── Prompt template ──────────────────────────────────────────────────
+
+
+def _build_examples_block() -> str:
+    """Render few‑shot examples as a prompt block."""
+    blocks = []
+    for i, ex in enumerate(FEW_SHOT_EXAMPLES, 1):
+        output_json = json.dumps(ex["output"], indent=2)
+        blocks.append(
+            f"Example {i}:\n"
+            f'Title: "{ex["title"]}"\n'
+            f'Description: "{ex["description"]}"\n'
+            f"Output:\n{output_json}"
+        )
+    return "\n\n".join(blocks)
 
 
 def _build_system_prompt() -> str:
@@ -34,52 +106,51 @@ def _build_system_prompt() -> str:
     severities = "\n".join(f"  - {s.value}" for s in Severity)
     urgencies = "\n".join(f"  - {u.value}" for u in Urgency)
     categories = "\n".join(f"  - {c.value}" for c in Category)
-    services_json = json.dumps(
-        {s.value: svcs for s, svcs in SERVICES_BY_SYSTEM.items()},
-        indent=2,
-    )
+    services_by_system = {
+        s.value: svcs for s, svcs in SERVICES_BY_SYSTEM.items()
+    }
+
+    examples_block = _build_examples_block()
 
     return f"""You classify IT incident tickets into fixed categories.
 
-Return ONLY valid JSON with NO extra text. Example output:
+Return ONLY valid JSON with NO extra text. Each field value must be a SINGLE STRING (not a list).
 
-{{
-  "affected_system": "Payment Gateway",
-  "service": "Checkout",
-  "incident_type": "Degradation",
-  "severity": "Major",
-  "urgency": "High",
-  "category": "Software",
-  "confidence": "high",
-  "reasoning": "Brief explanation here."
-}}
+{examples_block}
 
-Pick exactly one from each list below:
+---
 
-affected_system → one of:
+Now classify the user's incident using the same JSON format.
+
+Pick exactly one from each list below.
+
+CRITICAL: "service" must be a SINGLE STRING. Pick ONE service name from the list
+shown for your chosen affected_system. Do NOT return a list.
+
+affected_system (pick ONE of these):
 {systems}
 
-service → depends on affected_system:
-{services_json}
+service (pick ONE SERVICE STRING from the relevant list below):
+{json.dumps(services_by_system, indent=2)}
 
-incident_type → one of:
+incident_type (pick ONE of these):
 {types}
 
-severity → one of:
+severity (pick ONE of these):
 {severities}
 
-urgency → one of:
+urgency (pick ONE of these):
 {urgencies}
 
-category → one of:
+category (pick ONE of these):
 {categories}
 
-confidence → "low", "medium", or "high"
-reasoning → short explanation (optional)
+confidence: "low", "medium", or "high"
+reasoning: short explanation (optional)
 
 Rules:
 - Pick the single best label per field.
-- service must match the chosen affected_system's list.
+- "service" must be a SINGLE STRING, never a list.
 - If nothing fits well, pick the closest and set confidence "low".
 - Respond with JSON only — no commentary before or after."""
 
@@ -88,74 +159,65 @@ def _build_user_prompt(title: str, description: str) -> str:
     return f"## Title\n{title}\n\n## Description\n{description}"
 
 
-# ── JSON extraction with fallbacks ────────────────────────────────────
+# ── Minimal fence-stripper (not a JSON parser) ────────────────────────
 
 
-def _extract_json(raw: str) -> dict:
-    """Try to parse JSON from the LLM response, with fallbacks for
-    markdown-wrapped, prefix/suffix-laden, or partially broken output
-    that small local models sometimes produce.
+def _extract_json_str(raw: str) -> str:
+    """Strip optional markdown code fences wrapping the JSON payload.
+
+    Does NOT attempt to parse, fix, or coerce the JSON itself — that is
+    left to ``json.loads`` and Pydantic. This is only here because some
+    local models habitually wrap JSON in ```json … ``` fences.
     """
     text = raw.strip()
-
-    # 1. Direct parse
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        pass
-
-    # 2. Strip markdown code fences (```json ... ``` or ``` ... ```)
-    fences = re.search(
-        r"```(?:json)?\s*\n?(.*?)\n?```", text, re.DOTALL
-    )
-    if fences:
-        try:
-            return json.loads(fences.group(1).strip())
-        except json.JSONDecodeError:
-            pass
-
-    # 3. Find the outermost { … } block
-    brace_start = text.find("{")
-    if brace_start != -1:
-        depth = 0
-        for i in range(brace_start, len(text)):
-            if text[i] == "{":
-                depth += 1
-            elif text[i] == "}":
-                depth -= 1
-                if depth == 0:
-                    candidate = text[brace_start : i + 1]
-                    try:
-                        return json.loads(candidate)
-                    except json.JSONDecodeError:
-                        # Last resort: try to fix single quotes / trailing commas
-                        # that some small models produce
-                        fixed = (
-                            candidate
-                            .replace("'", '"')
-                            .replace(",}", "}")
-                            .replace(",]", "]")
-                        )
-                        return json.loads(fixed)
-
-    raise RuntimeError(
-        f"Could not extract valid JSON from LLM response:\n{raw[:500]}"
-    )
+    if text.startswith("```"):
+        if text.startswith("```json"):
+            text = text[7:]
+        elif text.startswith("```"):
+            text = text[3:]
+        if text.endswith("```"):
+            text = text[:-3]
+    return text.strip()
 
 
 # ── Classification ───────────────────────────────────────────────────
 
 
+_MAX_RETRIES = 1  # one retry = two total attempts
+
+
+def _parse_and_validate(raw: str) -> ClassificationResult:
+    """Parse fence‑stripped JSON and validate with Pydantic.
+
+    Returns the validated result or raises ``RuntimeError``.
+    """
+    raw = _extract_json_str(raw)
+
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"LLM returned non-JSON output: {e}") from e
+
+    try:
+        return ClassificationResult.model_validate(data)
+    except Exception as e:
+        raise RuntimeError(f"Invalid classification schema: {e}") from e
+
+
 def classify(title: str, description: str) -> ClassificationResult:
-    """Send the incident to the LLM and return a structured result."""
+    """Send the incident to the LLM and return a structured result.
+
+    Raises ``RuntimeError`` if the LLM returns non-JSON or the JSON does
+    not match the ``ClassificationResult`` schema — no silent coercion.
+    Retries once with a corrective hint if validation fails.
+    """
+
+    system_prompt = _build_system_prompt()
+    user_prompt = _build_user_prompt(title, description)
 
     kwargs: dict = dict(
         model=settings.llm_model,
-        messages=[
-            {"role": "system", "content": _build_system_prompt()},
-            {"role": "user", "content": _build_user_prompt(title, description)},
-        ],
-        temperature=0.1,
+        temperature=0.0,
         max_tokens=500,
     )
 
@@ -164,39 +226,33 @@ def classify(title: str, description: str) -> ClassificationResult:
     if settings.llm_api_key:
         kwargs["api_key"] = settings.llm_api_key
 
+    # ── Attempt 1 ────────────────────────────────────────────────
+    kwargs["messages"] = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
     resp = completion(**kwargs)
-
     raw = resp.choices[0].message.content
-    data = _extract_json(raw)
 
-    # Fallback: if the LLM used a value outside our enums, map it to
-    # "Other" rather than crashing with a 502.
     try:
-        return ClassificationResult(**data)
-    except Exception:
-        _coerce_enums(data)
-        return ClassificationResult(**data)
+        return _parse_and_validate(raw)
+    except RuntimeError as e:
+        last_error = str(e)
 
+    # ── Retry with corrective hint ───────────────────────────────
+    retry_user = (
+        f"{user_prompt}\n\n"
+        f"---\n"
+        f"Your previous JSON was invalid. Fix ONLY the JSON.\n"
+        f'Make sure "service" is a SINGLE STRING, not a list.\n'
+        f"Use exactly the field names and allowed values shown in the system prompt.\n"
+        f"Return valid JSON with no extra text."
+    )
+    kwargs["messages"] = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": retry_user},
+    ]
+    resp = completion(**kwargs)
+    raw = resp.choices[0].message.content
 
-def _coerce_enums(data: dict) -> None:
-    """Replace enum values that don't match with 'Other'."""
-    valid_systems = {s.value for s in AffectedSystem}
-    valid_types = {t.value for t in IncidentType}
-    valid_severities = {s.value for s in Severity}
-    valid_urgencies = {u.value for u in Urgency}
-    valid_categories = {c.value for c in Category}
-
-    if data.get("affected_system") not in valid_systems:
-        data["affected_system"] = "Other"
-    if data.get("incident_type") not in valid_types:
-        data["incident_type"] = "Degradation"
-    if data.get("severity") not in valid_severities:
-        data["severity"] = "Minor"
-    if data.get("urgency") not in valid_urgencies:
-        data["urgency"] = "Medium"
-    if data.get("category") not in valid_categories:
-        data["category"] = "Other"
-    if isinstance(data.get("service"), list):
-        data["service"] = data["service"][0] if data["service"] else "General / Unspecified"
-    if data.get("service") not in SERVICES_BY_SYSTEM.get(data.get("affected_system"), []):
-        data["service"] = "General / Unspecified"
+    return _parse_and_validate(raw)
