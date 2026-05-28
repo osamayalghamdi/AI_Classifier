@@ -96,3 +96,25 @@ class ClassifyResponse(BaseModel):
         default_factory=list,
         description="Past incidents with similar meaning, sorted by similarity",
     )
+
+
+# ── Report models ──
+
+
+class ReportCluster(BaseModel):
+    """One group of semantically similar incidents."""
+
+    summary: str = Field(description="2–3 sentence summary of the cluster")
+    affected_system: str
+    affected_service: str
+    count: int
+    worst_severity: str
+    incidents: list[dict] = Field(
+        description="List of {id, title, severity, created_at} dicts"
+    )
+
+
+class ReportResponse(BaseModel):
+    period: str = Field(description="Label for the report period, e.g. 'Today' or 'This week'")
+    total_incidents: int
+    clusters: list[ReportCluster]

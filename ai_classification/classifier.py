@@ -327,3 +327,53 @@ def classify(title: str, description: str) -> ClassificationResult:
             f"Classification failed after 2 attempts. Last error: {last_error}"
         ),
     )
+
+
+# ── Report summarization ──────────────────────────────────────────────
+
+
+def summarize_cluster(incidents: list[dict]) -> str:
+    """Summarize a cluster of related incidents into 2–3 sentences.
+
+    Parameters
+    ----------
+    incidents:
+        List of dicts with keys ``title``, ``description``, ``classification``
+        (a ``ClassificationResult``), and ``created_at``.
+    """
+    lines = []
+    for i, inc in enumerate(incidents, 1):
+        c = inc["classification"]
+        lines.append(
+            f'{i}. "{inc["title"]}" — {c.affected_system} / {c.service} / '
+            f'{c.incident_type} / {c.severity} — "{inc.get("description", "")}"'
+        )
+
+    try:
+        raw = _call_llm([
+            {
+                "role": "system",
+                "content": (
+                    "You are an incident analyst. Write 2–3 sentences "
+                    "covering the underlying issue, which system is affected, "
+                    "and the overall impact. No formatting, no JSON, no labels."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    "Related incidents (same problem):\n\n"
+                    f"{chr(10).join(lines)}\n\n"
+                    "Summary:"
+                ),
+            },
+        ])
+        return raw.strip().strip('"')
+    except Exception:
+        c = incidents[0]["classification"]
+        sevs = [i["classification"].severity for i in incidents]
+        return (
+            f"{len(incidents)} related incidents affecting "
+            f"{c.affected_system} / {c.service}. "
+            f"Worst severity: {max(sevs)}."
+        )

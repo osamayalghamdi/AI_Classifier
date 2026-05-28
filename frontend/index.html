@@ -471,10 +471,137 @@
   .history-item-time { font-size: 11px; color: var(--text-muted); }
 
   .history-loading {
-    text-align: center;
-    color: var(--text-muted);
-    padding: 32px;
-    font-size: 13px;
+  text-align: center;
+  color: var(--text-muted);
+  padding: 32px;
+  font-size: 13px;
+  }
+
+  /* ── Tabs ── */
+  .tabs {
+  display: flex;
+  gap: 0;
+  margin-bottom: 24px;
+  border-bottom: 1px solid var(--border);
+  }
+  .tab {
+  padding: 10px 20px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition: all var(--transition);
+  }
+  .tab:hover { color: var(--text-primary); }
+  .tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+  }
+  .tab-content { display: none; }
+  .tab-content.active { display: block; }
+
+  /* ── Report ── */
+  .report-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 18px;
+  }
+  .report-header h2 {
+  font-size: 18px;
+  font-weight: 600;
+  }
+  .report-total {
+  font-size: 13px;
+  color: var(--text-muted);
+  background: var(--bg-input);
+  padding: 4px 12px;
+  border-radius: 20px;
+  }
+  .report-period-btns {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 20px;
+  }
+  .report-period-btn {
+  padding: 6px 16px;
+  border-radius: 20px;
+  font-size: 13px;
+  font-weight: 500;
+  border: 1px solid var(--border);
+  background: var(--bg-input);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all var(--transition);
+  }
+  .report-period-btn:hover { border-color: var(--accent); color: var(--text-primary); }
+  .report-period-btn.active { background: var(--accent); color: white; border-color: var(--accent); }
+  .report-cluster {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px 18px;
+  margin-bottom: 12px;
+  }
+  .report-cluster-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 8px;
+  cursor: pointer;
+  }
+  .report-cluster-title {
+  font-size: 15px;
+  font-weight: 600;
+  }
+  .report-cluster-badges {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+  }
+  .report-badge {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-weight: 500;
+  }
+  .report-badge-critical { background: var(--red-bg); color: var(--red); }
+  .report-badge-major { background: var(--orange-bg); color: var(--orange); }
+  .report-badge-minor { background: var(--blue-bg); color: var(--blue); }
+  .report-summary {
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.6;
+  margin-bottom: 10px;
+  }
+  .report-incidents {
+  display: none;
+  margin-top: 10px;
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+  }
+  .report-incidents.open { display: block; }
+  .report-incident-item {
+  display: flex;
+  justify-content: space-between;
+  font-size: 13px;
+  padding: 6px 0;
+  color: var(--text-secondary);
+  }
+  .report-incident-title { flex: 1; }
+  .report-incident-sev { font-weight: 500; margin-left: 12px; }
+  .report-expand {
+  font-size: 12px;
+  color: var(--accent);
+  cursor: pointer;
+  user-select: none;
+  }
+  .report-empty {
+  color: var(--text-muted);
+  text-align: center;
+  padding: 48px 20px;
+  font-size: 14px;
   }
 
   /* ── Animations ── */
@@ -512,72 +639,86 @@
 
 <!-- ── Main ── -->
 <main class="app-main">
-  <div class="hero">
-    <h1>Classify Incidents</h1>
-    <p>Paste an incident title and description — the AI will classify it by system, severity, urgency, and more.</p>
+
+  <div class="tabs">
+    <span class="tab active" data-tab="classify">Classify</span>
+    <span class="tab" data-tab="reports">Reports</span>
   </div>
 
-  <div class="columns">
+  <!-- ── Classify Tab ── -->
+  <div class="tab-content active" id="tab-classify">
+    <div class="hero">
+      <h1>Classify Incidents</h1>
+      <p>Paste an incident title and description — the AI will classify it by system, severity, urgency, and more.</p>
+    </div>
 
-    <!-- ── Left: classify form ── -->
-    <div>
-      <div class="card">
-        <div class="card-title">Classify Incident</div>
-
-        <div class="presets" id="presets">
-          <span class="preset-chip" data-title="Checkout timeouts for 20% of users" data-desc="Users in the EU region see 504 errors when completing purchases. Payment provider reports no outage.">Checkout timeout</span>
-          <span class="preset-chip" data-title="VPN tunnel to branch office flapping" data-desc="Site-to-site VPN between HQ and Dubai office drops and reconnects every 5 minutes. Affects 50 users.">VPN flapping</span>
-          <span class="preset-chip" data-title="Expired SSL certificate on customer portal" data-desc="Users see a security warning when visiting the portal. Certificate expired 2 days ago.">SSL expired</span>
-          <span class="preset-chip" data-title="Database connection pool exhausted" data-desc="Production DB connection pool hit 100% utilization. App servers returning 503 errors intermittently.">DB pool</span>
+    <div class="columns">
+      <div>
+        <div class="card">
+          <div class="card-title">Classify Incident</div>
+          <div class="presets" id="presets">
+            <span class="preset-chip" data-title="Checkout timeouts for 20% of users" data-desc="Users in the EU region see 504 errors when completing purchases. Payment provider reports no outage.">Checkout timeout</span>
+            <span class="preset-chip" data-title="VPN tunnel to branch office flapping" data-desc="Site-to-site VPN between HQ and Dubai office drops and reconnects every 5 minutes. Affects 50 users.">VPN flapping</span>
+            <span class="preset-chip" data-title="Expired SSL certificate on customer portal" data-desc="Users see a security warning when visiting the portal. Certificate expired 2 days ago.">SSL expired</span>
+            <span class="preset-chip" data-title="Database connection pool exhausted" data-desc="Production DB connection pool hit 100% utilization. App servers returning 503 errors intermittently.">DB pool</span>
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="title">Incident Title</label>
+            <input class="form-input" id="title" type="text" placeholder="e.g. Checkout timeouts for 20% of users" />
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="description">Description</label>
+            <textarea class="form-textarea" id="description" placeholder="Describe what's happening, who's affected, and any known context…"></textarea>
+          </div>
+          <div class="form-actions">
+            <button class="btn btn-primary" id="classifyBtn">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20V10"/><path d="M18 20V4"/><path d="M6 20v-4"/></svg>
+              Classify
+            </button>
+            <button class="btn btn-secondary" id="clearBtn">Clear</button>
+          </div>
         </div>
-
-        <div class="form-group">
-          <label class="form-label" for="title">Incident Title</label>
-          <input class="form-input" id="title" type="text" placeholder="e.g. Checkout timeouts for 20% of users" />
-        </div>
-
-        <div class="form-group">
-          <label class="form-label" for="description">Description</label>
-          <textarea class="form-textarea" id="description" placeholder="Describe what's happening, who's affected, and any known context…"></textarea>
-        </div>
-
-        <div class="form-actions">
-          <button class="btn btn-primary" id="classifyBtn">
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20V10"/><path d="M18 20V4"/><path d="M6 20v-4"/></svg>
-            Classify
-          </button>
-          <button class="btn btn-secondary" id="clearBtn">Clear</button>
+        <div class="card" style="margin-top: 20px;">
+          <div class="card-title">Result</div>
+          <div class="result-area" id="resultArea">
+            <div class="result-empty fade-in">
+              <div class="result-empty-icon">🔍</div>
+              <div>Submit an incident to see the classification result here.</div>
+            </div>
+          </div>
         </div>
       </div>
-
-      <!-- ── Result ── -->
-      <div class="card" style="margin-top: 20px;">
-        <div class="card-title">Result</div>
-        <div class="result-area" id="resultArea">
-          <div class="result-empty fade-in">
-            <div class="result-empty-icon">🔍</div>
-            <div>Submit an incident to see the classification result here.</div>
+      <div>
+        <div class="card">
+          <div class="card-title" style="display:flex;justify-content:space-between;align-items:center;">
+            <span>Incident History</span>
+            <button class="btn-icon" id="refreshHistory" title="Refresh history">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-9-9"/><path d="M12 3v6h6"/></svg>
+            </button>
+          </div>
+          <div id="historyArea">
+            <div class="history-empty fade-in">No incidents classified yet.</div>
           </div>
         </div>
       </div>
     </div>
-
-    <!-- ── Right: history ── -->
-    <div>
-      <div class="card">
-        <div class="card-title" style="display:flex;justify-content:space-between;align-items:center;">
-          <span>Incident History</span>
-          <button class="btn-icon" id="refreshHistory" title="Refresh history">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-9-9"/><path d="M12 3v6h6"/></svg>
-          </button>
-        </div>
-        <div id="historyArea">
-          <div class="history-empty fade-in">No incidents classified yet.</div>
-        </div>
-      </div>
-    </div>
-
   </div>
+
+  <!-- ── Reports Tab ── -->
+  <div class="tab-content" id="tab-reports">
+    <div class="report-header">
+      <h2>Incident Reports</h2>
+      <span class="report-total" id="reportTotal">—</span>
+    </div>
+    <div class="report-period-btns">
+      <span class="report-period-btn active" data-period="daily">Today</span>
+      <span class="report-period-btn" data-period="weekly">This Week</span>
+    </div>
+    <div id="reportArea">
+      <div class="report-empty">Select a period to generate a report.</div>
+    </div>
+  </div>
+
 </main>
 
 <script>
@@ -776,6 +917,71 @@ function esc(s) {
   return d.innerHTML;
 }
 
+// ── Reports ──
+async function loadReport(period) {
+  const area = document.getElementById('reportArea');
+  area.innerHTML = '<div class="history-loading">Loading report…</div>';
+  try {
+    const r = await fetch(API_BASE + '/reports/' + period);
+    const d = await r.json();
+    renderReport(d);
+  } catch (e) {
+    area.innerHTML = `<div class="result-error fade-in">Failed to load report: ${esc(e.message)}</div>`;
+  }
+}
+
+function renderReport(data) {
+  const area = document.getElementById('reportArea');
+  const total = document.getElementById('reportTotal');
+  total.textContent = `${data.total_incidents} incident${data.total_incidents !== 1 ? 's' : ''}`;
+
+  if (data.clusters.length === 0) {
+    area.innerHTML = '<div class="report-empty fade-in">No incidents in this period.</div>';
+    return;
+  }
+
+  area.innerHTML = data.clusters.map((cl, ci) => {
+    const badgeClass = 'report-badge-' + cl.worst_severity.toLowerCase();
+    const incidents = cl.incidents.map(i =>
+      `<div class="report-incident-item">
+        <span class="report-incident-title">${esc(i.title)}</span>
+        <span class="report-incident-sev type-pill type-severity-${i.severity.replace(/ /g, '')}">${esc(i.severity)}</span>
+      </div>`
+    ).join('');
+    return `<div class="report-cluster fade-in">
+      <div class="report-cluster-header" onclick="toggleIncidents(${ci})">
+        <span class="report-cluster-title">${esc(cl.affected_system)} / ${esc(cl.affected_service)}</span>
+        <div class="report-cluster-badges">
+          <span class="report-badge ${badgeClass}">${esc(cl.worst_severity)}</span>
+          <span class="report-badge" style="background:var(--bg-input);color:var(--text-muted)">${cl.count}</span>
+        </div>
+      </div>
+      <div class="report-summary">${esc(cl.summary)}</div>
+      <span class="report-expand" onclick="toggleIncidents(${ci})">Show details ▾</span>
+      <div class="report-incidents" id="report-incidents-${ci}">
+        ${incidents}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function toggleIncidents(idx) {
+  const el = document.getElementById('report-incidents-' + idx);
+  el.classList.toggle('open');
+  const expander = el.previousElementSibling;
+  if (el.classList.contains('open')) {
+    expander.textContent = 'Hide details ▴';
+  } else {
+    expander.textContent = 'Show details ▾';
+  }
+}
+
+// ── Tab switching ──
+function switchTab(name) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
+  document.querySelectorAll('.tab-content').forEach(t => t.classList.toggle('active', t.id === 'tab-' + name));
+}
+
 // ── Presets ──
 document.querySelectorAll('.preset-chip').forEach(chip => {
   chip.addEventListener('click', () => {
@@ -796,6 +1002,22 @@ document.getElementById('clearBtn').addEventListener('click', () => {
     </div>`;
 });
 document.getElementById('refreshHistory').addEventListener('click', loadHistory);
+
+// ── Tab events ──
+document.querySelectorAll('.tab').forEach(t => {
+  t.addEventListener('click', () => switchTab(t.dataset.tab));
+});
+
+// ── Report period events ──
+document.querySelectorAll('.report-period-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.report-period-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    loadReport(btn.dataset.period);
+  });
+});
+// Load initial report
+loadReport('daily');
 
 // ── Keyboard shortcut ──
 document.addEventListener('keydown', e => {

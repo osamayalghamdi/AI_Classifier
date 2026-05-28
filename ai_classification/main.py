@@ -2,10 +2,12 @@
 
 from fastapi import FastAPI, HTTPException
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone, timedelta
+import json
 
 from .config import settings
-from .models import ClassifyRequest, ClassifyResponse, RelatedIncident
-from .classifier import classify
+from .models import ClassifyRequest, ClassifyResponse, RelatedIncident, ReportResponse, ReportCluster, ClassificationResult
+from .classifier import classify, summarize_cluster
 from .incident_store import IncidentStore
 
 
@@ -28,7 +30,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="AI Incident Classification",
-    version="0.1.0",
+    version="0.2.0",
     lifespan=lifespan,
 )
 
@@ -48,42 +50,8 @@ def health():
 # ── Classify ─────────────────────────────────────────────────────────
 
 
-@app.post("/classify", response_model=ClassifyResponse)
-def classify_incident(req: ClassifyRequest):
-    """Classify an incident ticket and return structured labels."""
-    try:
-        result = classify(req.title, req.description)
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=str(exc))
-
-    # ── Semantic similarity search ────────────────────────────────
-    text = f"{req.title} {req.description}"
-    matches = store.find_similar(text, classification=result)
-    related = [
-        RelatedIncident(
-            id=m.id,
-            title=m.title,
-            similarity=round(m.similarity, 4),
-            classification=m.classification,
-        )
-        for m in matches
-    ]
-
-    # ── Persist ───────────────────────────────────────────────────
-    incident_id = store.generate_id()
-    store.save_incident(incident_id, req.title, req.description, result)
-
-    return ClassifyResponse(
-        incident_title=req.title,
-        classification=result,
-        incident_id=incident_id,
-        related_incidents=related,
-    )
-
-
-@app.get("/classify", response_model=ClassifyResponse)
-def classify_incident_get(title: str, description: str = ""):
-    """GET variant — accepts title/description as query params."""
+def _classify_and_store(title: str, description: str) -> ClassifyResponse:
+    """Classify, persist, link to cluster, and return response."""
     try:
         result = classify(title, description)
     except Exception as exc:
@@ -104,9 +72,76 @@ def classify_incident_get(title: str, description: str = ""):
     incident_id = store.generate_id()
     store.save_incident(incident_id, title, description, result)
 
+    # ── Cluster assignment (once at classification time) ──────────
+    cluster_id = store.link_to_cluster(incident_id, title, description, result, matches)
+    if cluster_id and matches:
+        # Generate summary when cluster reaches 2+ incidents for the first time
+        all_members = store._db.execute(
+            "SELECT i.title, i.description, i.classification_json "
+            "FROM incidents i JOIN cluster_members cm ON cm.incident_id = i.id "
+            "WHERE cm.cluster_id = ?",
+            (cluster_id,),
+        ).fetchall() if store._db else []
+        if len(all_members) >= 2 and len(all_members) <= 4:
+            full = []
+            for row in all_members:
+                try:
+                    cls = ClassificationResult.model_validate(json.loads(row[2]))
+                    full.append({"title": row[0], "description": row[1], "classification": cls})
+                except Exception:
+                    pass
+            if full:
+                summary = summarize_cluster(full)
+                store.update_cluster_summary(cluster_id, summary)
+
     return ClassifyResponse(
         incident_title=title,
         classification=result,
         incident_id=incident_id,
         related_incidents=related,
     )
+
+
+@app.post("/classify", response_model=ClassifyResponse)
+def classify_incident(req: ClassifyRequest):
+    return _classify_and_store(req.title, req.description)
+
+
+@app.get("/classify", response_model=ClassifyResponse)
+def classify_incident_get(title: str, description: str = ""):
+    return _classify_and_store(title, description)
+
+
+# ── Reports (fast SQL reads — no LLM calls) ─────────────────────────
+
+
+def _build_report(since: datetime | None, until: datetime | None, label: str) -> ReportResponse:
+    since_str = since.isoformat() if since else None
+    until_str = until.isoformat() if until else None
+    clusters_data = store.get_report(since=since_str, until=until_str)
+    total = sum(c["count"] for c in clusters_data)
+
+    report_clusters = [
+        ReportCluster(
+            summary=c["summary"] or f"{c['count']} related incidents.",
+            affected_system=c["affected_system"],
+            affected_service=c["affected_service"],
+            count=c["count"],
+            worst_severity=c["worst_severity"],
+            incidents=c["incidents"],
+        )
+        for c in clusters_data
+    ]
+    return ReportResponse(period=label, total_incidents=total, clusters=report_clusters)
+
+
+@app.get("/reports/daily", response_model=ReportResponse)
+def report_daily():
+    now = datetime.now(timezone.utc)
+    return _build_report(since=now - timedelta(days=1), until=now, label="Today")
+
+
+@app.get("/reports/weekly", response_model=ReportResponse)
+def report_weekly():
+    now = datetime.now(timezone.utc)
+    return _build_report(since=now - timedelta(days=7), until=now, label="This week")
