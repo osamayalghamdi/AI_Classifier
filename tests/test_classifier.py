@@ -127,14 +127,17 @@ class TestClassifyHappyPath:
 
 
 class TestClassifyValidationErrors:
-    def test_non_json_raises(self, _patch_completion):
+    def test_non_json_returns_fallback(self, _patch_completion):
         # Supply bad data for both attempt 1 and retry
         _patch_completion.append("I think this is a CRM issue")
         _patch_completion.append("Still not JSON either")
-        with pytest.raises(RuntimeError, match="non-JSON"):
-            classify("test", "test")
+        result = classify("test", "test")
+        assert isinstance(result, ClassificationResult)
+        assert result.confidence == "low"
+        assert "Classification failed after 2 attempts" in (result.reasoning or "")
+        assert result.affected_system == "Other"
 
-    def test_invalid_enum_value_raises(self, _patch_completion):
+    def test_invalid_enum_value_returns_fallback(self, _patch_completion):
         bad = json.dumps({
             "affected_system": "CRM",
             "service": "Customer Portal",
@@ -146,10 +149,12 @@ class TestClassifyValidationErrors:
         })
         _patch_completion.append(bad)
         _patch_completion.append(bad)  # retry also fails
-        with pytest.raises(RuntimeError, match="severity|SuperCritical|validation"):
-            classify("test", "test")
+        result = classify("test", "test")
+        assert isinstance(result, ClassificationResult)
+        assert result.confidence == "low"
+        assert "Classification failed" in (result.reasoning or "")
 
-    def test_missing_required_field_raises(self, _patch_completion):
+    def test_missing_required_field_returns_fallback(self, _patch_completion):
         bad = json.dumps({
             "affected_system": "CRM",
             "service": "Customer Portal",
@@ -157,10 +162,11 @@ class TestClassifyValidationErrors:
         })
         _patch_completion.append(bad)
         _patch_completion.append(bad)
-        with pytest.raises(RuntimeError, match="incident_type|severity|urgency|category|confidence|Field required"):
-            classify("test", "test")
+        result = classify("test", "test")
+        assert isinstance(result, ClassificationResult)
+        assert result.confidence == "low"
 
-    def test_invalid_confidence_raises(self, _patch_completion):
+    def test_invalid_confidence_returns_fallback(self, _patch_completion):
         bad = json.dumps({
             "affected_system": "CRM",
             "service": "Customer Portal",
@@ -172,21 +178,24 @@ class TestClassifyValidationErrors:
         })
         _patch_completion.append(bad)
         _patch_completion.append(bad)
-        with pytest.raises(RuntimeError, match="confidence|very high|pattern"):
-            classify("test", "test")
+        result = classify("test", "test")
+        assert isinstance(result, ClassificationResult)
+        assert result.confidence == "low"
 
-    def test_empty_json_object_raises(self, _patch_completion):
+    def test_empty_json_object_returns_fallback(self, _patch_completion):
         _patch_completion.append("{}")
         _patch_completion.append("{}")
-        with pytest.raises(RuntimeError, match="Field required|affected_system|incident_type"):
-            classify("test", "test")
+        result = classify("test", "test")
+        assert isinstance(result, ClassificationResult)
+        assert result.confidence == "low"
+        assert result.affected_system == "Other"
 
 
 # ── Typo / extra whitespace in enums — still strict ──────────────────
 
 
 class TestEnumStrictness:
-    def test_case_mismatch_raises(self, _patch_completion):
+    def test_case_mismatch_returns_fallback(self, _patch_completion):
         """Pydantic StrEnum is case-sensitive; 'crm' != 'CRM'."""
         bad = json.dumps({
             "affected_system": "crm",            # lowercase — won't match
@@ -199,8 +208,9 @@ class TestEnumStrictness:
         })
         _patch_completion.append(bad)
         _patch_completion.append(bad)
-        with pytest.raises(RuntimeError, match="crm|affected_system"):
-            classify("test", "test")
+        result = classify("test", "test")
+        assert isinstance(result, ClassificationResult)
+        assert result.confidence == "low"
 
 
 # ── Retry behaviour ──────────────────────────────────────────────────

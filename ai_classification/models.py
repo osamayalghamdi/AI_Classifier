@@ -45,15 +45,30 @@ class ClassificationResult(BaseModel):
 
     @model_validator(mode="after")
     def _check_service_in_system(self) -> "ClassificationResult":
-        """Validate that the service matches the chosen affected_system."""
+        """Validate that the service matches the chosen affected_system.
+
+        If the service is found under a *different* system, auto-correct
+        ``affected_system`` to the right one — the service is the more
+        precise signal.  If the service isn't in *any* system's list,
+        raise as usual.
+        """
         allowed = SERVICES_BY_SYSTEM.get(self.affected_system, [])
-        if self.service not in allowed:
-            raise ValueError(
-                f"service '{self.service}' is not valid for "
-                f"affected_system '{self.affected_system}'. "
-                f"Allowed: {allowed}"
-            )
-        return self
+
+        # Fast path — already correct.
+        if self.service in allowed:
+            return self
+
+        # Slow path — find the system that actually owns this service.
+        for system, services in SERVICES_BY_SYSTEM.items():
+            if self.service in services:
+                self.affected_system = system
+                return self
+
+        raise ValueError(
+            f"service '{self.service}' is not valid for "
+            f"affected_system '{self.affected_system}'. "
+            f"Allowed: {allowed}"
+        )
 
 
 class RelatedIncident(BaseModel):

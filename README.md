@@ -1,22 +1,73 @@
-# AI Classifier
+# AI Incident Classifier
 
-Structured incident classification via LLM. Feed it an incident title and description, get back clean, validated categories — no guesswork.
+Structured incident classification via LLM. Feed it an incident title and description, get back clean validated categories — plus semantically similar past incidents.
 
-**New in v0.2**: semantic similarity memory. Every incident is stored and compared to past incidents by meaning — if a new checkout slowdown looks 93% like last week's, the API tells you.
+Built on **Qwen2.5:7b** with **classification-augmented embeddings** for similarity search: the LLM classifies the incident, then the structured labels (system, service, type, category) are folded into the embedding. This means "Stripe errors" and "PayPal timeout" cluster together via their shared `Payment Gateway / Checkout / Outage` fingerprint, even though the raw wording differs.
+
+## How it works
+
+```
+Incident title + description
+        │
+        ▼
+  ┌─ Qwen2.5:7b (via Ollama, GPU) ──┐
+  │  System prompt with taxonomy +   │
+  │  5 few-shot examples             │
+  │  ↓ Validated by Pydantic         │
+  └──────────┬───────────────────────┘
+             │
+        ClassificationResult
+     (system, service, type, severity, urgency, category)
+             │
+    ┌────────┴─────────┐
+    ▼                  ▼
+  Save to          Semantic search
+  SQLite           against past incidents
+  (title + desc    (embeddings include
+   + embedding      classification
+   + class JSON)    fingerprint)
+                    │
+                    ▼
+              Related incidents
+              sorted by similarity
+```
+
+## Stack
+
+| Component | Tech |
+|-----------|------|
+| API framework | FastAPI (Python 3.12) |
+| LLM | Qwen2.5:7b via Ollama |
+| Embeddings | all-MiniLM-L6-v2 (sentence-transformers) |
+| Similarity store | SQLite + cosine similarity |
+| Validation | Pydantic v2 (strict gatekeeper — no silent coercion) |
+| LLM client | litellm (provider-agnostic) |
+| Container | Docker Compose (GPU via nvidia runtime) |
+| Frontend | Static HTML/CSS/JS served by nginx |
 
 ## Quick Start
 
 ```bash
-# Install
-uv sync
+# Prerequisites
+# 1. NVIDIA GPU with driver installed (test with: nvidia-smi)
+# 2. nvidia-container-toolkit (test with: docker run --rm --gpus all nvidia/cuda:12.4-base nvidia-smi)
 
-# Run (set your LLM_API_KEY first)
-cp .env.example .env
-# edit .env with your model & key
-uv run uvicorn ai_classification.main:app
+# Pull and run everything
+docker compose up --build -d
 
-# Test
-uv run pytest
+# Check health
+curl http://localhost:8000/health
+
+# Classify an incident
+curl -X POST http://localhost:8000/classify \
+  -H "Content-Type: application/json" \
+  -d '{
+    "title": "Checkout timeouts for 20% of users",
+    "description": "Users in the EU region see 504 errors when completing purchases."
+  }'
+
+# Frontend UI
+open http://localhost:8082
 ```
 
 ## API
@@ -26,7 +77,7 @@ uv run pytest
 ```json
 {
   "title": "Checkout timeouts for 20% of users",
-  "description": "Users in EU region see 504 errors during purchase."
+  "description": "Users in the EU region see 504 errors during purchase."
 }
 ```
 
@@ -43,67 +94,96 @@ Returns:
     "urgency": "High",
     "category": "Performance",
     "confidence": "high",
-    "reasoning": "Partial degradation of checkout."
+    "reasoning": "Partial degradation of checkout, not a full outage."
   },
   "incident_id": "a1b2c3d4e5f6",
   "related_incidents": [
     {
       "id": "b12f4a1e...",
-      "title": "Checkout slow for EU users",
-      "similarity": 0.93,
-      "classification": { "... same shape ..." }
+      "title": "PayPal checkout errors",
+      "similarity": 0.72,
+      "classification": { "...same shape..." }
     }
   ]
 }
 ```
 
-A `GET /classify?title=...&description=...` variant is also available.
+### `GET /classify?title=...&description=...`
+
+Same response shape, query-parameter variant.
 
 ### `GET /health`
 
-Returns `{"status": "ok", "model": "...", "store_ready": true}`.
+```json
+{ "status": "ok", "model": "ollama/qwen2.5:7b", "store_ready": true }
+```
+
+## Taxonomy
+
+| Field | Allowed values |
+|-------|---------------|
+| affected_system | CRM, ERP, Payment Gateway, Infrastructure, Network, Security, Email, Data Pipeline, Other |
+| incident_type | Spike, Degradation, Unavailability, Outage |
+| severity | Critical, Major, Minor, Cosmetic |
+| urgency | Immediate, High, Medium, Low |
+| category | Hardware, Software, Network Issue, Security, Performance, Configuration, Human Error, External / Third Party, Other |
+
+Each `affected_system` has its own set of valid services (e.g. `Payment Gateway` → `Checkout`, `Refunds`, `Fraud Detection`, `Billing`, `Invoice Generation`).
 
 ## Configuration
 
-All via environment variables (see `.env.example`):
-
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `LLM_MODEL` | `gpt-4o-mini` | Model name (OpenAI, Anthropic, or `ollama/...`) |
-| `LLM_API_KEY` | — | API key for the provider |
-| `LLM_API_BASE` | — | For self-hosted models (Ollama, etc.) |
-| `LLM_PROVIDER` | — | Provider name (auto-detected from model) |
-| `DB_PATH` | `incidents.db` | SQLite database path |
-| `EMBEDDING_MODEL` | `all-MiniLM-L6-v2` | Sentence-transformer model for embeddings |
-| `SIMILARITY_THRESHOLD` | `0.80` | Minimum cosine similarity (0‑1) for a match |
-| `HOST` | `0.0.0.0` | Server bind address |
-| `PORT` | `8000` | Server port |
+| `LLM_MODEL` | `ollama/qwen2.5:7b` | Model name (Ollama, OpenAI, Anthropic) |
+| `LLM_API_KEY` | — | API key (not needed for local Ollama) |
+| `LLM_API_BASE` | — | For self-hosted LLMs (Ollama, vLLM) |
+| `DB_PATH` | `/data/incidents.db` | SQLite path (persistent via Docker volume) |
+| `SIMILARITY_THRESHOLD` | `0.35` | Minimum cosine similarity for related matches |
+| `EMBEDDING_MODEL` | `all-MiniLM-L6-v2` | Sentence-transformer for embeddings |
 
-## Docker (with local Ollama)
+## Classification-Augmented Embeddings
 
-```bash
-docker compose up
+The similarity search doesn't just embed raw text — it adds the LLM's structured classification:
+
+```
+Embedded text:
+  "Stripe payment timeouts | Payment Gateway / Checkout / Degradation / Performance"
 ```
 
-Pulls a local model (qwen2.5:1.5b) via Ollama and runs the API. The embedding model is pre-downloaded in the build stage — no network on first request.
+This means:
+- Two payment incidents with different wording (PayPal vs Stripe) still cluster via shared classification fields
+- Cross-system noise is filtered out — a DB incident won't match a payment incident
+- The more incidents you add, the cleaner the clusters become
 
-## Design
+Threshold tuned at **0.35** for short incident texts with the 384-dim all-MiniLM-L6-v2 model.
 
-`classifier.py` sends the incident to an LLM with a structured prompt. The response goes through:
+## Design Decisions
 
-1. `_extract_json_str` — strips markdown code fences only
-2. `json.loads` — parses JSON
-3. `ClassificationResult.model_validate` — Pydantic enforces every field
+**Strict validation.** The LLM output goes through `json.loads` → `Pydantic.model_validate`. No regex fixing, no enum coercion, no silent fallbacks for bad JSON. If the LLM returns invalid data on both attempts, a graceful fallback `ClassificationResult` is returned with `confidence: "low"`.
 
-No silent fallbacks, no regex fixing, no enum coercion. If the LLM returns bad data, you get a `RuntimeError`.
+**Retry with error feedback.** If the first LLM call fails validation, the retry prompt includes the exact error message. This is far more effective than a generic "fix your JSON" hint.
 
-### Semantic similarity
+**Embedding model failure is non-fatal.** If `sentence-transformers` fails to load, the API continues to classify — it just won't return similar incidents.
 
-`IncidentStore` (`incident_store.py`) wraps SQLite + `all-MiniLM-L6-v2` (22MB, runs locally, no API key). On each classification:
+## Files
 
-1. Embed title + description into a 384‑dimension vector
-2. Compare against all past incidents using cosine similarity
-3. Return matches above the threshold (default 80%)
-4. Save the new incident + its embedding to SQLite
-
-The embedding model failing to load is non-fatal — the API continues to classify incidents, just without similarity search.
+```
+├── ai_classification/
+│   ├── __init__.py
+│   ├── main.py          — FastAPI app, routes
+│   ├── classifier.py    — LLM prompt, retry logic, few-shot examples
+│   ├── incident_store.py — SQLite store, embeddings, similarity search
+│   ├── models.py        — Pydantic request/response models
+│   ├── schemas.py       — StrEnum taxonomies (system, type, severity…)
+│   └── config.py        — Env-based settings
+├── frontend/
+│   ├── index.html       — Single-page UI
+│   ├── nginx.conf       — Static file + API reverse proxy
+│   └── Dockerfile
+├── tests/
+│   ├── test_classifier.py  — Unit tests (mocked LLM)
+│   └── e2e_check.py        — E2E with real Ollama
+├── docker-compose.yml
+├── Dockerfile
+└── entrypoint.sh
+```

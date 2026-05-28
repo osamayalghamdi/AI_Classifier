@@ -124,6 +124,48 @@ class IncidentStore:
 
         self._ready = True
 
+        # ── Migrate existing records to augmented embeddings ─────────────────
+        # Previous versions stored embeddings from raw title+description only.
+        # The new scheme folds the classification fingerprint into the embedding
+        # text.  Re-embed any record that was stored under the old scheme so
+        # that similarity comparisons remain consistent.
+        if self._model is not None and self._db is not None:
+            self._migrate_embeddings()
+
+    def _migrate_embeddings(self) -> None:
+        """One-time migration: re-embed records that still use raw-text embeddings.
+
+        Detection: re-embed a record and compare — if the stored embedding
+        differs from what we'd produce now, update it.
+        """
+        rows = self._db.execute(
+            "SELECT id, title, description, classification_json, embedding "
+            "FROM incidents"
+        ).fetchall()
+
+        for row_id, title, description, class_json, blob in rows:
+            try:
+                class_data = json.loads(class_json)
+                cls_result = ClassificationResult.model_validate(class_data)
+            except Exception:
+                continue  # skip corrupted records, leave as-is
+
+            expected_text = self._build_embedding_text(title, description, cls_result)
+            expected_vec = self._embed(expected_text)
+            if expected_vec is None:
+                continue
+
+            # If the stored blob is None or the length doesn't match, re-embed.
+            expected_bytes = expected_vec.tobytes()
+            if blob is None or len(blob) != len(expected_bytes):
+                with self._lock:
+                    self._db.execute(
+                        "UPDATE incidents SET embedding = ? WHERE id = ?",
+                        (expected_bytes, row_id),
+                    )
+        if rows:
+            self._db.commit()
+
     def close(self) -> None:
         if self._db:
             self._db.close()
@@ -151,12 +193,33 @@ class IncidentStore:
 
     # ── Public API ─────────────────────────────────────────────────
 
+    @staticmethod
+    def _build_embedding_text(title: str, description: str, classification: "ClassificationResult | None" = None) -> str:
+        """Build text to embed — includes the classification fingerprint when available.
+
+        Folding the LLM's structured classification into the embedding string
+        anchors semantically similar incidents together even when the raw wording
+        differs (e.g. "Stripe errors" → "Payment gateway down" both map to
+        ``Payment Gateway / Checkout / Degradation / Performance``).
+        """
+        text = f"{title} {description}".strip()
+        if classification is not None:
+            text = (
+                f"{text} | Classified as: "
+                f"{classification.affected_system} / "
+                f"{classification.service} / "
+                f"{classification.incident_type} / "
+                f"{classification.category}"
+            )
+        return text
+
     def find_similar(
         self,
         text: str,
         *,
         threshold: float | None = None,
         top_k: int = 5,
+        classification: "ClassificationResult | None" = None,
     ) -> list[SimilarMatch]:
         """Search past incidents semantically similar to *text*.
 
@@ -169,6 +232,11 @@ class IncidentStore:
             ``settings.similarity_threshold`` when not provided.
         top_k:
             Maximum number of matches to return.
+        classification:
+            The current incident's classification result — when provided,
+            the fingerprint is folded into the query embedding so incidents
+            classified into the same system/service/type/category cluster
+            closer together regardless of wording differences in the title/description.
 
         Returns
         -------
@@ -179,7 +247,8 @@ class IncidentStore:
             return []
 
         threshold = threshold if threshold is not None else settings.similarity_threshold
-        query_vec = self._embed(text)
+        query_text = self._build_embedding_text(text, "", classification)
+        query_vec = self._embed(query_text)
         if query_vec is None:
             return []
 
@@ -218,12 +287,18 @@ class IncidentStore:
     ) -> None:
         """Persist a classified incident with its embedding.
 
+        The embedding text includes the classification fingerprint so that
+        future similarity searches are anchored on structured fields
+        (affected_system, service, incident_type, category) in addition to
+        raw wording — this makes "Stripe errors" match "Payment gateway down"
+        when both share the same classification fingerprint.
+
         Thread-safe — uses an internal lock for the write.
         """
         if not self._ready or self._db is None:
             return
 
-        text = f"{title} {description}"
+        text = self._build_embedding_text(title, description, classification)
         embedding = self._embed(text)
 
         with self._lock:

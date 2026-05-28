@@ -2,6 +2,9 @@ services:
   # ── Local LLM runner (Ollama) ──────────────────────────────────────
   ollama:
     image: ollama/ollama:latest
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
     volumes:
       - ollama_data:/root/.ollama
     healthcheck:
@@ -17,12 +20,28 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - LLM_MODEL=ollama/qwen2.5:1.5b
+      - LLM_MODEL=ollama/qwen2.5:7b
       - LLM_API_BASE=http://ollama:11434
+      - SIMILARITY_THRESHOLD=0.35
+      - DB_PATH=/data/incidents.db
+    volumes:
+      - incidents_data:/data
     depends_on:
       ollama:
         condition: service_healthy
     restart: unless-stopped
 
+  # ── Frontend (nginx) ────────────────────────────────────────────
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    ports:
+      - "8082:80"
+    depends_on:
+      - api
+    restart: unless-stopped
+
 volumes:
   ollama_data:
+  incidents_data:

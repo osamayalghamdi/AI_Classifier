@@ -58,7 +58,7 @@ def classify_incident(req: ClassifyRequest):
 
     # ── Semantic similarity search ────────────────────────────────
     text = f"{req.title} {req.description}"
-    matches = store.find_similar(text)
+    matches = store.find_similar(text, classification=result)
     related = [
         RelatedIncident(
             id=m.id,
@@ -90,7 +90,7 @@ def classify_incident_get(title: str, description: str = ""):
         raise HTTPException(status_code=502, detail=str(exc))
 
     text = f"{title} {description}"
-    matches = store.find_similar(text)
+    matches = store.find_similar(text, classification=result)
     related = [
         RelatedIncident(
             id=m.id,

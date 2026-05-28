@@ -80,6 +80,40 @@ FEW_SHOT_EXAMPLES = [
             "reasoning": "Expired cert blocks HTTPS access, but portal backend is healthy.",
         },
     },
+    {
+        "title": "Production database disk is 98% full",
+        "description": (
+            "The PostgreSQL primary server /data partition is at 98% "
+            "capacity. Auto-vacuum may fail soon."
+        ),
+        "output": {
+            "affected_system": "Infrastructure",
+            "service": "Storage",
+            "incident_type": "Degradation",
+            "severity": "Major",
+            "urgency": "High",
+            "category": "Hardware",
+            "confidence": "high",
+            "reasoning": "Database disk near capacity may cause autovacuum failures.",
+        },
+    },
+    {
+        "title": "Suspicious login attempts on admin panel",
+        "description": (
+            "5000+ failed login attempts from 12 different IPs. "
+            "Possible brute-force attack targeting the admin interface."
+        ),
+        "output": {
+            "affected_system": "Security",
+            "service": "IAM",
+            "incident_type": "Spike",
+            "severity": "Critical",
+            "urgency": "Immediate",
+            "category": "Security",
+            "confidence": "high",
+            "reasoning": "High-volume brute-force attack on admin panel requires immediate response.",
+        },
+    },
 ]
 
 
@@ -183,76 +217,113 @@ def _extract_json_str(raw: str) -> str:
 # ── Classification ───────────────────────────────────────────────────
 
 
-_MAX_RETRIES = 1  # one retry = two total attempts
-
-
 def _parse_and_validate(raw: str) -> ClassificationResult:
     """Parse fence‑stripped JSON and validate with Pydantic.
 
-    Returns the validated result or raises ``RuntimeError``.
+    Returns the validated result or raises an exception (either
+    ``json.JSONDecodeError`` or a Pydantic ``ValidationError``).
     """
     raw = _extract_json_str(raw)
-
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError as e:
-        raise RuntimeError(f"LLM returned non-JSON output: {e}") from e
-
-    try:
-        return ClassificationResult.model_validate(data)
-    except Exception as e:
-        raise RuntimeError(f"Invalid classification schema: {e}") from e
+    data = json.loads(raw)
+    return ClassificationResult.model_validate(data)
 
 
-def classify(title: str, description: str) -> ClassificationResult:
-    """Send the incident to the LLM and return a structured result.
+def _build_retry_prompt(user_prompt: str, last_error: str) -> str:
+    """Build a retry hint that includes the actual error message.
 
-    Raises ``RuntimeError`` if the LLM returns non-JSON or the JSON does
-    not match the ``ClassificationResult`` schema — no silent coercion.
-    Retries once with a corrective hint if validation fails.
+    This is far more effective than a generic "fix your JSON" because
+    the LLM sees exactly what went wrong.
     """
+    return (
+        f"{user_prompt}\n\n"
+        f"---\n"
+        f"Your previous response was invalid. Error:\n"
+        f"{last_error}\n\n"
+        f"Fix ONLY the JSON. Use exactly the field names and allowed "
+        f"values shown in the system prompt. Return valid JSON with no "
+        f"extra text."
+    )
 
-    system_prompt = _build_system_prompt()
-    user_prompt = _build_user_prompt(title, description)
 
+def _call_llm(messages: list[dict]) -> str:
+    """Single LLM call returning the raw response text.
+
+    Lifts API/network errors into ``ValueError`` so callers don't
+    need to know about litellm internals.
+    """
     kwargs: dict = dict(
         model=settings.llm_model,
         temperature=0.0,
         max_tokens=500,
+        messages=messages,
     )
-
     if settings.llm_api_base:
         kwargs["api_base"] = settings.llm_api_base
     if settings.llm_api_key:
         kwargs["api_key"] = settings.llm_api_key
 
-    # ── Attempt 1 ────────────────────────────────────────────────
-    kwargs["messages"] = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": user_prompt},
-    ]
-    resp = completion(**kwargs)
-    raw = resp.choices[0].message.content
-
     try:
+        resp = completion(**kwargs)
+    except Exception as e:
+        raise ValueError(f"LLM API call failed: {e}") from e
+
+    content = resp.choices[0].message.content
+    if not content or not content.strip():
+        raise ValueError("LLM returned empty response")
+    return content
+
+
+# ── Public API ────────────────────────────────────────────────────────
+
+
+def classify(title: str, description: str) -> ClassificationResult:
+    """Send the incident to the LLM and return a structured result.
+
+    Handles all error paths internally:
+      - API / network failures
+      - Non-JSON / malformed responses
+      - Schema validation failures (wrong fields, bad types,
+        service/system mismatch)
+
+    If the first attempt fails, a single retry is made with a
+    corrective hint that includes the actual error message.  If the
+    retry also fails a fallback ``ClassificationResult`` is returned
+    with ``reasoning`` describing the failure — the caller never
+    sees an exception.
+    """
+    system_prompt = _build_system_prompt()
+    user_prompt = _build_user_prompt(title, description)
+
+    # ── Attempt 1 ──────────────────────────────────────────────
+    try:
+        raw = _call_llm([
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ])
         return _parse_and_validate(raw)
-    except RuntimeError as e:
+    except Exception as e:
         last_error = str(e)
 
-    # ── Retry with corrective hint ───────────────────────────────
-    retry_user = (
-        f"{user_prompt}\n\n"
-        f"---\n"
-        f"Your previous JSON was invalid. Fix ONLY the JSON.\n"
-        f'Make sure "service" is a SINGLE STRING, not a list.\n'
-        f"Use exactly the field names and allowed values shown in the system prompt.\n"
-        f"Return valid JSON with no extra text."
-    )
-    kwargs["messages"] = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": retry_user},
-    ]
-    resp = completion(**kwargs)
-    raw = resp.choices[0].message.content
+    # ── Retry with corrective hint ─────────────────────────────
+    try:
+        raw = _call_llm([
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": _build_retry_prompt(user_prompt, last_error)},
+        ])
+        return _parse_and_validate(raw)
+    except Exception as e:
+        last_error = str(e)
 
-    return _parse_and_validate(raw)
+    # ── Fallback — API or LLM persistently broken ──────────────
+    return ClassificationResult(
+        affected_system=AffectedSystem.other,
+        service="General / Unspecified",
+        incident_type=IncidentType.degradation,
+        severity=Severity.minor,
+        urgency=Urgency.low,
+        category=Category.other,
+        confidence="low",
+        reasoning=(
+            f"Classification failed after 2 attempts. Last error: {last_error}"
+        ),
+    )

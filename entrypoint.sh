@@ -12,7 +12,7 @@ echo "==> Ollama is ready."
 MODEL="${LLM_MODEL#ollama/}"
 echo "==> Checking model: $MODEL"
 MODELS=$(curl -s "${LLM_API_BASE}/api/tags")
-if ! echo "$MODELS" | python3 -c "import sys,json; d=json.load(sys.stdin); sys.exit(0 if any(m['name']=='$MODEL' for m in d['models']) else 1)" 2>/dev/null; then
+if ! echo "$MODELS" | python3 -c "import sys,json; import os; d=json.load(sys.stdin); sys.exit(0 if any(m['name']==os.environ.get('MODEL','') for m in d.get('models',[])) else 1)" 2>/dev/null; then
     echo "==> Pulling model: $MODEL"
     curl -s -X POST "${LLM_API_BASE}/api/pull" \
         -d "{\"name\": \"$MODEL\"}" > /dev/null
