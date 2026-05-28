@@ -51,13 +51,18 @@ def health():
 
 
 def _classify_and_store(title: str, description: str) -> ClassifyResponse:
-    """Classify, persist, link to cluster, and return response."""
+    """Classify, persist, link to cluster (via centroid or per-incident), return."""
     try:
         result = classify(title, description)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc))
 
     text = f"{title} {description}"
+
+    # ── Step 1: Try centroid match (fast — O(clusters)) ──────────
+    cluster_id = store.find_cluster_by_similarity(text, classification=result)
+
+    # ── Step 2: Find individual similar incidents (for display + fallback clustering) ──
     matches = store.find_similar(text, classification=result)
     related = [
         RelatedIncident(
@@ -69,13 +74,29 @@ def _classify_and_store(title: str, description: str) -> ClassifyResponse:
         for m in matches
     ]
 
+    # ── Step 3: Persist ───────────────────────────────────────────
     incident_id = store.generate_id()
     store.save_incident(incident_id, title, description, result)
 
-    # ── Cluster assignment (once at classification time) ──────────
-    cluster_id = store.link_to_cluster(incident_id, title, description, result, matches)
-    if cluster_id and matches:
-        # Generate summary when cluster reaches 2+ incidents for the first time
+    # ── Step 4: Link to cluster ───────────────────────────────────
+    if not cluster_id:
+        # No centroid matched — use per-incident similarity
+        cluster_id = store.link_to_cluster(incident_id, title, description, result, matches)
+    else:
+        # Centroid matched — add directly to the cluster
+        if store._db:
+            store._db.execute(
+                "INSERT OR IGNORE INTO cluster_members (cluster_id, incident_id, similarity) VALUES (?, ?, 1.0)",
+                (cluster_id, incident_id),
+            )
+            store._db.execute(
+                "UPDATE clusters SET updated_at = ? WHERE id = ?",
+                (datetime.now(timezone.utc).isoformat(), cluster_id),
+            )
+            store._db.commit()
+
+    # ── Step 5: Generate summary when cluster hits 2-4 members ─────
+    if cluster_id:
         all_members = store._db.execute(
             "SELECT i.title, i.description, i.classification_json "
             "FROM incidents i JOIN cluster_members cm ON cm.incident_id = i.id "

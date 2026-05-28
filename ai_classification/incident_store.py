@@ -120,6 +120,7 @@ class IncidentStore:
                     system        TEXT NOT NULL,
                     service       TEXT NOT NULL,
                     worst_severity TEXT NOT NULL,
+                    centroid_embedding BLOB,   -- embedding of the summary text
                     created_at    TEXT NOT NULL,
                     updated_at    TEXT NOT NULL
                 )
@@ -147,6 +148,30 @@ class IncidentStore:
             self._db = None
 
         self._ready = True
+
+        # ── Migrate existing tables ─────────────────────────────────────
+        # Add centroid_embedding column to clusters if missing
+        if self._db is not None:
+            try:
+                self._db.execute("ALTER TABLE clusters ADD COLUMN centroid_embedding BLOB")
+            except Exception:
+                pass  # column already exists
+
+        # Re-embed existing summaries as centroids
+        if self._model is not None and self._db is not None:
+            rows = self._db.execute(
+                "SELECT id, summary FROM clusters WHERE summary != '' AND centroid_embedding IS NULL"
+            ).fetchall()
+            for cid, summary in rows:
+                vec = self._embed(summary)
+                if vec is not None:
+                    with self._lock:
+                        self._db.execute(
+                            "UPDATE clusters SET centroid_embedding = ? WHERE id = ?",
+                            (vec.tobytes(), cid),
+                        )
+            if rows:
+                self._db.commit()
 
         # ── Migrate existing records to augmented embeddings ─────────────────
         # Previous versions stored embeddings from raw title+description only.
@@ -424,14 +449,63 @@ class IncidentStore:
             )
         return cluster_id
 
+    def find_cluster_by_similarity(
+        self,
+        text: str,
+        *,
+        classification: "ClassificationResult | None" = None,
+    ) -> str | None:
+        """Check if the incident matches an existing cluster centroid.
+
+        Instead of comparing against every incident, this compares the
+        query embedding against each cluster's centroid embedding (the
+        summary text). If a centroid matches above threshold, the incident
+        belongs to that cluster — no need to scan individual members.
+
+        Returns the cluster ID of the best match, or None.
+        """
+        if not self._ready or self._db is None or self._model is None:
+            return None
+
+        query_text = self._build_embedding_text(text, "", classification)
+        query_vec = self._embed(query_text)
+        if query_vec is None:
+            return None
+
+        threshold = settings.similarity_threshold
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT id, centroid_embedding, system FROM clusters "
+                "WHERE centroid_embedding IS NOT NULL"
+            ).fetchall()
+
+        best: tuple[float, str] | None = None
+        for cid, blob, system in rows:
+            # Only consider centroids from the same affected system
+            if classification and system != classification.affected_system:
+                continue
+            centroid = np.frombuffer(blob, dtype=np.float32)
+            score = self._cosine_similarity(query_vec, centroid)
+            if score >= threshold:
+                if best is None or score > best[0]:
+                    best = (score, cid)
+
+        return best[1] if best else None
+
     def update_cluster_summary(self, cluster_id: str, summary: str) -> None:
-        """Store the LLM-generated summary for a cluster."""
+        """Store the LLM-generated summary and its centroid embedding.
+
+        The centroid embedding becomes the cluster's semantic anchor —
+        future incidents compare against this instead of scanning all
+        members.
+        """
         if not self._ready or self._db is None:
             return
+        centroid = self._embed(summary)
         with self._lock:
             self._db.execute(
-                "UPDATE clusters SET summary = ? WHERE id = ?",
-                (summary, cluster_id),
+                "UPDATE clusters SET summary = ?, centroid_embedding = ? WHERE id = ?",
+                (summary, centroid.tobytes() if centroid is not None else None, cluster_id),
             )
             self._db.commit()
 
