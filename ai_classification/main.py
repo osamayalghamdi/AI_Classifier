@@ -81,7 +81,7 @@ def _classify_and_store(title: str, description: str) -> ClassifyResponse:
     # ── Step 4: Link to cluster ───────────────────────────────────
     if not cluster_id:
         # No centroid matched — use per-incident similarity
-        cluster_id = store.link_to_cluster(incident_id, title, description, result, matches)
+        cluster_id = store.link_to_cluster(incident_id, result, matches)
     else:
         # Centroid matched — add directly to the cluster
         if store._db:

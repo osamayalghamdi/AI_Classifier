@@ -26,16 +26,6 @@ from .models import ClassificationResult
 
 
 @dataclass
-class IncidentRecord:
-    """A single row from the incidents table."""
-    id: str
-    title: str
-    description: str
-    classification: ClassificationResult
-    created_at: str
-
-
-@dataclass
 class SimilarMatch:
     """One past incident that scored above the similarity threshold."""
     id: str
@@ -63,7 +53,6 @@ class IncidentStore:
         self._model: SentenceTransformer | None = None
         self._db: sqlite3.Connection | None = None
         self._ready = False
-        self._dim = 384  # all-MiniLM-L6-v2 output dimension
 
     # ── Lifecycle ──────────────────────────────────────────────────
 
@@ -83,7 +72,6 @@ class IncidentStore:
                 settings.embedding_model_name,
                 device="cpu",
             )
-            self._dim = self._model.get_sentence_embedding_dimension()
         except Exception as exc:
             import logging
             logging.getLogger(__name__).warning(
@@ -172,48 +160,6 @@ class IncidentStore:
                         )
             if rows:
                 self._db.commit()
-
-        # ── Migrate existing records to augmented embeddings ─────────────────
-        # Previous versions stored embeddings from raw title+description only.
-        # The new scheme folds the classification fingerprint into the embedding
-        # text.  Re-embed any record that was stored under the old scheme so
-        # that similarity comparisons remain consistent.
-        if self._model is not None and self._db is not None:
-            self._migrate_embeddings()
-
-    def _migrate_embeddings(self) -> None:
-        """One-time migration: re-embed records that still use raw-text embeddings.
-
-        Detection: re-embed a record and compare — if the stored embedding
-        differs from what we'd produce now, update it.
-        """
-        rows = self._db.execute(
-            "SELECT id, title, description, classification_json, embedding "
-            "FROM incidents"
-        ).fetchall()
-
-        for row_id, title, description, class_json, blob in rows:
-            try:
-                class_data = json.loads(class_json)
-                cls_result = ClassificationResult.model_validate(class_data)
-            except Exception:
-                continue  # skip corrupted records, leave as-is
-
-            expected_text = self._build_embedding_text(title, description, cls_result)
-            expected_vec = self._embed(expected_text)
-            if expected_vec is None:
-                continue
-
-            # If the stored blob is None or the length doesn't match, re-embed.
-            expected_bytes = expected_vec.tobytes()
-            if blob is None or len(blob) != len(expected_bytes):
-                with self._lock:
-                    self._db.execute(
-                        "UPDATE incidents SET embedding = ? WHERE id = ?",
-                        (expected_bytes, row_id),
-                    )
-        if rows:
-            self._db.commit()
 
     def close(self) -> None:
         if self._db:
@@ -377,8 +323,6 @@ class IncidentStore:
     def link_to_cluster(
         self,
         incident_id: str,
-        title: str,
-        description: str,
         classification: ClassificationResult,
         matches: list,
     ) -> str | None:
