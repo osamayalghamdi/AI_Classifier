@@ -6,630 +6,214 @@
 <title>AI Incident Classifier</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
-  :root {
-    --bg-primary: #0b0d12;
-    --bg-secondary: #13161e;
-    --bg-card: #191d28;
-    --bg-input: #1e2333;
-    --bg-hover: #242a3d;
-    --border: #2a2f45;
-    --border-focus: #6366f1;
-    --text-primary: #e8edf5;
-    --text-secondary: #9ba3b8;
-    --text-muted: #6b7280;
-    --accent: #6366f1;
-    --accent-hover: #5457e5;
-    --accent-glow: rgba(99,102,241,0.15);
-    --green: #22c55e;
-    --green-bg: rgba(34,197,94,0.08);
-    --red: #ef4444;
-    --red-bg: rgba(239,68,68,0.08);
-    --orange: #f59e0b;
-    --orange-bg: rgba(245,158,11,0.08);
-    --blue: #3b82f6;
-    --blue-bg: rgba(59,130,246,0.08);
-    --purple: #a855f7;
-    --purple-bg: rgba(168,85,247,0.08);
-    --radius: 12px;
-    --radius-sm: 8px;
-    --radius-xs: 6px;
-    --shadow: 0 1px 3px rgba(0,0,0,0.3), 0 1px 2px rgba(0,0,0,0.2);
-    --shadow-lg: 0 10px 25px rgba(0,0,0,0.4);
-    --transition: 180ms ease;
-  }
-
-  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
-  body {
-    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-    background: var(--bg-primary);
-    color: var(--text-primary);
-    min-height: 100vh;
-    line-height: 1.6;
-    -webkit-font-smoothing: antialiased;
-  }
-
-  /* ── Layout ── */
-  .app-header {
-    border-bottom: 1px solid var(--border);
-    background: var(--bg-secondary);
-    position: sticky;
-    top: 0;
-    z-index: 100;
-    backdrop-filter: blur(12px);
-  }
-
-  .header-inner {
-    max-width: 1200px;
-    margin: 0 auto;
-    padding: 14px 24px;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-  }
-
-  .logo {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    font-weight: 700;
-    font-size: 18px;
-    letter-spacing: -0.3px;
-  }
-
-  .logo-icon {
-    width: 32px;
-    height: 32px;
-    background: linear-gradient(135deg, var(--accent), #a855f7);
-    border-radius: var(--radius-xs);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 16px;
-    font-weight: 700;
-  }
-
-  .health-badge {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 13px;
-    color: var(--text-secondary);
-    padding: 6px 12px;
-    border-radius: 20px;
-    background: var(--bg-card);
-    border: 1px solid var(--border);
-  }
-
-  .health-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-muted); }
-  .health-dot.ok { background: var(--green); box-shadow: 0 0 6px rgba(34,197,94,0.4); }
-  .health-dot.err { background: var(--red); box-shadow: 0 0 6px rgba(239,68,68,0.4); }
-
-  .app-main {
-    max-width: 1200px;
-    margin: 0 auto;
-    padding: 28px 24px 80px;
-  }
-
-  /* ── Hero ── */
-  .hero {
-    text-align: center;
-    margin-bottom: 40px;
-  }
-
-  .hero h1 {
-    font-size: 32px;
-    font-weight: 700;
-    letter-spacing: -0.5px;
-    margin-bottom: 8px;
-  }
-
-  .hero p {
-    color: var(--text-secondary);
-    font-size: 15px;
-    max-width: 520px;
-    margin: 0 auto;
-  }
-
-  /* ── Two-column ── */
-  .columns {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 24px;
-    align-items: start;
-  }
-
-  @media (max-width: 820px) { .columns { grid-template-columns: 1fr; } }
-
-  .card {
-    background: var(--bg-card);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    padding: 24px;
-  }
-
-  .card-title {
-    font-size: 14px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    color: var(--text-secondary);
-    margin-bottom: 18px;
-  }
-
-  /* ── Form ── */
-  .form-group { margin-bottom: 16px; }
-
-  .form-label {
-    display: block;
-    font-size: 13px;
-    font-weight: 500;
-    color: var(--text-secondary);
-    margin-bottom: 6px;
-  }
-
-  .form-input, .form-textarea {
-    width: 100%;
-    background: var(--bg-input);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    color: var(--text-primary);
-    font-family: 'Inter', sans-serif;
-    font-size: 14px;
-    padding: 10px 14px;
-    transition: border-color var(--transition), box-shadow var(--transition);
-    outline: none;
-  }
-
-  .form-input:focus, .form-textarea:focus {
-    border-color: var(--border-focus);
-    box-shadow: 0 0 0 3px var(--accent-glow);
-  }
-
-  .form-textarea {
-    resize: vertical;
-    min-height: 100px;
-  }
-
-  .form-actions {
-    display: flex;
-    gap: 10px;
-    align-items: center;
-  }
-
-  .btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 7px;
-    padding: 10px 20px;
-    border-radius: var(--radius-sm);
-    font-family: 'Inter', sans-serif;
-    font-size: 14px;
-    font-weight: 500;
-    border: none;
-    cursor: pointer;
-    transition: all var(--transition);
-  }
-
-  .btn-primary {
-    background: var(--accent);
-    color: white;
-  }
-  .btn-primary:hover { background: var(--accent-hover); }
-  .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
-
-  .btn-secondary {
-    background: var(--bg-input);
-    color: var(--text-secondary);
-    border: 1px solid var(--border);
-  }
-  .btn-secondary:hover { background: var(--bg-hover); color: var(--text-primary); }
-
-  .btn-icon {
-    padding: 10px;
-    background: var(--bg-input);
-    color: var(--text-secondary);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    cursor: pointer;
-    transition: all var(--transition);
-  }
-  .btn-icon:hover { background: var(--bg-hover); color: var(--text-primary); }
-
-  .spinner {
-    width: 16px; height: 16px;
-    border: 2px solid rgba(255,255,255,0.2);
-    border-top-color: white;
-    border-radius: 50%;
-    animation: spin 0.6s linear infinite;
-  }
-
-  @keyframes spin { to { transform: rotate(360deg); } }
-
-  /* ── Presets ── */
-  .presets {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-    margin-bottom: 16px;
-  }
-
-  .preset-chip {
-    padding: 5px 12px;
-    border-radius: 20px;
-    background: var(--bg-input);
-    border: 1px solid var(--border);
-    color: var(--text-secondary);
-    font-size: 12px;
-    cursor: pointer;
-    transition: all var(--transition);
-  }
-
-  .preset-chip:hover {
-    background: var(--accent-glow);
-    border-color: var(--accent);
-    color: var(--text-primary);
-  }
-
-  /* ── Result ── */
-  .result-area { min-height: 200px; }
-
-  .result-empty {
-    color: var(--text-muted);
-    font-size: 14px;
-    text-align: center;
-    padding: 48px 20px;
-  }
-
-  .result-empty-icon { font-size: 36px; margin-bottom: 12px; opacity: 0.4; }
-
-  .result-error {
-    background: var(--red-bg);
-    border: 1px solid rgba(239,68,68,0.2);
-    border-radius: var(--radius-sm);
-    padding: 14px 16px;
-    color: var(--red);
-    font-size: 13px;
-    margin-bottom: 12px;
-  }
-
-  .result-fallback {
-    background: var(--orange-bg);
-    border: 1px solid rgba(245,158,11,0.2);
-    border-radius: var(--radius-sm);
-    padding: 14px 16px;
-    color: var(--orange);
-    font-size: 13px;
-    margin-bottom: 12px;
-  }
-
-  /* ── Classification Tags ── */
-  .tags-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 10px;
-    margin-bottom: 18px;
-  }
-
-  .tag-item {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-  }
-
-  .tag-label {
-    font-size: 11px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    color: var(--text-muted);
-  }
-
-  .tag-value {
-    font-size: 15px;
-    font-weight: 600;
-    padding: 6px 10px;
-    border-radius: var(--radius-xs);
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-  }
-
-  .tag-confidence-high { background: var(--green-bg); color: var(--green); }
-  .tag-confidence-medium { background: var(--orange-bg); color: var(--orange); }
-  .tag-confidence-low { background: var(--red-bg); color: var(--red); }
-
-  .reasoning-box {
-    background: var(--bg-input);
-    border-radius: var(--radius-sm);
-    padding: 14px 16px;
-    font-size: 13px;
-    color: var(--text-secondary);
-    line-height: 1.7;
-    margin-bottom: 14px;
-  }
-
-  .reasoning-box strong {
-    color: var(--text-primary);
-    font-weight: 600;
-  }
-
-  .incident-id {
-    font-size: 12px;
-    color: var(--text-muted);
-    font-family: 'SF Mono', 'Fira Code', monospace;
-  }
-
-  /* ── Related Incidents ── */
-  .related-section { margin-top: 18px; }
-
-  .related-section h3 {
-    font-size: 12px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    color: var(--text-muted);
-    margin-bottom: 10px;
-  }
-
-  .related-item {
-    background: var(--bg-input);
-    border-radius: var(--radius-sm);
-    padding: 12px 14px;
-    margin-bottom: 8px;
-    border-left: 3px solid var(--accent);
-  }
-
-  .related-item-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 4px;
-  }
-
-  .related-item-title {
-    font-size: 13px;
-    font-weight: 500;
-    color: var(--text-primary);
-  }
-
-  .related-item-score {
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--accent);
-    font-family: 'SF Mono', 'Fira Code', monospace;
-  }
-
-  .related-item-tags {
-    display: flex;
-    gap: 6px;
-    flex-wrap: wrap;
-  }
-
-  .related-item-tag {
-    font-size: 11px;
-    padding: 2px 8px;
-    border-radius: 4px;
-    background: var(--bg-card);
-    color: var(--text-muted);
-  }
-
-  /* ── History side ── */
-  .history-empty {
-    color: var(--text-muted);
-    font-size: 14px;
-    text-align: center;
-    padding: 32px 20px;
-  }
-
-  .history-item {
-    background: var(--bg-input);
-    border-radius: var(--radius-sm);
-    padding: 12px 14px;
-    margin-bottom: 8px;
-    cursor: pointer;
-    transition: border-color var(--transition);
-    border: 1px solid transparent;
-  }
-
-  .history-item:hover { border-color: var(--border-focus); }
-
-  .history-item-title {
-    font-size: 13px;
-    font-weight: 500;
-    margin-bottom: 4px;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .history-item-meta {
-    display: flex;
-    justify-content: space-between;
-    font-size: 11px;
-    color: var(--text-muted);
-  }
-
-  .history-item-types {
-    display: flex;
-    gap: 4px;
-    flex-wrap: wrap;
-  }
-
-  .type-pill {
-    font-size: 10px;
-    padding: 1px 7px;
-    border-radius: 4px;
-    font-weight: 500;
-  }
-
-  .type-severity-Critical { background: var(--red-bg); color: var(--red); }
-  .type-severity-Major { background: var(--orange-bg); color: var(--orange); }
-  .type-severity-Minor { background: var(--blue-bg); color: var(--blue); }
-  .type-severity-Cosmetic { background: var(--purple-bg); color: var(--purple); }
-
-  .history-item-time { font-size: 11px; color: var(--text-muted); }
-
-  .history-loading {
-  text-align: center;
-  color: var(--text-muted);
-  padding: 32px;
-  font-size: 13px;
-  }
-
-  /* ── Tabs ── */
-  .tabs {
-  display: flex;
-  gap: 0;
-  margin-bottom: 24px;
-  border-bottom: 1px solid var(--border);
-  }
-  .tab {
-  padding: 10px 20px;
-  font-size: 14px;
-  font-weight: 500;
-  color: var(--text-muted);
-  cursor: pointer;
-  border-bottom: 2px solid transparent;
-  transition: all var(--transition);
-  }
-  .tab:hover { color: var(--text-primary); }
-  .tab.active {
-  color: var(--accent);
-  border-bottom-color: var(--accent);
-  }
-  .tab-content { display: none; }
-  .tab-content.active { display: block; }
-
-  /* ── Report ── */
-  .report-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 18px;
-  }
-  .report-header h2 {
-  font-size: 18px;
-  font-weight: 600;
-  }
-  .report-total {
-  font-size: 13px;
-  color: var(--text-muted);
-  background: var(--bg-input);
-  padding: 4px 12px;
-  border-radius: 20px;
-  }
-  .report-period-btns {
-  display: flex;
-  gap: 6px;
-  margin-bottom: 20px;
-  }
-  .report-period-btn {
-  padding: 6px 16px;
-  border-radius: 20px;
-  font-size: 13px;
-  font-weight: 500;
-  border: 1px solid var(--border);
-  background: var(--bg-input);
-  color: var(--text-secondary);
-  cursor: pointer;
-  transition: all var(--transition);
-  }
-  .report-period-btn:hover { border-color: var(--accent); color: var(--text-primary); }
-  .report-period-btn.active { background: var(--accent); color: white; border-color: var(--accent); }
-  .report-cluster {
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 16px 18px;
-  margin-bottom: 12px;
-  }
-  .report-cluster-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  margin-bottom: 8px;
-  cursor: pointer;
-  }
-  .report-cluster-title {
-  font-size: 15px;
-  font-weight: 600;
-  }
-  .report-cluster-badges {
-  display: flex;
-  gap: 6px;
-  flex-shrink: 0;
-  }
-  .report-badge {
-  font-size: 11px;
-  padding: 2px 8px;
-  border-radius: 4px;
-  font-weight: 500;
-  }
-  .report-badge-critical { background: var(--red-bg); color: var(--red); }
-  .report-badge-major { background: var(--orange-bg); color: var(--orange); }
-  .report-badge-minor { background: var(--blue-bg); color: var(--blue); }
-  .report-summary {
-  font-size: 13px;
-  color: var(--text-secondary);
-  line-height: 1.6;
-  margin-bottom: 10px;
-  }
-  .report-incidents {
-  display: none;
-  margin-top: 10px;
-  border-top: 1px solid var(--border);
-  padding-top: 10px;
-  }
-  .report-incidents.open { display: block; }
-  .report-incident-item {
-  display: flex;
-  justify-content: space-between;
-  font-size: 13px;
-  padding: 6px 0;
-  color: var(--text-secondary);
-  }
-  .report-incident-title { flex: 1; }
-  .report-incident-sev { font-weight: 500; margin-left: 12px; }
-  .report-expand {
-  font-size: 12px;
-  color: var(--accent);
-  cursor: pointer;
-  user-select: none;
-  }
-  .report-empty {
-  color: var(--text-muted);
-  text-align: center;
-  padding: 48px 20px;
-  font-size: 14px;
-  }
-
-  /* ── Animations ── */
-  @keyframes fadeIn {
-    from { opacity: 0; transform: translateY(6px); }
-    to { opacity: 1; transform: translateY(0); }
-  }
-
-  .fade-in {
-    animation: fadeIn 0.25s ease-out;
-  }
-
-  /* ── Scrollbar ── */
-  ::-webkit-scrollbar { width: 6px; }
-  ::-webkit-scrollbar-track { background: transparent; }
-  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
-  ::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+:root {
+  --bg-primary: #0b0d12; --bg-secondary: #13161e; --bg-card: #191d28;
+  --bg-input: #1e2333; --bg-hover: #242a3d; --border: #2a2f45;
+  --border-focus: #6366f1; --text-primary: #e8edf5; --text-secondary: #9ba3b8;
+  --text-muted: #6b7280; --accent: #6366f1; --accent-hover: #5457e5;
+  --accent-glow: rgba(99,102,241,0.15); --green: #22c55e;
+  --green-bg: rgba(34,197,94,0.08); --red: #ef4444;
+  --red-bg: rgba(239,68,68,0.08); --orange: #f59e0b;
+  --orange-bg: rgba(245,158,11,0.08); --blue: #3b82f6;
+  --blue-bg: rgba(59,130,246,0.08); --purple: #a855f7;
+  --purple-bg: rgba(168,85,247,0.08); --radius: 12px; --radius-sm: 8px;
+  --radius-xs: 6px; --transition: 180ms ease;
+}
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  background: var(--bg-primary); color: var(--text-primary);
+  min-height: 100vh; line-height: 1.6; -webkit-font-smoothing: antialiased;
+}
+
+/* Layout */
+.app-header {
+  border-bottom: 1px solid var(--border); background: var(--bg-secondary);
+  position: sticky; top: 0; z-index: 100; backdrop-filter: blur(12px);
+}
+.header-inner {
+  max-width: 1200px; margin: 0 auto; padding: 14px 24px;
+  display: flex; align-items: center; justify-content: space-between;
+}
+.logo { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 18px; letter-spacing: -0.3px; }
+.logo-icon {
+  width: 32px; height: 32px; background: linear-gradient(135deg, var(--accent), #a855f7);
+  border-radius: var(--radius-xs); display: flex; align-items: center;
+  justify-content: center; font-size: 16px; font-weight: 700;
+}
+.health-badge {
+  display: flex; align-items: center; gap: 6px; font-size: 13px;
+  color: var(--text-secondary); padding: 6px 12px; border-radius: 20px;
+  background: var(--bg-card); border: 1px solid var(--border);
+}
+.health-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-muted); }
+.health-dot.ok { background: var(--green); box-shadow: 0 0 6px rgba(34,197,94,0.4); }
+.health-dot.err { background: var(--red); box-shadow: 0 0 6px rgba(239,68,68,0.4); }
+.app-main { max-width: 1200px; margin: 0 auto; padding: 28px 24px 80px; }
+
+/* Tabs */
+.tabs { display: flex; margin-bottom: 24px; border-bottom: 1px solid var(--border); }
+.tab {
+  padding: 10px 20px; font-size: 14px; font-weight: 500; color: var(--text-muted);
+  cursor: pointer; border-bottom: 2px solid transparent; transition: all var(--transition);
+}
+.tab:hover { color: var(--text-primary); }
+.tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+.tab-content { display: none; }
+.tab-content.active { display: block; }
+
+/* Hero */
+.hero { text-align: center; margin-bottom: 40px; }
+.hero h1 { font-size: 32px; font-weight: 700; letter-spacing: -0.5px; margin-bottom: 8px; }
+.hero p { color: var(--text-secondary); font-size: 15px; max-width: 520px; margin: 0 auto; }
+
+/* Two-column grid */
+.columns { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; align-items: start; }
+@media (max-width: 820px) { .columns { grid-template-columns: 1fr; } }
+
+/* Cards */
+.card {
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 24px;
+}
+.card-title {
+  font-size: 14px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.05em; color: var(--text-secondary); margin-bottom: 18px;
+}
+
+/* Form */
+.form-group { margin-bottom: 16px; }
+.form-label { display: block; font-size: 13px; font-weight: 500; color: var(--text-secondary); margin-bottom: 6px; }
+.form-input, .form-textarea {
+  width: 100%; background: var(--bg-input); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); color: var(--text-primary);
+  font-family: 'Inter', sans-serif; font-size: 14px; padding: 10px 14px;
+  transition: border-color var(--transition), box-shadow var(--transition); outline: none;
+}
+.form-input:focus, .form-textarea:focus { border-color: var(--border-focus); box-shadow: 0 0 0 3px var(--accent-glow); }
+.form-textarea { resize: vertical; min-height: 100px; }
+.form-actions { display: flex; gap: 10px; align-items: center; }
+
+/* Buttons */
+.btn {
+  display: inline-flex; align-items: center; gap: 7px; padding: 10px 20px;
+  border-radius: var(--radius-sm); font-family: 'Inter', sans-serif; font-size: 14px;
+  font-weight: 500; border: none; cursor: pointer; transition: all var(--transition);
+}
+.btn-primary { background: var(--accent); color: white; }
+.btn-primary:hover { background: var(--accent-hover); }
+.btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-secondary { background: var(--bg-input); color: var(--text-secondary); border: 1px solid var(--border); }
+.btn-secondary:hover { background: var(--bg-hover); color: var(--text-primary); }
+.btn-icon {
+  padding: 10px; background: var(--bg-input); color: var(--text-secondary);
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  cursor: pointer; transition: all var(--transition);
+}
+.btn-icon:hover { background: var(--bg-hover); color: var(--text-primary); }
+
+/* Presets */
+.presets { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 16px; }
+.preset-chip {
+  padding: 5px 12px; border-radius: 20px; background: var(--bg-input);
+  border: 1px solid var(--border); color: var(--text-secondary); font-size: 12px;
+  cursor: pointer; transition: all var(--transition);
+}
+.preset-chip:hover { background: var(--accent-glow); border-color: var(--accent); color: var(--text-primary); }
+
+/* Spinner */
+.spinner { width: 16px; height: 16px; border: 2px solid rgba(255,255,255,0.2); border-top-color: white; border-radius: 50%; animation: spin 0.6s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* Result */
+.result-area { min-height: 200px; }
+.result-empty { color: var(--text-muted); font-size: 14px; text-align: center; padding: 48px 20px; }
+.result-empty-icon { font-size: 36px; margin-bottom: 12px; opacity: 0.4; }
+.result-error { background: var(--red-bg); border: 1px solid rgba(239,68,68,0.2); border-radius: var(--radius-sm); padding: 14px 16px; color: var(--red); font-size: 13px; margin-bottom: 12px; }
+.result-fallback { background: var(--orange-bg); border: 1px solid rgba(245,158,11,0.2); border-radius: var(--radius-sm); padding: 14px 16px; color: var(--orange); font-size: 13px; margin-bottom: 12px; }
+.tags-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 18px; }
+.tag-item { display: flex; flex-direction: column; gap: 2px; }
+.tag-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); }
+.tag-value { font-size: 15px; font-weight: 600; padding: 6px 10px; border-radius: var(--radius-xs); display: inline-flex; align-items: center; gap: 6px; }
+.tag-confidence-high { background: var(--green-bg); color: var(--green); }
+.tag-confidence-medium { background: var(--orange-bg); color: var(--orange); }
+.tag-confidence-low { background: var(--red-bg); color: var(--red); }
+.reasoning-box { background: var(--bg-input); border-radius: var(--radius-sm); padding: 14px 16px; font-size: 13px; color: var(--text-secondary); line-height: 1.7; margin-bottom: 14px; }
+.reasoning-box strong { color: var(--text-primary); font-weight: 600; }
+.incident-id { font-size: 12px; color: var(--text-muted); font-family: 'SF Mono', 'Fira Code', monospace; }
+
+/* Related incidents */
+.related-section { margin-top: 18px; }
+.related-section h3 { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); margin-bottom: 10px; }
+.related-item { background: var(--bg-input); border-radius: var(--radius-sm); padding: 12px 14px; margin-bottom: 8px; border-left: 3px solid var(--accent); }
+.related-item-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+.related-item-title { font-size: 13px; font-weight: 500; color: var(--text-primary); }
+.related-item-score { font-size: 12px; font-weight: 600; color: var(--accent); font-family: 'SF Mono', 'Fira Code', monospace; }
+.related-item-tags { display: flex; gap: 6px; flex-wrap: wrap; }
+.related-item-tag { font-size: 11px; padding: 2px 8px; border-radius: 4px; background: var(--bg-card); color: var(--text-muted); }
+
+/* History */
+.history-empty { color: var(--text-muted); font-size: 14px; text-align: center; padding: 48px 20px; }
+.history-item { background: var(--bg-input); border-radius: var(--radius-sm); padding: 12px 14px; margin-bottom: 8px; cursor: pointer; transition: border-color var(--transition); border: 1px solid transparent; }
+.history-item:hover { border-color: var(--border-focus); }
+.history-item-title { font-size: 13px; font-weight: 500; margin-bottom: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.history-item-meta { display: flex; justify-content: space-between; font-size: 11px; color: var(--text-muted); }
+.history-item-types { display: flex; gap: 4px; flex-wrap: wrap; }
+.history-item-time { font-size: 11px; color: var(--text-muted); }
+.history-loading { text-align: center; color: var(--text-muted); padding: 32px; font-size: 13px; }
+
+/* Type pills */
+.type-pill { font-size: 10px; padding: 1px 7px; border-radius: 4px; font-weight: 500; }
+.type-severity-Critical { background: var(--red-bg); color: var(--red); }
+.type-severity-Major { background: var(--orange-bg); color: var(--orange); }
+.type-severity-Minor { background: var(--blue-bg); color: var(--blue); }
+.type-severity-Cosmetic { background: var(--purple-bg); color: var(--purple); }
+
+/* Report */
+.report-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px; }
+.report-header h2 { font-size: 18px; font-weight: 600; }
+.report-total { font-size: 13px; color: var(--text-muted); background: var(--bg-input); padding: 4px 12px; border-radius: 20px; }
+.report-period-btns { display: flex; gap: 6px; margin-bottom: 20px; }
+.report-period-btn {
+  padding: 6px 16px; border-radius: 20px; font-size: 13px; font-weight: 500;
+  border: 1px solid var(--border); background: var(--bg-input); color: var(--text-secondary);
+  cursor: pointer; transition: all var(--transition);
+}
+.report-period-btn:hover { border-color: var(--accent); color: var(--text-primary); }
+.report-period-btn.active { background: var(--accent); color: white; border-color: var(--accent); }
+.report-cluster { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px 18px; margin-bottom: 12px; }
+.report-cluster-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 8px; cursor: pointer; }
+.report-cluster-title { font-size: 15px; font-weight: 600; }
+.report-cluster-badges { display: flex; gap: 6px; flex-shrink: 0; }
+.report-badge { font-size: 11px; padding: 2px 8px; border-radius: 4px; font-weight: 500; }
+.report-badge-critical { background: var(--red-bg); color: var(--red); }
+.report-badge-major { background: var(--orange-bg); color: var(--orange); }
+.report-badge-minor { background: var(--blue-bg); color: var(--blue); }
+.report-summary { font-size: 13px; color: var(--text-secondary); line-height: 1.6; margin-bottom: 10px; }
+.report-incidents { display: none; margin-top: 10px; border-top: 1px solid var(--border); padding-top: 10px; }
+.report-incidents.open { display: block; }
+.report-incident-item { display: flex; justify-content: space-between; font-size: 13px; padding: 6px 0; color: var(--text-secondary); }
+.report-incident-title { flex: 1; }
+.report-incident-sev { font-weight: 500; margin-left: 12px; }
+.report-expand { font-size: 12px; color: var(--accent); cursor: pointer; user-select: none; }
+.report-empty { color: var(--text-muted); text-align: center; padding: 48px 20px; font-size: 14px; }
+
+/* Animations */
+@keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+.fade-in { animation: fadeIn 0.25s ease-out; }
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
 </style>
 </head>
 <body>
 
-<!-- ── Header ── -->
 <header class="app-header">
   <div class="header-inner">
-    <div class="logo">
-      <div class="logo-icon">AI</div>
-      Incident Classifier
-    </div>
+    <div class="logo"><div class="logo-icon">AI</div> Incident Classifier</div>
     <div class="health-badge" id="healthBadge">
       <span class="health-dot" id="healthDot"></span>
       <span id="healthText">Checking…</span>
@@ -637,21 +221,18 @@
   </div>
 </header>
 
-<!-- ── Main ── -->
 <main class="app-main">
-
   <div class="tabs">
     <span class="tab active" data-tab="classify">Classify</span>
     <span class="tab" data-tab="reports">Reports</span>
   </div>
 
-  <!-- ── Classify Tab ── -->
+  <!-- Classify Tab -->
   <div class="tab-content active" id="tab-classify">
     <div class="hero">
       <h1>Classify Incidents</h1>
       <p>Paste an incident title and description — the AI will classify it by system, severity, urgency, and more.</p>
     </div>
-
     <div class="columns">
       <div>
         <div class="card">
@@ -696,15 +277,13 @@
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-9-9"/><path d="M12 3v6h6"/></svg>
             </button>
           </div>
-          <div id="historyArea">
-            <div class="history-empty fade-in">No incidents classified yet.</div>
-          </div>
+          <div id="historyArea"><div class="history-empty fade-in">No incidents classified yet.</div></div>
         </div>
       </div>
     </div>
   </div>
 
-  <!-- ── Reports Tab ── -->
+  <!-- Reports Tab -->
   <div class="tab-content" id="tab-reports">
     <div class="report-header">
       <h2>Incident Reports</h2>
@@ -714,24 +293,22 @@
       <span class="report-period-btn active" data-period="daily">Today</span>
       <span class="report-period-btn" data-period="weekly">This Week</span>
     </div>
-    <div id="reportArea">
-      <div class="report-empty">Select a period to generate a report.</div>
-    </div>
+    <div id="reportArea"><div class="report-empty">Select a period to generate a report.</div></div>
   </div>
-
 </main>
 
 <script>
-// ── Config ──
-const API_BASE = window.location.origin + '/api';
-let historyCache = [];
+const API = window.location.origin + '/api';
 
-// ── Health Check ──
+// ── Helpers ──
+const esc = s => typeof s === 'string' ? document.createElement('div').appendChild(document.createTextNode(s)).parentNode.innerHTML : s;
+
+// ── Health ──
 async function checkHealth() {
   const dot = document.getElementById('healthDot');
   const text = document.getElementById('healthText');
   try {
-    const r = await fetch(API_BASE + '/health');
+    const r = await fetch(API + '/health');
     const d = await r.json();
     dot.className = 'health-dot ok';
     text.textContent = `OK · ${d.model}`;
@@ -744,7 +321,7 @@ async function checkHealth() {
 // ── Classify ──
 async function classify() {
   const title = document.getElementById('title').value.trim();
-  const description = document.getElementById('description').value.trim();
+  const desc = document.getElementById('description').value.trim();
   if (!title) { showError('Please enter an incident title.'); return; }
 
   const btn = document.getElementById('classifyBtn');
@@ -752,42 +329,33 @@ async function classify() {
   btn.innerHTML = '<span class="spinner"></span> Classifying…';
 
   try {
-    const r = await fetch(API_BASE + '/classify', {
+    const r = await fetch(API + '/classify', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title, description }),
+      body: JSON.stringify({ title, description: desc }),
     });
-    if (!r.ok) {
-      const err = await r.json().catch(() => ({ detail: `HTTP ${r.status}` }));
-      throw new Error(err.detail || `Server error (${r.status})`);
-    }
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || `HTTP ${r.status}`);
     const data = await r.json();
     renderResult(data);
     addToHistory(data);
-    await loadHistory();
+    loadHistory();
   } catch (e) {
     showError(e.message);
   } finally {
     btn.disabled = false;
-    btn.innerHTML = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20V10"/><path d="M18 20V4"/><path d="M6 20v-4"/></svg>\n            Classify';
+    btn.innerHTML = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20V10"/><path d="M18 20V4"/><path d="M6 20v-4"/></svg> Classify';
   }
 }
 
 function renderResult(data) {
   const c = data.classification;
   const area = document.getElementById('resultArea');
-
-  const severityClass = 'type-severity-' + c.severity.replace(/ /g, '');
+  const sevClass = 'type-severity-' + c.severity.replace(/ /g, '');
   const confClass = 'tag-confidence-' + c.confidence;
-  const confColor = c.confidence === 'high' ? '#22c55e' : c.confidence === 'medium' ? '#f59e0b' : '#ef4444';
+  const isFallback = c.confidence === 'low' && c.reasoning && c.reasoning.startsWith('Classification failed');
 
-  // Detect fallback result — the backend returns a graceful low-confidence
-  // fallback when the LLM fails persistently. Show a warning banner.
-  const isFallback = c.confidence === 'low' && c.reasoning && c.reasoning.startsWith('Classification failed after 2 attempts');
-  let fallbackBanner = '';
-  if (isFallback) {
-    fallbackBanner = `<div class="result-fallback fade-in">⚠ LLM classification failed — using fallback values. ${esc(c.reasoning)}</div>`;
-  }
+  const fallbackBanner = isFallback ? `<div class="result-fallback fade-in">⚠ Classification failed — using fallback values.</div>` : '';
+  const reasoning = c.reasoning && !isFallback ? `<div class="reasoning-box"><strong>Reasoning</strong><br>${esc(c.reasoning)}</div>` : '';
 
   let relatedHTML = '';
   if (data.related_incidents && data.related_incidents.length > 0) {
@@ -806,19 +374,13 @@ function renderResult(data) {
           </div>
         </div>`;
     }
-    relatedHTML += `</div>`;
+    relatedHTML += '</div>';
   }
-
-  const reasoning = c.reasoning && !isFallback ? `
-    <div class="reasoning-box">
-      <strong>Reasoning</strong><br>${esc(c.reasoning)}
-    </div>` : '';
 
   area.innerHTML = `
     <div class="fade-in">
       ${fallbackBanner}
       <div class="incident-id" style="margin-bottom:12px;">ID: ${esc(data.incident_id || '—')}</div>
-
       <div class="tags-grid">
         <div class="tag-item">
           <span class="tag-label">System</span>
@@ -834,11 +396,11 @@ function renderResult(data) {
         </div>
         <div class="tag-item">
           <span class="tag-label">Severity</span>
-          <span class="tag-value ${severityClass}">${esc(c.severity)}</span>
+          <span class="tag-value ${sevClass}">${esc(c.severity)}</span>
         </div>
         <div class="tag-item">
           <span class="tag-label">Urgency</span>
-          <span class="tag-value" style="color:${confColor};background:rgba(${c.confidence === 'high' ? '34,197,94' : c.confidence === 'medium' ? '245,158,11' : '239,68,68'},0.08)">${esc(c.urgency)}</span>
+          <span class="tag-value ${confClass}">${esc(c.urgency)}</span>
         </div>
         <div class="tag-item">
           <span class="tag-label">Category</span>
@@ -849,72 +411,42 @@ function renderResult(data) {
           <span class="tag-value ${confClass}">${esc(c.confidence)}</span>
         </div>
       </div>
-
       ${reasoning}
       ${relatedHTML}
     </div>`;
 }
 
 function showError(msg) {
-  const area = document.getElementById('resultArea');
-  area.innerHTML = `<div class="result-error fade-in">${esc(msg)}</div>`;
+  document.getElementById('resultArea').innerHTML = `<div class="result-error fade-in">${esc(msg)}</div>`;
 }
 
 // ── History ──
-async function loadHistory() {
+function loadHistory() {
+  const stored = localStorage.getItem('incident_history');
+  const items = stored ? JSON.parse(stored) : [];
   const area = document.getElementById('historyArea');
-  area.innerHTML = '<div class="history-loading">Loading history…</div>';
-  try {
-    const stored = localStorage.getItem('incident_history');
-    const localHistory = stored ? JSON.parse(stored) : [];
-    renderHistory(localHistory);
-  } catch {
-    renderHistory([]);
-  }
-}
-
-function renderHistory(items) {
-  const area = document.getElementById('historyArea');
-  if (!items || items.length === 0) {
+  if (items.length === 0) {
     area.innerHTML = '<div class="history-empty fade-in">No incidents classified yet.</div>';
     return;
   }
-  area.innerHTML = items.slice().reverse().map((item, i) => {
-    const sclass = 'type-severity-' + item.severity.replace(/ /g, '');
-    const time = new Date(item.timestamp).toLocaleTimeString();
-    return `<div class="history-item fade-in" data-idx="${items.length - 1 - i}">
+  area.innerHTML = items.slice().reverse().map(item =>
+    `<div class="history-item fade-in">
       <div class="history-item-title">${esc(item.title)}</div>
       <div class="history-item-meta">
         <div class="history-item-types">
-          <span class="type-pill ${sclass}">${esc(item.severity)}</span>
+          <span class="type-pill type-severity-${item.severity.replace(/ /g, '')}">${esc(item.severity)}</span>
           <span class="type-pill" style="background:var(--blue-bg);color:var(--blue)">${esc(item.type)}</span>
         </div>
-        <span class="history-item-time">${time}</span>
+        <span class="history-item-time">${new Date(item.timestamp).toLocaleTimeString()}</span>
       </div>
-    </div>`;
-  }).join('');
+    </div>`
+  ).join('');
 }
-
 function addToHistory(data) {
   const stored = localStorage.getItem('incident_history');
   const history = stored ? JSON.parse(stored) : [];
-  history.push({
-    id: data.incident_id,
-    title: data.incident_title,
-    severity: data.classification.severity,
-    type: data.classification.incident_type,
-    system: data.classification.affected_system,
-    timestamp: new Date().toISOString(),
-  });
+  history.push({ id: data.incident_id, title: data.incident_title, severity: data.classification.severity, type: data.classification.incident_type, system: data.classification.affected_system, timestamp: new Date().toISOString() });
   localStorage.setItem('incident_history', JSON.stringify(history));
-}
-
-// ── Helpers ──
-function esc(s) {
-  if (typeof s !== 'string') return s;
-  const d = document.createElement('div');
-  d.textContent = s;
-  return d.innerHTML;
 }
 
 // ── Reports ──
@@ -922,9 +454,8 @@ async function loadReport(period) {
   const area = document.getElementById('reportArea');
   area.innerHTML = '<div class="history-loading">Loading report…</div>';
   try {
-    const r = await fetch(API_BASE + '/reports/' + period);
-    const d = await r.json();
-    renderReport(d);
+    const r = await fetch(API + '/reports/' + period);
+    renderReport(await r.json());
   } catch (e) {
     area.innerHTML = `<div class="result-error fade-in">Failed to load report: ${esc(e.message)}</div>`;
   }
@@ -932,8 +463,7 @@ async function loadReport(period) {
 
 function renderReport(data) {
   const area = document.getElementById('reportArea');
-  const total = document.getElementById('reportTotal');
-  total.textContent = `${data.total_incidents} incident${data.total_incidents !== 1 ? 's' : ''}`;
+  document.getElementById('reportTotal').textContent = `${data.total_incidents} incident${data.total_incidents !== 1 ? 's' : ''}`;
 
   if (data.clusters.length === 0) {
     area.innerHTML = '<div class="report-empty fade-in">No incidents in this period.</div>';
@@ -958,9 +488,7 @@ function renderReport(data) {
       </div>
       <div class="report-summary">${esc(cl.summary)}</div>
       <span class="report-expand" onclick="toggleIncidents(${ci})">Show details ▾</span>
-      <div class="report-incidents" id="report-incidents-${ci}">
-        ${incidents}
-      </div>
+      <div class="report-incidents" id="report-incidents-${ci}">${incidents}</div>
     </div>`;
   }).join('');
 }
@@ -968,29 +496,16 @@ function renderReport(data) {
 function toggleIncidents(idx) {
   const el = document.getElementById('report-incidents-' + idx);
   el.classList.toggle('open');
-  const expander = el.previousElementSibling;
-  if (el.classList.contains('open')) {
-    expander.textContent = 'Hide details ▴';
-  } else {
-    expander.textContent = 'Show details ▾';
-  }
+  el.previousElementSibling.textContent = el.classList.contains('open') ? 'Hide details ▴' : 'Show details ▾';
 }
 
-// ── Tab switching ──
+// ── Tabs ──
 function switchTab(name) {
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
   document.querySelectorAll('.tab-content').forEach(t => t.classList.toggle('active', t.id === 'tab-' + name));
 }
 
-// ── Presets ──
-document.querySelectorAll('.preset-chip').forEach(chip => {
-  chip.addEventListener('click', () => {
-    document.getElementById('title').value = chip.dataset.title;
-    document.getElementById('description').value = chip.dataset.desc;
-  });
-});
-
-// ── Buttons ──
+// ── Event listeners ──
 document.getElementById('classifyBtn').addEventListener('click', classify);
 document.getElementById('clearBtn').addEventListener('click', () => {
   document.getElementById('title').value = '';
@@ -1002,13 +517,13 @@ document.getElementById('clearBtn').addEventListener('click', () => {
     </div>`;
 });
 document.getElementById('refreshHistory').addEventListener('click', loadHistory);
-
-// ── Tab events ──
-document.querySelectorAll('.tab').forEach(t => {
-  t.addEventListener('click', () => switchTab(t.dataset.tab));
+document.querySelectorAll('.preset-chip').forEach(chip => {
+  chip.addEventListener('click', () => {
+    document.getElementById('title').value = chip.dataset.title;
+    document.getElementById('description').value = chip.dataset.desc;
+  });
 });
-
-// ── Report period events ──
+document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => switchTab(t.dataset.tab)));
 document.querySelectorAll('.report-period-btn').forEach(btn => {
   btn.addEventListener('click', () => {
     document.querySelectorAll('.report-period-btn').forEach(b => b.classList.remove('active'));
@@ -1016,20 +531,13 @@ document.querySelectorAll('.report-period-btn').forEach(btn => {
     loadReport(btn.dataset.period);
   });
 });
-// Load initial report
-loadReport('daily');
-
-// ── Keyboard shortcut ──
 document.addEventListener('keydown', e => {
-  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-    e.preventDefault();
-    classify();
-  }
+  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); classify(); }
 });
 
-// ── Init ──
 checkHealth();
 loadHistory();
+loadReport('daily');
 </script>
 </body>
 </html>
