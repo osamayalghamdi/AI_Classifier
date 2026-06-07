@@ -46,6 +46,9 @@ services:
   # ── OCR Service (PaddleOCR) ─────────────────────────────────────
   ocr:
     build: ocr
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
     ports:
       - "8001:8001"
     restart: unless-stopped

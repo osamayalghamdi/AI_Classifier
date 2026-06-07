@@ -2,19 +2,19 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# System deps: poppler for PDF page→image, build tools for paddle
+# System deps: poppler for PDF page→image
 RUN apt-get update -qq && \
     apt-get install -y -qq --no-install-recommends \
         poppler-utils \
-        build-essential \
         libgl1 \
         libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
-# Python deps
+# Python deps — EasyOCR + GPU support
 RUN pip install --no-cache-dir \
-        paddlepaddle==3.0.0 \
-        paddleocr>=2.9 \
+        torch \
+        torchvision \
+        easyocr \
         pdf2image \
         Pillow \
         fastapi \
