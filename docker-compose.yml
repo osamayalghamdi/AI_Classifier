@@ -40,6 +40,14 @@ services:
       - "8082:80"
     depends_on:
       - api
+      - ocr
+    restart: unless-stopped
+
+  # ── OCR Service (PaddleOCR) ─────────────────────────────────────
+  ocr:
+    build: ocr
+    ports:
+      - "8001:8001"
     restart: unless-stopped
 
 volumes:

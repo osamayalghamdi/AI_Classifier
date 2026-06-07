@@ -50,7 +50,7 @@ def health():
 # ── Classify ─────────────────────────────────────────────────────────
 
 
-def _classify_and_store(title: str, description: str) -> ClassifyResponse:
+def _classify_and_store(title: str, description: str, extracted_text: str = "") -> ClassifyResponse:
     """Classify, persist, link to cluster (via centroid or per-incident), return."""
     try:
         result = classify(title, description)
@@ -76,7 +76,7 @@ def _classify_and_store(title: str, description: str) -> ClassifyResponse:
 
     # ── Step 3: Persist ───────────────────────────────────────────
     incident_id = store.generate_id()
-    store.save_incident(incident_id, title, description, result)
+    store.save_incident(incident_id, title, description, result, extracted_text)
 
     # ── Step 4: Link to cluster ───────────────────────────────────
     if not cluster_id:
@@ -125,7 +125,7 @@ def _classify_and_store(title: str, description: str) -> ClassifyResponse:
 
 @app.post("/classify", response_model=ClassifyResponse)
 def classify_incident(req: ClassifyRequest):
-    return _classify_and_store(req.title, req.description)
+    return _classify_and_store(req.title, req.description, req.extracted_text)
 
 
 @app.get("/classify", response_model=ClassifyResponse)

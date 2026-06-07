@@ -20,6 +20,10 @@ from .schemas import (
 class ClassifyRequest(BaseModel):
     title: str = Field(description="Short incident title (subject line)")
     description: str = Field(description="Full incident description or body")
+    extracted_text: str = Field(
+        default="",
+        description="OCR-extracted text from screenshot/PDF (optional, improves similarity)",
+    )
 
 
 # ── Response ──

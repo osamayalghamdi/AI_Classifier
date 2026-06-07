@@ -4,7 +4,7 @@ Stores every classified incident along with its text embedding so
 incoming incidents can be matched against past ones by meaning
 rather than exact string matching.
 
-Uses ``sentence-transformers`` for embeddings and cosine similarity
+Uses sentence-transformers for embeddings and cosine similarity
 for comparison. Fully local — no network calls during inference.
 """
 
@@ -22,9 +22,6 @@ from .config import settings
 from .models import ClassificationResult
 
 
-# ── Public data class ──────────────────────────────────────────────────
-
-
 @dataclass
 class SimilarMatch:
     """One past incident that scored above the similarity threshold."""
@@ -34,19 +31,8 @@ class SimilarMatch:
     classification: ClassificationResult
 
 
-# ── Store ──────────────────────────────────────────────────────────────
-
-
 class IncidentStore:
-    """Thread-safe store that embeds text and finds similar past incidents.
-
-    Usage
-    -----
-    >>> store = IncidentStore()
-    >>> store.setup()
-    >>> matches = store.find_similar("checkout slow for EU users")
-    >>> store.save_incident("…", "Checkout slow", "desc", ClassificationResult(...))
-    """
+    """Thread-safe store that embeds text, finds similar incidents, and manages clusters."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -57,26 +43,18 @@ class IncidentStore:
     # ── Lifecycle ──────────────────────────────────────────────────
 
     def setup(self) -> None:
-        """Initialise the embedding model and SQLite database.
-
-        Safe to call multiple times — subsequent calls are a no-op.
-        On failure (e.g. disk full, model won't load), sets ``ready``
-        to False so the caller can degrade gracefully.
-        """
         if self._ready:
             return
 
         # Embedding model
         try:
             self._model = SentenceTransformer(
-                settings.embedding_model_name,
-                device="cpu",
+                settings.embedding_model_name, device="cpu",
             )
         except Exception as exc:
             import logging
             logging.getLogger(__name__).warning(
-                "Failed to load embedding model '%s': %s. "
-                "Similarity search disabled.",
+                "Failed to load embedding model '%s': %s. Similarity search disabled.",
                 settings.embedding_model_name, exc,
             )
             self._model = None
@@ -84,66 +62,51 @@ class IncidentStore:
         # SQLite
         try:
             self._db = sqlite3.connect(
-                settings.db_path,
-                check_same_thread=False,   # we use our own lock
+                settings.db_path, check_same_thread=False,
             )
             self._db.execute("PRAGMA journal_mode=WAL")
             self._db.execute("PRAGMA synchronous=NORMAL")
-            self._db.execute(
-                """
-                CREATE TABLE IF NOT EXISTS incidents (
-                    id            TEXT PRIMARY KEY,
-                    title         TEXT NOT NULL,
-                    description   TEXT NOT NULL DEFAULT '',
-                    embedding     BLOB,              -- numpy float32 raw bytes
-                    classification_json TEXT NOT NULL,
-                    created_at    TEXT NOT NULL
-                )
-                """)
-            self._db.execute(
-                """
-                CREATE TABLE IF NOT EXISTS clusters (
-                    id            TEXT PRIMARY KEY,
-                    summary       TEXT NOT NULL DEFAULT '',
-                    system        TEXT NOT NULL,
-                    service       TEXT NOT NULL,
-                    worst_severity TEXT NOT NULL,
-                    centroid_embedding BLOB,   -- embedding of the summary text
-                    created_at    TEXT NOT NULL,
-                    updated_at    TEXT NOT NULL
-                )
-                """
-            )
-            self._db.execute(
-                """
-                CREATE TABLE IF NOT EXISTS cluster_members (
-                    cluster_id  TEXT NOT NULL,
-                    incident_id TEXT NOT NULL,
-                    similarity  REAL NOT NULL,
-                    PRIMARY KEY (cluster_id, incident_id),
-                    FOREIGN KEY (cluster_id) REFERENCES clusters(id),
-                    FOREIGN KEY (incident_id) REFERENCES incidents(id)
-                )
-                """
-            )
+            self._db.execute("""CREATE TABLE IF NOT EXISTS incidents (
+                id TEXT PRIMARY KEY, title TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                extracted_text TEXT NOT NULL DEFAULT '',
+                embedding BLOB,
+                classification_json TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )""")
+            self._db.execute("""CREATE TABLE IF NOT EXISTS clusters (
+                id TEXT PRIMARY KEY, summary TEXT NOT NULL DEFAULT '',
+                system TEXT NOT NULL, service TEXT NOT NULL,
+                worst_severity TEXT NOT NULL,
+                centroid_embedding BLOB,
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            )""")
+            self._db.execute("""CREATE TABLE IF NOT EXISTS cluster_members (
+                cluster_id TEXT NOT NULL, incident_id TEXT NOT NULL,
+                similarity REAL NOT NULL,
+                PRIMARY KEY (cluster_id, incident_id),
+                FOREIGN KEY (cluster_id) REFERENCES clusters(id),
+                FOREIGN KEY (incident_id) REFERENCES incidents(id)
+            )""")
         except Exception as exc:
             import logging
             logging.getLogger(__name__).warning(
-                "Failed to open SQLite at '%s': %s. "
-                "Incident persistence disabled.",
+                "Failed to open SQLite at '%s': %s. Incident persistence disabled.",
                 settings.db_path, exc,
             )
             self._db = None
 
         self._ready = True
 
-        # ── Migrate existing tables ─────────────────────────────────────
-        # Add centroid_embedding column to clusters if missing
-        if self._db is not None:
+        # Migrate: add columns that might be missing from older schemas
+        for col_sql in [
+            "ALTER TABLE clusters ADD COLUMN centroid_embedding BLOB",
+            "ALTER TABLE incidents ADD COLUMN extracted_text TEXT NOT NULL DEFAULT ''",
+        ]:
             try:
-                self._db.execute("ALTER TABLE clusters ADD COLUMN centroid_embedding BLOB")
+                self._db.execute(col_sql)
             except Exception:
-                pass  # column already exists
+                pass
 
         # Re-embed existing summaries as centroids
         if self._model is not None and self._db is not None:
@@ -172,7 +135,6 @@ class IncidentStore:
     # ── Embedding ──────────────────────────────────────────────────
 
     def _embed(self, text: str) -> np.ndarray | None:
-        """Return a normalised float32 embedding vector or None."""
         if self._model is None:
             return None
         vec = self._model.encode(text, normalize_embeddings=True)
@@ -180,80 +142,45 @@ class IncidentStore:
 
     @staticmethod
     def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
-        """Cosine similarity between two normalised vectors.
-
-        Since both are unit vectors, this is just the dot product.
-        """
         return float(np.dot(a, b))
 
-    # ── Public API ─────────────────────────────────────────────────
-
     @staticmethod
-    def _build_embedding_text(title: str, description: str, classification: "ClassificationResult | None" = None) -> str:
-        """Build text to embed — includes the classification fingerprint when available.
-
-        Folding the LLM's structured classification into the embedding string
-        anchors semantically similar incidents together even when the raw wording
-        differs (e.g. "Stripe errors" → "Payment gateway down" both map to
-        ``Payment Gateway / Checkout / Degradation / Performance``).
-        """
-        text = f"{title} {description}".strip()
+    def _build_embedding_text(
+        title: str, description: str, extracted_text: str = "",
+        classification: ClassificationResult | None = None,
+    ) -> str:
+        """Build text to embed — includes OCR text + classification fingerprint."""
+        parts = [title, description]
+        if extracted_text:
+            parts.append(f"OCR: {extracted_text}")
+        text = " | ".join(p for p in parts if p).strip()
         if classification is not None:
-            text = (
-                f"{text} | Classified as: "
-                f"{classification.affected_system} / "
-                f"{classification.service} / "
-                f"{classification.incident_type} / "
+            text += (
+                f" | Classified as: {classification.affected_system} / "
+                f"{classification.service} / {classification.incident_type} / "
                 f"{classification.category}"
             )
         return text
 
+    # ── Similarity search ──────────────────────────────────────────
+
     def find_similar(
-        self,
-        text: str,
-        *,
-        threshold: float | None = None,
-        top_k: int = 5,
-        classification: "ClassificationResult | None" = None,
+        self, text: str, *,
+        threshold: float | None = None, top_k: int = 5,
+        classification: ClassificationResult | None = None,
     ) -> list[SimilarMatch]:
-        """Search past incidents semantically similar to *text*.
-
-        Parameters
-        ----------
-        text:
-            The text to compare (typically title + description).
-        threshold:
-            Minimum similarity score (0‑1). Falls back to
-            ``settings.similarity_threshold`` when not provided.
-        top_k:
-            Maximum number of matches to return.
-        classification:
-            The current incident's classification result — when provided,
-            the fingerprint is folded into the query embedding so incidents
-            classified into the same system/service/type/category cluster
-            closer together regardless of wording differences in the title/description.
-
-        Returns
-        -------
-        list[SimilarMatch]
-            Matches sorted by similarity descending — closest first.
-        """
         if not self._ready or self._db is None or self._model is None:
             return []
-
         threshold = threshold if threshold is not None else settings.similarity_threshold
-        query_text = self._build_embedding_text(text, "", classification)
+        query_text = self._build_embedding_text(text, "", classification=classification)
         query_vec = self._embed(query_text)
         if query_vec is None:
             return []
-
         with self._lock:
             rows = self._db.execute(
-                "SELECT id, title, embedding, classification_json "
-                "FROM incidents WHERE embedding IS NOT NULL"
+                "SELECT id, title, embedding, classification_json FROM incidents WHERE embedding IS NOT NULL"
             ).fetchall()
-
-        results: list[tuple[float, str, str, ClassificationResult]] = []
+        results = []
         for row_id, row_title, blob, class_json in rows:
             if blob is None:
                 continue
@@ -261,52 +188,61 @@ class IncidentStore:
             score = self._cosine_similarity(query_vec, stored_vec)
             if score >= threshold:
                 try:
-                    class_data = json.loads(class_json)
-                    cls_result = ClassificationResult.model_validate(class_data)
+                    cls_result = ClassificationResult.model_validate(json.loads(class_json))
                 except Exception:
-                    continue  # skip corrupted records
+                    continue
                 results.append((score, row_id, row_title, cls_result))
-
         results.sort(key=lambda x: x[0], reverse=True)
         return [
             SimilarMatch(id=rid, title=rtitle, similarity=score, classification=rcls)
             for score, rid, rtitle, rcls in results[:top_k]
         ]
 
+    def find_cluster_by_similarity(
+        self, text: str, *,
+        classification: ClassificationResult | None = None,
+    ) -> str | None:
+        """Check if the incident matches an existing cluster centroid (O(clusters))."""
+        if not self._ready or self._db is None or self._model is None:
+            return None
+        query_text = self._build_embedding_text(text, "", classification=classification)
+        query_vec = self._embed(query_text)
+        if query_vec is None:
+            return None
+        threshold = settings.similarity_threshold
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT id, centroid_embedding, system FROM clusters WHERE centroid_embedding IS NOT NULL"
+            ).fetchall()
+        best = None
+        for cid, blob, system in rows:
+            if classification and system != classification.affected_system:
+                continue
+            centroid = np.frombuffer(blob, dtype=np.float32)
+            score = self._cosine_similarity(query_vec, centroid)
+            if score >= threshold:
+                if best is None or score > best[0]:
+                    best = (score, cid)
+        return best[1] if best else None
+
+    # ── Persist ────────────────────────────────────────────────────
+
     def save_incident(
-        self,
-        incident_id: str,
-        title: str,
-        description: str,
-        classification: ClassificationResult,
+        self, incident_id: str, title: str, description: str,
+        classification: ClassificationResult, extracted_text: str = "",
     ) -> None:
-        """Persist a classified incident with its embedding.
-
-        The embedding text includes the classification fingerprint so that
-        future similarity searches are anchored on structured fields
-        (affected_system, service, incident_type, category) in addition to
-        raw wording — this makes "Stripe errors" match "Payment gateway down"
-        when both share the same classification fingerprint.
-
-        Thread-safe — uses an internal lock for the write.
-        """
         if not self._ready or self._db is None:
             return
-
-        text = self._build_embedding_text(title, description, classification)
+        text = self._build_embedding_text(title, description, extracted_text, classification)
         embedding = self._embed(text)
-
         with self._lock:
             self._db.execute(
-                """
-                INSERT OR REPLACE INTO incidents
-                    (id, title, description, embedding, classification_json, created_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
+                "INSERT OR REPLACE INTO incidents "
+                "(id, title, description, extracted_text, embedding, classification_json, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (
                     incident_id,
-                    title,
-                    description,
+                    title, description, extracted_text,
                     embedding.tobytes() if embedding is not None else None,
                     classification.model_dump_json(),
                     datetime.now(timezone.utc).isoformat(),
@@ -315,35 +251,16 @@ class IncidentStore:
             self._db.commit()
 
     def generate_id(self) -> str:
-        """Returns a short unique ID for a new incident."""
         return uuid.uuid4().hex[:12]
 
-    # ── Reporting (cluster management) ────────────────────────────
+    # ── Cluster management ─────────────────────────────────────────
 
     def link_to_cluster(
-        self,
-        incident_id: str,
-        classification: ClassificationResult,
-        matches: list,
+        self, incident_id: str, classification: ClassificationResult, matches: list,
     ) -> str | None:
-        """Find or create a cluster for this incident.
-
-        Only matches that share the same ``affected_system`` are considered
-        for clustering — this prevents cross-system chain-linking (e.g. a
-        VPN incident getting pulled into a Payment Gateway cluster).
-
-        If the incident has same-system matches above threshold, it joins an
-        existing cluster (or starts a new one with those matches). The
-        cluster summary is then generated by the LLM once on first merge.
-
-        Returns the cluster ID, or None if no clustering is possible.
-        """
         if not self._ready or self._db is None:
             return None
-
         now = datetime.now(timezone.utc).isoformat()
-
-        # Only consider matches from the same affected system
         same_system = [
             m for m in matches
             if m.classification.affected_system == classification.affected_system
@@ -351,15 +268,11 @@ class IncidentStore:
         match_ids = [m.id for m in same_system]
         if not match_ids:
             return None
-
-        # Check if any matched incident already belongs to a cluster
         placeholders = ",".join("?" for _ in match_ids)
         existing = self._db.execute(
-            f"SELECT DISTINCT cluster_id FROM cluster_members "
-            f"WHERE incident_id IN ({placeholders})",
+            f"SELECT DISTINCT cluster_id FROM cluster_members WHERE incident_id IN ({placeholders})",
             match_ids,
         ).fetchall()
-
         if existing:
             cluster_id = existing[0][0]
         else:
@@ -374,75 +287,20 @@ class IncidentStore:
                     "VALUES (?, '', ?, ?, ?, ?, ?)",
                     (cluster_id, classification.affected_system, classification.service, sev, now, now),
                 )
-                # Add all matched incidents to the new cluster
                 for m in matches:
                     self._db.execute(
                         "INSERT OR IGNORE INTO cluster_members (cluster_id, incident_id, similarity) VALUES (?, ?, ?)",
                         (cluster_id, m.id, round(m.similarity, 4)),
                     )
-
-        # Add this incident to the cluster
         with self._lock:
             self._db.execute(
                 "INSERT OR IGNORE INTO cluster_members (cluster_id, incident_id, similarity) VALUES (?, ?, 1.0)",
                 (cluster_id, incident_id),
             )
-            self._db.execute(
-                "UPDATE clusters SET updated_at = ? WHERE id = ?",
-                (now, cluster_id),
-            )
+            self._db.execute("UPDATE clusters SET updated_at = ? WHERE id = ?", (now, cluster_id))
         return cluster_id
 
-    def find_cluster_by_similarity(
-        self,
-        text: str,
-        *,
-        classification: "ClassificationResult | None" = None,
-    ) -> str | None:
-        """Check if the incident matches an existing cluster centroid.
-
-        Instead of comparing against every incident, this compares the
-        query embedding against each cluster's centroid embedding (the
-        summary text). If a centroid matches above threshold, the incident
-        belongs to that cluster — no need to scan individual members.
-
-        Returns the cluster ID of the best match, or None.
-        """
-        if not self._ready or self._db is None or self._model is None:
-            return None
-
-        query_text = self._build_embedding_text(text, "", classification)
-        query_vec = self._embed(query_text)
-        if query_vec is None:
-            return None
-
-        threshold = settings.similarity_threshold
-        with self._lock:
-            rows = self._db.execute(
-                "SELECT id, centroid_embedding, system FROM clusters "
-                "WHERE centroid_embedding IS NOT NULL"
-            ).fetchall()
-
-        best: tuple[float, str] | None = None
-        for cid, blob, system in rows:
-            # Only consider centroids from the same affected system
-            if classification and system != classification.affected_system:
-                continue
-            centroid = np.frombuffer(blob, dtype=np.float32)
-            score = self._cosine_similarity(query_vec, centroid)
-            if score >= threshold:
-                if best is None or score > best[0]:
-                    best = (score, cid)
-
-        return best[1] if best else None
-
     def update_cluster_summary(self, cluster_id: str, summary: str) -> None:
-        """Store the LLM-generated summary and its centroid embedding.
-
-        The centroid embedding becomes the cluster's semantic anchor —
-        future incidents compare against this instead of scanning all
-        members.
-        """
         if not self._ready or self._db is None:
             return
         centroid = self._embed(summary)
@@ -453,71 +311,42 @@ class IncidentStore:
             )
             self._db.commit()
 
+    # ── Reporting ──────────────────────────────────────────────────
+
     def get_report(self, *, since: str | None = None, until: str | None = None) -> list[dict]:
-        """Fetch clusters active in a time window, with their incidents.
-
-        Each cluster dict includes summary, system, service, worst_severity,
-        count, and an incidents list (id, title, severity, created_at).
-
-        Returns clusters sorted by count descending — most frequent first.
-        """
         if not self._ready or self._db is None:
             return []
-
         clauses = ["1=1"]
-        params: list[str] = []
+        params = []
         if since:
             clauses.append("c.updated_at >= ?")
             params.append(since)
         if until:
             clauses.append("c.updated_at < ?")
             params.append(until)
-
         where = " AND ".join(clauses)
-        rows = self._db.execute(
-            f"""
+        rows = self._db.execute(f"""
             SELECT c.id, c.summary, c.system, c.service, c.worst_severity,
                    COUNT(cm.incident_id) as cnt
-            FROM clusters c
-            JOIN cluster_members cm ON cm.cluster_id = c.id
-            WHERE {where}
-            GROUP BY c.id
-            ORDER BY cnt DESC
-            """,
-            params,
-        ).fetchall()
-
+            FROM clusters c JOIN cluster_members cm ON cm.cluster_id = c.id
+            WHERE {where} GROUP BY c.id ORDER BY cnt DESC
+        """, params).fetchall()
         clusters = []
-        for row in rows:
-            cid, summary, system, service, worst, cnt = row
-            incidents = self._db.execute(
-                """
+        for cid, summary, system, service, worst, cnt in rows:
+            incidents = self._db.execute("""
                 SELECT i.id, i.title, i.classification_json, i.created_at
-                FROM incidents i
-                JOIN cluster_members cm ON cm.incident_id = i.id
-                WHERE cm.cluster_id = ?
-                ORDER BY i.created_at
-                """,
-                (cid,),
-            ).fetchall()
+                FROM incidents i JOIN cluster_members cm ON cm.incident_id = i.id
+                WHERE cm.cluster_id = ? ORDER BY i.created_at
+            """, (cid,)).fetchall()
             incident_list = []
             for inc_id, inc_title, class_json, created_at in incidents:
                 try:
                     sev = json.loads(class_json).get("severity", "Minor")
                 except Exception:
                     sev = "Minor"
-                incident_list.append({
-                    "id": inc_id,
-                    "title": inc_title,
-                    "severity": sev,
-                    "created_at": created_at,
-                })
+                incident_list.append({"id": inc_id, "title": inc_title, "severity": sev, "created_at": created_at})
             clusters.append({
-                "summary": summary,
-                "affected_system": system,
-                "affected_service": service,
-                "count": cnt,
-                "worst_severity": worst,
-                "incidents": incident_list,
+                "summary": summary, "affected_system": system, "affected_service": service,
+                "count": cnt, "worst_severity": worst, "incidents": incident_list,
             })
         return clusters
