@@ -1,11 +1,4 @@
-"""LLM-based incident classifier.
-
-Builds a prompt from the incident payload + the predefined taxonomies,
-then asks the LLM to return a structured JSON classification.
-
-Switching providers / models is a one-line config change — no code to
-touch.
-"""
+"""LLM-based incident classifier — provider-agnostic via LiteLLM."""
 
 import json
 
@@ -23,10 +16,7 @@ from .schemas import (
 )
 
 
-# ── Few‑shot examples ────────────────────────────────────────────────
-# Small models benefit heavily from concrete examples. These cover the
-# most common incident patterns so the model has a strong reference.
-
+# ── Few-shot examples ─────────────────────────────────────────────────
 
 FEW_SHOT_EXAMPLES = [
     {
@@ -49,7 +39,7 @@ FEW_SHOT_EXAMPLES = [
     {
         "title": "VPN tunnel to branch office flapping",
         "description": (
-            "Site‑to‑site VPN between HQ and Dubai office drops and "
+            "Site-to-site VPN between HQ and Dubai office drops and "
             "reconnects every 5 minutes. Affects 50 users."
         ),
         "output": {
@@ -117,19 +107,17 @@ FEW_SHOT_EXAMPLES = [
 ]
 
 
-# ── Prompt template ──────────────────────────────────────────────────
+# ── Prompt builders ───────────────────────────────────────────────────
 
 
 def _build_examples_block() -> str:
-    """Render few‑shot examples as a prompt block."""
     blocks = []
     for i, ex in enumerate(FEW_SHOT_EXAMPLES, 1):
-        output_json = json.dumps(ex["output"], indent=2)
         blocks.append(
             f"Example {i}:\n"
             f'Title: "{ex["title"]}"\n'
             f'Description: "{ex["description"]}"\n'
-            f"Output:\n{output_json}"
+            f"Output:\n{json.dumps(ex['output'], indent=2)}"
         )
     return "\n\n".join(blocks)
 
@@ -140,17 +128,13 @@ def _build_system_prompt() -> str:
     severities = "\n".join(f"  - {s.value}" for s in Severity)
     urgencies = "\n".join(f"  - {u.value}" for u in Urgency)
     categories = "\n".join(f"  - {c.value}" for c in Category)
-    services_by_system = {
-        s.value: svcs for s, svcs in SERVICES_BY_SYSTEM.items()
-    }
-
-    examples_block = _build_examples_block()
+    services_by_system = {s.value: svcs for s, svcs in SERVICES_BY_SYSTEM.items()}
 
     return f"""You classify IT incident tickets into fixed categories.
 
 Return ONLY valid JSON with NO extra text. Each field value must be a SINGLE STRING (not a list).
 
-{examples_block}
+{_build_examples_block()}
 
 ---
 
@@ -193,16 +177,11 @@ def _build_user_prompt(title: str, description: str) -> str:
     return f"## Title\n{title}\n\n## Description\n{description}"
 
 
-# ── Minimal fence-stripper (not a JSON parser) ────────────────────────
+# ── JSON parsing ──────────────────────────────────────────────────────
 
 
 def _extract_json_str(raw: str) -> str:
-    """Strip optional markdown code fences wrapping the JSON payload.
-
-    Does NOT attempt to parse, fix, or coerce the JSON itself — that is
-    left to ``json.loads`` and Pydantic. This is only here because some
-    local models habitually wrap JSON in ```json … ``` fences.
-    """
+    """Strip optional markdown code fences that some local models add."""
     text = raw.strip()
     if text.startswith("```"):
         if text.startswith("```json"):
@@ -214,107 +193,71 @@ def _extract_json_str(raw: str) -> str:
     return text.strip()
 
 
-# ── Classification ───────────────────────────────────────────────────
-
-
 def _parse_and_validate(raw: str) -> ClassificationResult:
-    """Parse fence‑stripped JSON and validate with Pydantic.
-
-    Returns the validated result or raises an exception (either
-    ``json.JSONDecodeError`` or a Pydantic ``ValidationError``).
-    """
-    raw = _extract_json_str(raw)
-    data = json.loads(raw)
-    return ClassificationResult.model_validate(data)
+    return ClassificationResult.model_validate(json.loads(_extract_json_str(raw)))
 
 
-def _build_retry_prompt(user_prompt: str, last_error: str) -> str:
-    """Build a retry hint that includes the actual error message.
+# ── Cached prompt (built once at import time) ─────────────────────────
 
-    This is far more effective than a generic "fix your JSON" because
-    the LLM sees exactly what went wrong.
-    """
-    return (
-        f"{user_prompt}\n\n"
-        f"---\n"
-        f"Your previous response was invalid. Error:\n"
-        f"{last_error}\n\n"
-        f"Fix ONLY the JSON. Use exactly the field names and allowed "
-        f"values shown in the system prompt. Return valid JSON with no "
-        f"extra text."
-    )
+_SYSTEM_PROMPT = _build_system_prompt()
+
+
+# ── LLM calls ────────────────────────────────────────────────────────
 
 
 def _call_llm(messages: list[dict]) -> str:
-    """Single LLM call returning the raw response text.
-
-    Lifts API/network errors into ``ValueError`` so callers don't
-    need to know about litellm internals.
-    """
     kwargs: dict = dict(
         model=settings.llm_model,
-        temperature=0.0,
-        max_tokens=500,
+        temperature=0.1,
+        max_tokens=600,
         messages=messages,
     )
     if settings.llm_api_base:
         kwargs["api_base"] = settings.llm_api_base
     if settings.llm_api_key:
         kwargs["api_key"] = settings.llm_api_key
-
     try:
         resp = completion(**kwargs)
     except Exception as e:
         raise ValueError(f"LLM API call failed: {e}") from e
-
     content = resp.choices[0].message.content
     if not content or not content.strip():
         raise ValueError("LLM returned empty response")
     return content
 
 
+def _build_retry_prompt(user_prompt: str, last_error: str) -> str:
+    return (
+        f"{user_prompt}\n\n---\n"
+        f"Your previous response was invalid. Error:\n{last_error}\n\n"
+        f"Fix ONLY the JSON. Use exactly the field names and allowed "
+        f"values shown in the system prompt. Return valid JSON with no extra text."
+    )
+
+
 # ── Public API ────────────────────────────────────────────────────────
 
 
 def classify(title: str, description: str) -> ClassificationResult:
-    """Send the incident to the LLM and return a structured result.
-
-    Handles all error paths internally:
-      - API / network failures
-      - Non-JSON / malformed responses
-      - Schema validation failures (wrong fields, bad types,
-        service/system mismatch)
-
-    If the first attempt fails, a single retry is made with a
-    corrective hint that includes the actual error message.  If the
-    retry also fails a fallback ``ClassificationResult`` is returned
-    with ``reasoning`` describing the failure — the caller never
-    sees an exception.
-    """
-    system_prompt = _build_system_prompt()
+    """Classify an incident. Always returns — falls back to low-confidence on LLM failure."""
     user_prompt = _build_user_prompt(title, description)
 
-    # ── Attempt 1 ──────────────────────────────────────────────
     try:
-        raw = _call_llm([
-            {"role": "system", "content": system_prompt},
+        return _parse_and_validate(_call_llm([
+            {"role": "system", "content": _SYSTEM_PROMPT},
             {"role": "user", "content": user_prompt},
-        ])
-        return _parse_and_validate(raw)
+        ]))
     except Exception as e:
         last_error = str(e)
 
-    # ── Retry with corrective hint ─────────────────────────────
     try:
-        raw = _call_llm([
-            {"role": "system", "content": system_prompt},
+        return _parse_and_validate(_call_llm([
+            {"role": "system", "content": _SYSTEM_PROMPT},
             {"role": "user", "content": _build_retry_prompt(user_prompt, last_error)},
-        ])
-        return _parse_and_validate(raw)
+        ]))
     except Exception as e:
         last_error = str(e)
 
-    # ── Fallback — API or LLM persistently broken ──────────────
     return ClassificationResult(
         affected_system=AffectedSystem.other,
         service="General / Unspecified",
@@ -323,32 +266,18 @@ def classify(title: str, description: str) -> ClassificationResult:
         urgency=Urgency.low,
         category=Category.other,
         confidence="low",
-        reasoning=(
-            f"Classification failed after 2 attempts. Last error: {last_error}"
-        ),
+        reasoning=f"Classification failed after 2 attempts. Last error: {last_error}",
     )
 
 
-# ── Report summarization ──────────────────────────────────────────────
-
-
 def summarize_cluster(incidents: list[dict]) -> str:
-    """Summarize a cluster of related incidents into 2–3 sentences.
-
-    Parameters
-    ----------
-    incidents:
-        List of dicts with keys ``title``, ``description``, ``classification``
-        (a ``ClassificationResult``), and ``created_at``.
-    """
-    lines = []
-    for i, inc in enumerate(incidents, 1):
-        c = inc["classification"]
-        lines.append(
-            f'{i}. "{inc["title"]}" — {c.affected_system} / {c.service} / '
-            f'{c.incident_type} / {c.severity} — "{inc.get("description", "")}"'
-        )
-
+    """Summarize a cluster of related incidents into 2–3 sentences."""
+    lines = [
+        f'{i}. "{inc["title"]}" — {c.affected_system} / {c.service} / '
+        f'{c.incident_type} / {c.severity} — "{inc.get("description", "")}"'
+        for i, inc in enumerate(incidents, 1)
+        for c in [inc["classification"]]
+    ]
     try:
         raw = _call_llm([
             {
@@ -361,19 +290,14 @@ def summarize_cluster(incidents: list[dict]) -> str:
             },
             {
                 "role": "user",
-                "content": (
-                    "Related incidents (same problem):\n\n"
-                    f"{chr(10).join(lines)}\n\n"
-                    "Summary:"
-                ),
+                "content": f"Related incidents (same problem):\n\n{chr(10).join(lines)}\n\nSummary:",
             },
         ])
         return raw.strip().strip('"')
     except Exception:
         c = incidents[0]["classification"]
-        sevs = [i["classification"].severity for i in incidents]
+        worst = max(i["classification"].severity for i in incidents)
         return (
-            f"{len(incidents)} related incidents affecting "
-            f"{c.affected_system} / {c.service}. "
-            f"Worst severity: {max(sevs)}."
+            f"{len(incidents)} related incidents affecting {c.affected_system} / {c.service}. "
+            f"Worst severity: {worst}."
         )

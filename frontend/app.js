@@ -27,6 +27,8 @@ async function classify() {
   const title = byId('title').value.trim();
   const desc = byId('description').value.trim();
   if (!title) { showError('Please enter an incident title.'); return; }
+  if (title.length > 300) { showError('Title must be under 300 characters.'); return; }
+  if (desc.length > 8000) { showError('Description must be under 8,000 characters.'); return; }
 
   const btn = byId('classifyBtn');
   btn.disabled = true;
@@ -155,8 +157,9 @@ function renderReport(data) {
     area.innerHTML = '<div class="report-empty fade-in">No incidents in this period.</div>';
     return;
   }
-  area.innerHTML = data.clusters.map((cl, ci) => {
+  area.innerHTML = data.clusters.map(cl => {
     const badgeClass = 'report-badge-' + cl.worst_severity.toLowerCase();
+    const cid = esc(cl.cluster_id);
     const incidents = cl.incidents.map(i =>
       '<div class="report-incident-item">' +
         '<span class="report-incident-title">' + esc(i.title) + '</span>' +
@@ -164,7 +167,7 @@ function renderReport(data) {
       '</div>'
     ).join('');
     return '<div class="report-cluster fade-in">' +
-      '<div class="report-cluster-header" onclick="window.toggleIncidents(' + ci + ')">' +
+      '<div class="report-cluster-header" onclick="window.toggleIncidents(\'' + cid + '\')">' +
         '<span class="report-cluster-title">' + esc(cl.affected_system) + ' / ' + esc(cl.affected_service) + '</span>' +
         '<div class="report-cluster-badges">' +
           '<span class="report-badge ' + badgeClass + '">' + esc(cl.worst_severity) + '</span>' +
@@ -172,14 +175,14 @@ function renderReport(data) {
         '</div>' +
       '</div>' +
       '<div class="report-summary">' + esc(cl.summary) + '</div>' +
-      '<span class="report-expand" onclick="window.toggleIncidents(' + ci + ')">Show details ▾</span>' +
-      '<div class="report-incidents" id="report-incidents-' + ci + '">' + incidents + '</div>' +
+      '<span class="report-expand" onclick="window.toggleIncidents(\'' + cid + '\')">Show details ▾</span>' +
+      '<div class="report-incidents" id="report-incidents-' + cid + '">' + incidents + '</div>' +
     '</div>';
   }).join('');
 }
 
-window.toggleIncidents = function(idx) {
-  const el = byId('report-incidents-' + idx);
+window.toggleIncidents = function(clusterId) {
+  const el = byId('report-incidents-' + clusterId);
   el.classList.toggle('open');
   el.previousElementSibling.textContent = el.classList.contains('open') ? 'Hide details ▴' : 'Show details ▾';
 };

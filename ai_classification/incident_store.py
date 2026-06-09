@@ -1,14 +1,7 @@
-"""SQLite-backed incident store with semantic similarity search.
-
-Stores every classified incident along with its text embedding so
-incoming incidents can be matched against past ones by meaning
-rather than exact string matching.
-
-Uses sentence-transformers for embeddings and cosine similarity
-for comparison. Fully local — no network calls during inference.
-"""
+"""SQLite-backed incident store with embedding-based similarity search and clustering."""
 
 import json
+import logging
 import sqlite3
 import threading
 import uuid
@@ -20,11 +13,18 @@ from sentence_transformers import SentenceTransformer
 
 from .config import settings
 from .models import ClassificationResult
+from .schemas import Severity
+
+_log = logging.getLogger(__name__)
+
+# Highest severity = highest rank; used in max() comparisons.
+_SEVERITY_RANK: dict[str, int] = {
+    s.value: i for i, s in enumerate(reversed(list(Severity)))
+}
 
 
 @dataclass
 class SimilarMatch:
-    """One past incident that scored above the similarity threshold."""
     id: str
     title: str
     similarity: float
@@ -32,7 +32,7 @@ class SimilarMatch:
 
 
 class IncidentStore:
-    """Thread-safe store that embeds text, finds similar incidents, and manages clusters."""
+    """Thread-safe store: embeds incidents, finds similar ones, manages clusters."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -46,24 +46,15 @@ class IncidentStore:
         if self._ready:
             return
 
-        # Embedding model
         try:
-            self._model = SentenceTransformer(
-                settings.embedding_model_name, device="cpu",
-            )
+            self._model = SentenceTransformer(settings.embedding_model_name, device="cpu")
         except Exception as exc:
-            import logging
-            logging.getLogger(__name__).warning(
-                "Failed to load embedding model '%s': %s. Similarity search disabled.",
-                settings.embedding_model_name, exc,
-            )
+            _log.warning("Failed to load embedding model '%s': %s. Similarity search disabled.",
+                         settings.embedding_model_name, exc)
             self._model = None
 
-        # SQLite
         try:
-            self._db = sqlite3.connect(
-                settings.db_path, check_same_thread=False,
-            )
+            self._db = sqlite3.connect(settings.db_path, check_same_thread=False)
             self._db.execute("PRAGMA journal_mode=WAL")
             self._db.execute("PRAGMA synchronous=NORMAL")
             self._db.execute("""CREATE TABLE IF NOT EXISTS incidents (
@@ -89,26 +80,24 @@ class IncidentStore:
                 FOREIGN KEY (incident_id) REFERENCES incidents(id)
             )""")
         except Exception as exc:
-            import logging
-            logging.getLogger(__name__).warning(
-                "Failed to open SQLite at '%s': %s. Incident persistence disabled.",
-                settings.db_path, exc,
-            )
+            _log.warning("Failed to open SQLite at '%s': %s. Incident persistence disabled.",
+                         settings.db_path, exc)
             self._db = None
 
         self._ready = True
 
-        # Migrate: add columns that might be missing from older schemas
-        for col_sql in [
-            "ALTER TABLE clusters ADD COLUMN centroid_embedding BLOB",
-            "ALTER TABLE incidents ADD COLUMN extracted_text TEXT NOT NULL DEFAULT ''",
-        ]:
-            try:
-                self._db.execute(col_sql)
-            except Exception:
-                pass
+        # Schema migrations for databases predating these columns.
+        if self._db is not None:
+            for col_sql in [
+                "ALTER TABLE clusters ADD COLUMN centroid_embedding BLOB",
+                "ALTER TABLE incidents ADD COLUMN extracted_text TEXT NOT NULL DEFAULT ''",
+            ]:
+                try:
+                    self._db.execute(col_sql)
+                except Exception:
+                    pass
 
-        # Re-embed existing summaries as centroids
+        # Back-fill centroid embeddings from summaries on first run after migration.
         if self._model is not None and self._db is not None:
             rows = self._db.execute(
                 "SELECT id, summary FROM clusters WHERE summary != '' AND centroid_embedding IS NULL"
@@ -149,7 +138,7 @@ class IncidentStore:
         title: str, description: str, extracted_text: str = "",
         classification: ClassificationResult | None = None,
     ) -> str:
-        """Build text to embed — includes OCR text + classification fingerprint."""
+        """Concatenate title, description, OCR text, and classification fingerprint."""
         parts = [title, description]
         if extracted_text:
             parts.append(f"OCR: {extracted_text}")
@@ -166,14 +155,17 @@ class IncidentStore:
 
     def find_similar(
         self, text: str, *,
-        threshold: float | None = None, top_k: int = 5,
+        extracted_text: str = "",
+        threshold: float | None = None,
+        top_k: int = 5,
         classification: ClassificationResult | None = None,
     ) -> list[SimilarMatch]:
         if not self._ready or self._db is None or self._model is None:
             return []
         threshold = threshold if threshold is not None else settings.similarity_threshold
-        query_text = self._build_embedding_text(text, "", classification=classification)
-        query_vec = self._embed(query_text)
+        query_vec = self._embed(
+            self._build_embedding_text(text, "", extracted_text, classification=classification)
+        )
         if query_vec is None:
             return []
         with self._lock:
@@ -184,8 +176,7 @@ class IncidentStore:
         for row_id, row_title, blob, class_json in rows:
             if blob is None:
                 continue
-            stored_vec = np.frombuffer(blob, dtype=np.float32)
-            score = self._cosine_similarity(query_vec, stored_vec)
+            score = self._cosine_similarity(query_vec, np.frombuffer(blob, dtype=np.float32))
             if score >= threshold:
                 try:
                     cls_result = ClassificationResult.model_validate(json.loads(class_json))
@@ -200,13 +191,15 @@ class IncidentStore:
 
     def find_cluster_by_similarity(
         self, text: str, *,
+        extracted_text: str = "",
         classification: ClassificationResult | None = None,
     ) -> str | None:
-        """Check if the incident matches an existing cluster centroid (O(clusters))."""
+        """Return the best-matching cluster centroid ID, or None (O(clusters))."""
         if not self._ready or self._db is None or self._model is None:
             return None
-        query_text = self._build_embedding_text(text, "", classification=classification)
-        query_vec = self._embed(query_text)
+        query_vec = self._embed(
+            self._build_embedding_text(text, "", extracted_text, classification=classification)
+        )
         if query_vec is None:
             return None
         threshold = settings.similarity_threshold
@@ -214,15 +207,13 @@ class IncidentStore:
             rows = self._db.execute(
                 "SELECT id, centroid_embedding, system FROM clusters WHERE centroid_embedding IS NOT NULL"
             ).fetchall()
-        best = None
+        best: tuple[float, str] | None = None
         for cid, blob, system in rows:
             if classification and system != classification.affected_system:
                 continue
-            centroid = np.frombuffer(blob, dtype=np.float32)
-            score = self._cosine_similarity(query_vec, centroid)
-            if score >= threshold:
-                if best is None or score > best[0]:
-                    best = (score, cid)
+            score = self._cosine_similarity(query_vec, np.frombuffer(blob, dtype=np.float32))
+            if score >= threshold and (best is None or score > best[0]):
+                best = (score, cid)
         return best[1] if best else None
 
     # ── Persist ────────────────────────────────────────────────────
@@ -233,16 +224,16 @@ class IncidentStore:
     ) -> None:
         if not self._ready or self._db is None:
             return
-        text = self._build_embedding_text(title, description, extracted_text, classification)
-        embedding = self._embed(text)
+        embedding = self._embed(
+            self._build_embedding_text(title, description, extracted_text, classification)
+        )
         with self._lock:
             self._db.execute(
                 "INSERT OR REPLACE INTO incidents "
                 "(id, title, description, extracted_text, embedding, classification_json, created_at) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (
-                    incident_id,
-                    title, description, extracted_text,
+                    incident_id, title, description, extracted_text,
                     embedding.tobytes() if embedding is not None else None,
                     classification.model_dump_json(),
                     datetime.now(timezone.utc).isoformat(),
@@ -279,7 +270,7 @@ class IncidentStore:
             cluster_id = uuid.uuid4().hex[:12]
             sev = max(
                 [classification.severity] + [m.classification.severity for m in same_system],
-                key=lambda s: {"Critical": 4, "Major": 3, "Minor": 2, "Cosmetic": 1}.get(s, 0),
+                key=lambda s: _SEVERITY_RANK.get(str(s), 0),
             )
             with self._lock:
                 self._db.execute(
@@ -292,24 +283,74 @@ class IncidentStore:
                         "INSERT OR IGNORE INTO cluster_members (cluster_id, incident_id, similarity) VALUES (?, ?, ?)",
                         (cluster_id, m.id, round(m.similarity, 4)),
                     )
+                self._db.commit()
         with self._lock:
             self._db.execute(
                 "INSERT OR IGNORE INTO cluster_members (cluster_id, incident_id, similarity) VALUES (?, ?, 1.0)",
                 (cluster_id, incident_id),
             )
             self._db.execute("UPDATE clusters SET updated_at = ? WHERE id = ?", (now, cluster_id))
+            self._db.commit()
         return cluster_id
+
+    def add_to_cluster(self, cluster_id: str, incident_id: str) -> None:
+        if not self._ready or self._db is None:
+            return
+        now = datetime.now(timezone.utc).isoformat()
+        with self._lock:
+            self._db.execute(
+                "INSERT OR IGNORE INTO cluster_members (cluster_id, incident_id, similarity) VALUES (?, ?, 1.0)",
+                (cluster_id, incident_id),
+            )
+            self._db.execute("UPDATE clusters SET updated_at = ? WHERE id = ?", (now, cluster_id))
+            self._db.commit()
+
+    def get_cluster_incidents(self, cluster_id: str) -> list[dict]:
+        if not self._ready or self._db is None:
+            return []
+        rows = self._db.execute(
+            "SELECT i.title, i.description, i.classification_json "
+            "FROM incidents i JOIN cluster_members cm ON cm.incident_id = i.id "
+            "WHERE cm.cluster_id = ? ORDER BY i.created_at",
+            (cluster_id,),
+        ).fetchall()
+        return [{"title": r[0], "description": r[1], "classification_json": r[2]} for r in rows]
+
+    def recalculate_centroid_from_members(self, cluster_id: str) -> None:
+        """Recompute centroid as the normalized mean of all member embeddings."""
+        if not self._ready or self._db is None or self._model is None:
+            return
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT i.embedding FROM incidents i "
+                "JOIN cluster_members cm ON cm.incident_id = i.id "
+                "WHERE cm.cluster_id = ? AND i.embedding IS NOT NULL",
+                (cluster_id,),
+            ).fetchall()
+        if not rows:
+            return
+        vecs = [np.frombuffer(r[0], dtype=np.float32) for r in rows]
+        centroid = np.mean(vecs, axis=0).astype(np.float32)
+        norm = np.linalg.norm(centroid)
+        if norm > 0:
+            centroid = centroid / norm
+        with self._lock:
+            self._db.execute(
+                "UPDATE clusters SET centroid_embedding = ? WHERE id = ?",
+                (centroid.tobytes(), cluster_id),
+            )
+            self._db.commit()
 
     def update_cluster_summary(self, cluster_id: str, summary: str) -> None:
         if not self._ready or self._db is None:
             return
-        centroid = self._embed(summary)
         with self._lock:
             self._db.execute(
-                "UPDATE clusters SET summary = ?, centroid_embedding = ? WHERE id = ?",
-                (summary, centroid.tobytes() if centroid is not None else None, cluster_id),
+                "UPDATE clusters SET summary = ? WHERE id = ?",
+                (summary, cluster_id),
             )
             self._db.commit()
+        self.recalculate_centroid_from_members(cluster_id)
 
     # ── Reporting ──────────────────────────────────────────────────
 
@@ -317,7 +358,7 @@ class IncidentStore:
         if not self._ready or self._db is None:
             return []
         clauses = ["1=1"]
-        params = []
+        params: list = []
         if since:
             clauses.append("c.updated_at >= ?")
             params.append(since)
@@ -346,6 +387,7 @@ class IncidentStore:
                     sev = "Minor"
                 incident_list.append({"id": inc_id, "title": inc_title, "severity": sev, "created_at": created_at})
             clusters.append({
+                "cluster_id": cid,
                 "summary": summary, "affected_system": system, "affected_service": service,
                 "count": cnt, "worst_severity": worst, "incidents": incident_list,
             })

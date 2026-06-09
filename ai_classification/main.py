@@ -1,17 +1,18 @@
-"""FastAPI application — incident classification endpoint."""
+"""FastAPI application — incident classification and reporting."""
 
-from fastapi import FastAPI, HTTPException
+import json
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone, timedelta
-import json
+
+from fastapi import FastAPI
 
 from .config import settings
-from .models import ClassifyRequest, ClassifyResponse, RelatedIncident, ReportResponse, ReportCluster, ClassificationResult
+from .models import (
+    ClassifyRequest, ClassifyResponse, RelatedIncident,
+    ReportResponse, ReportCluster, ClassificationResult,
+)
 from .classifier import classify, summarize_cluster
 from .incident_store import IncidentStore
-
-
-# ── Global store (initialised in lifespan) ────────────────────────────
 
 store = IncidentStore()
 
@@ -21,99 +22,57 @@ async def lifespan(app: FastAPI):
     print(f"  model … {settings.llm_model}")
     print(f"  host … {settings.host}:{settings.port}")
     store.setup()
-    print(
-        f"  incident store … {'ready' if store.ready else 'FAILED (embeddings disabled)'}"
-    )
+    print(f"  store … {'ready' if store.ready else 'FAILED (embeddings disabled)'}")
     yield
     store.close()
 
 
-app = FastAPI(
-    title="AI Incident Classification",
-    version="0.2.0",
-    lifespan=lifespan,
-)
-
-
-# ── Health ───────────────────────────────────────────────────────────
+app = FastAPI(title="AI Incident Classification", version="0.2.0", lifespan=lifespan)
 
 
 @app.get("/health")
 def health():
-    return {
-        "status": "ok",
-        "model": settings.llm_model,
-        "store_ready": store.ready,
-    }
+    return {"status": "ok", "model": settings.llm_model, "store_ready": store.ready}
 
 
-# ── Classify ─────────────────────────────────────────────────────────
+# ── Classify ──────────────────────────────────────────────────────────
 
 
 def _classify_and_store(title: str, description: str, extracted_text: str = "") -> ClassifyResponse:
-    """Classify, persist, link to cluster (via centroid or per-incident), return."""
-    try:
-        result = classify(title, description)
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=str(exc))
-
+    result = classify(title, description)
     text = f"{title} {description}"
 
-    # ── Step 1: Try centroid match (fast — O(clusters)) ──────────
-    cluster_id = store.find_cluster_by_similarity(text, classification=result)
+    # Centroid match — O(clusters), fast path before scanning all incidents.
+    cluster_id = store.find_cluster_by_similarity(text, extracted_text=extracted_text, classification=result)
 
-    # ── Step 2: Find individual similar incidents (for display + fallback clustering) ──
-    matches = store.find_similar(text, classification=result)
+    # Per-incident similarity — populates related_incidents and fallback clustering.
+    matches = store.find_similar(text, extracted_text=extracted_text, classification=result)
     related = [
-        RelatedIncident(
-            id=m.id,
-            title=m.title,
-            similarity=round(m.similarity, 4),
-            classification=m.classification,
-        )
+        RelatedIncident(id=m.id, title=m.title, similarity=round(m.similarity, 4), classification=m.classification)
         for m in matches
     ]
 
-    # ── Step 3: Persist ───────────────────────────────────────────
     incident_id = store.generate_id()
     store.save_incident(incident_id, title, description, result, extracted_text)
 
-    # ── Step 4: Link to cluster ───────────────────────────────────
-    if not cluster_id:
-        # No centroid matched — use per-incident similarity
-        cluster_id = store.link_to_cluster(incident_id, result, matches)
-    else:
-        # Centroid matched — add directly to the cluster
-        if store._db:
-            store._db.execute(
-                "INSERT OR IGNORE INTO cluster_members (cluster_id, incident_id, similarity) VALUES (?, ?, 1.0)",
-                (cluster_id, incident_id),
-            )
-            store._db.execute(
-                "UPDATE clusters SET updated_at = ? WHERE id = ?",
-                (datetime.now(timezone.utc).isoformat(), cluster_id),
-            )
-            store._db.commit()
-
-    # ── Step 5: Generate summary when cluster hits 2-4 members ─────
     if cluster_id:
-        all_members = store._db.execute(
-            "SELECT i.title, i.description, i.classification_json "
-            "FROM incidents i JOIN cluster_members cm ON cm.incident_id = i.id "
-            "WHERE cm.cluster_id = ?",
-            (cluster_id,),
-        ).fetchall() if store._db else []
-        if len(all_members) >= 2 and len(all_members) <= 4:
+        store.add_to_cluster(cluster_id, incident_id)
+    else:
+        cluster_id = store.link_to_cluster(incident_id, result, matches)
+
+    if cluster_id:
+        all_members = store.get_cluster_incidents(cluster_id)
+        if len(all_members) >= 2:
+            sample = all_members[-20:]
             full = []
-            for row in all_members:
+            for m in sample:
                 try:
-                    cls = ClassificationResult.model_validate(json.loads(row[2]))
-                    full.append({"title": row[0], "description": row[1], "classification": cls})
+                    cls = ClassificationResult.model_validate(json.loads(m["classification_json"]))
+                    full.append({"title": m["title"], "description": m["description"], "classification": cls})
                 except Exception:
                     pass
             if full:
-                summary = summarize_cluster(full)
-                store.update_cluster_summary(cluster_id, summary)
+                store.update_cluster_summary(cluster_id, summarize_cluster(full))
 
     return ClassifyResponse(
         incident_title=title,
@@ -133,27 +92,30 @@ def classify_incident_get(title: str, description: str = ""):
     return _classify_and_store(title, description)
 
 
-# ── Reports (fast SQL reads — no LLM calls) ─────────────────────────
+# ── Reports ───────────────────────────────────────────────────────────
 
 
 def _build_report(since: datetime | None, until: datetime | None, label: str) -> ReportResponse:
-    since_str = since.isoformat() if since else None
-    until_str = until.isoformat() if until else None
-    clusters_data = store.get_report(since=since_str, until=until_str)
-    total = sum(c["count"] for c in clusters_data)
-
-    report_clusters = [
-        ReportCluster(
-            summary=c["summary"] or f"{c['count']} related incidents.",
-            affected_system=c["affected_system"],
-            affected_service=c["affected_service"],
-            count=c["count"],
-            worst_severity=c["worst_severity"],
-            incidents=c["incidents"],
-        )
-        for c in clusters_data
-    ]
-    return ReportResponse(period=label, total_incidents=total, clusters=report_clusters)
+    clusters_data = store.get_report(
+        since=since.isoformat() if since else None,
+        until=until.isoformat() if until else None,
+    )
+    return ReportResponse(
+        period=label,
+        total_incidents=sum(c["count"] for c in clusters_data),
+        clusters=[
+            ReportCluster(
+                cluster_id=c["cluster_id"],
+                summary=c["summary"] or f"{c['count']} related incidents.",
+                affected_system=c["affected_system"],
+                affected_service=c["affected_service"],
+                count=c["count"],
+                worst_severity=c["worst_severity"],
+                incidents=c["incidents"],
+            )
+            for c in clusters_data
+        ],
+    )
 
 
 @app.get("/reports/daily", response_model=ReportResponse)
