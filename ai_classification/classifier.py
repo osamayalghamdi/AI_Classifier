@@ -104,6 +104,26 @@ FEW_SHOT_EXAMPLES = [
             "reasoning": "High-volume brute-force attack on admin panel requires immediate response.",
         },
     },
+    {
+        "title": "Payment gateway completely down — all transactions failing",
+        "description": (
+            "503 errors on every payment attempt since 14:32 UTC. "
+            "Our payment provider's status page shows a full outage."
+        ),
+        "output": {
+            "affected_system": "Payment Gateway",
+            "service": "Checkout",
+            "incident_type": "Outage",
+            "severity": "Critical",
+            "urgency": "Immediate",
+            "category": "External / Third Party",
+            "confidence": "high",
+            "reasoning": (
+                "Full outage with 100% failure rate caused by third-party provider failure. "
+                "incident_type=Outage (what happened), category=External / Third Party (why it happened)."
+            ),
+        },
+    },
 ]
 
 
@@ -142,6 +162,11 @@ Now classify the user's incident using the same JSON format.
 
 Pick exactly one from each list below.
 
+CRITICAL — TWO DIFFERENT FIELDS, TWO DIFFERENT LISTS:
+  • incident_type = WHAT HAPPENED (the symptom): Spike | Degradation | Unavailability | Outage
+  • category      = WHY IT HAPPENED (the root cause type): Hardware | Software | Network Issue | Security | Performance | Configuration | Human Error | External / Third Party | Other
+  NEVER put an incident_type value (Spike/Degradation/Unavailability/Outage) into the category field.
+
 CRITICAL: "service" must be a SINGLE STRING. Pick ONE service name from the list
 shown for your chosen affected_system. Do NOT return a list.
 
@@ -151,7 +176,7 @@ affected_system (pick ONE of these):
 service (pick ONE SERVICE STRING from the relevant list below):
 {json.dumps(services_by_system, indent=2)}
 
-incident_type (pick ONE of these):
+incident_type — WHAT HAPPENED (the symptom type, pick ONE of these):
 {types}
 
 severity (pick ONE of these):
@@ -160,7 +185,7 @@ severity (pick ONE of these):
 urgency (pick ONE of these):
 {urgencies}
 
-category (pick ONE of these):
+category — WHY IT HAPPENED (the root cause type, pick ONE of these):
 {categories}
 
 confidence: "low", "medium", or "high"
@@ -169,6 +194,7 @@ reasoning: short explanation (optional)
 Rules:
 - Pick the single best label per field.
 - "service" must be a SINGLE STRING, never a list.
+- The category field must always be a root cause type (Hardware/Software/etc.), never a symptom type.
 - If nothing fits well, pick the closest and set confidence "low".
 - Respond with JSON only — no commentary before or after."""
 
