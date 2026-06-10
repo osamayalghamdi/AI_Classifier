@@ -118,6 +118,7 @@ function loadHistory() {
     '<div class="history-item fade-in">' +
       '<div class="history-item-title">' + esc(item.title) + '</div>' +
       '<div class="history-item-meta">' +
+        '<span class="incident-id">' + esc(item.id || '—') + '</span>' +
         '<div class="history-item-types">' +
           '<span class="type-pill type-severity-' + item.severity.replace(/ /g, '') + '">' + esc(item.severity) + '</span>' +
           '<span class="type-pill" style="background:var(--blue-bg);color:var(--blue)">' + esc(item.type) + '</span>' +
@@ -162,6 +163,7 @@ function renderReport(data) {
     const cid = esc(cl.cluster_id);
     const incidents = cl.incidents.map(i =>
       '<div class="report-incident-item">' +
+        '<span class="report-incident-id incident-id">' + esc(i.id) + '</span>' +
         '<span class="report-incident-title">' + esc(i.title) + '</span>' +
         '<span class="report-incident-sev type-pill type-severity-' + i.severity.replace(/ /g, '') + '">' + esc(i.severity) + '</span>' +
       '</div>'
