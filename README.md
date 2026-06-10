@@ -7,17 +7,17 @@ Structured incident classification via LLM. Feed it a title and description, get
 ## Architecture
 
 ```
-Incident submitted
+Incident submitted (+ optional image/PDF → OCR text)
        │
        ▼
   Qwen2.5:7b ──→ Structured labels (system, service, type, severity…)
        │
-       ├── Save to SQLite
+       ├── Save to SQLite (embedding = title + description + OCR text + labels)
        ├── Check cluster centroids ──→ matched? → join that cluster
        │     (fast: O(clusters), no member scan)
        ├── Show top 5 similar incidents as "related"
-       └── Cluster hit 2-4 members? ──→ LLM writes summary once
-                                          (embedded as centroid)
+       └── Cluster has ≥2 members? ──→ LLM writes/updates summary
+                                          centroid = mean of all member embeddings
 
 Report requested
        │
@@ -34,6 +34,7 @@ Report requested
 | API | FastAPI (Python 3.12) |
 | LLM | Qwen2.5:7b via Ollama on RTX 2060 SUPER |
 | Embeddings | all-MiniLM-L6-v2 (sentence-transformers) |
+| OCR | EasyOCR (English + Arabic, GPU-accelerated) |
 | Store | SQLite + cosine similarity |
 | Validation | Pydantic v2 (strict — no silent coercion) |
 | Container | Docker Compose with nvidia runtime |
@@ -66,7 +67,11 @@ open http://localhost:8082
 
 ```json
 // Request
-{ "title": "Checkout timeouts", "description": "504 errors for EU users." }
+{
+  "title": "Checkout timeouts",
+  "description": "504 errors for EU users.",
+  "extracted_text": "" // optional — OCR text from /api/ocr, included in the embedding
+}
 
 // Response
 {
@@ -91,6 +96,16 @@ open http://localhost:8082
 ### GET /classify
 
 Same shape, query-parameter variant: `?title=...&description=...`
+
+### POST /ocr
+
+Proxied through the frontend at `/api/ocr`. Accepts an image or PDF (`multipart/form-data`,
+field name `file`), with an optional `?lang=en|ar` query param. Returns extracted text for use
+as `extracted_text` in `/classify`.
+
+```json
+{ "text": "...", "has_low_confidence": false, "low_confidence_words": [] }
+```
 
 ### GET /reports/daily | /reports/weekly
 
@@ -133,17 +148,17 @@ Each system has its own services (e.g. `Payment Gateway` → `Checkout`, `Refund
 
 ## Key Design Decisions
 
-**Classification-augmented embeddings.** The embedding text includes the LLM's structured labels:
+**Classification-augmented embeddings.** The embedding text includes title, description, OCR text (if any), and the LLM's structured labels:
 
 ```
-"Stripe payment timeouts | Payment Gateway / Checkout / Degradation / Performance"
+"Stripe payment timeouts | Classified as: Payment Gateway / Checkout / Degradation / Performance"
 ```
 
 This makes "PayPal errors" and "Stripe timeouts" cluster together via their shared fingerprint, even with different wording.
 
 **Same-system filter.** Incidents only cluster with others that share the same `affected_system`. A VPN incident can't leak into a Payment Gateway cluster.
 
-**Summary-as-centroid.** When a cluster first reaches 2-4 incidents, the LLM writes a summary once. That summary is embedded and stored as the cluster centroid. Future incidents check centroids first — O(clusters) instead of O(incidents).
+**Member-average centroid.** Each cluster's centroid is the normalized mean of all member incident embeddings, recalculated whenever the cluster summary updates. New incidents check centroids first — O(clusters) instead of O(incidents) — and fall back to per-incident similarity if no centroid matches.
 
 **Incremental clustering.** Clusters are built at classification time, not query time. Reports are fast SQL reads with no LLM calls.
 
@@ -171,12 +186,19 @@ ai_classification/
 ├── schemas.py        → Taxonomy enums
 └── config.py         → Env-based settings
 
+ocr/
+├── ocr_server.py     → EasyOCR microservice (English + Arabic)
+└── Dockerfile
+
 frontend/
-├── index.html        → Single-page UI (Classify + Reports tabs)
-├── nginx.conf        → Static file + API proxy
+├── index.html        → Single-page UI (Classify + Reports tabs, file upload for OCR)
+├── app.js            → API calls, rendering, history
+├── style.css
+├── nginx.conf        → Static files + proxy to api/ocr
 └── Dockerfile
 
 tests/
-├── test_classifier.py  — Unit tests (mocked LLM)
-└── e2e_check.py        — End-to-end with real Ollama
+├── test_classifier.py    — Unit tests for prompt building & validation (mocked LLM)
+├── test_incident_store.py — Unit tests for embeddings, similarity, clustering, reports
+└── e2e_check.py          — End-to-end with real Ollama
 ```
