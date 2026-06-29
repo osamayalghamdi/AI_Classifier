@@ -278,7 +278,7 @@ class IncidentStore:
                     "VALUES (?, '', ?, ?, ?, ?, ?)",
                     (cluster_id, classification.affected_system, classification.service, sev, now, now),
                 )
-                for m in matches:
+                for m in same_system:
                     self._db.execute(
                         "INSERT OR IGNORE INTO cluster_members (cluster_id, incident_id, similarity) VALUES (?, ?, ?)",
                         (cluster_id, m.id, round(m.similarity, 4)),
