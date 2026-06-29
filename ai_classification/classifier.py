@@ -240,8 +240,14 @@ def _call_llm(messages: list[dict]) -> str:
     )
     if settings.llm_api_base:
         kwargs["api_base"] = settings.llm_api_base
+
     if settings.llm_api_key:
         kwargs["api_key"] = settings.llm_api_key
+
+    # Qwen3 thinks by default — disable for structured JSON output
+    if "qwen3" in settings.llm_model.lower():
+        kwargs["extra_body"] = {"reasoning": {"enabled": False}}
+
     try:
         resp = completion(**kwargs)
     except Exception as e:

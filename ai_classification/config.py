@@ -10,9 +10,13 @@ load_dotenv()
 
 @dataclass(frozen=True)
 class Settings:
-    llm_model: str = getenv("LLM_MODEL", "gpt-4o-mini")
+    # ── LLM ───────────────────────────────────────────────────────────────
+    # Local:      LLM_MODEL=ollama/qwen2.5:7b  +  LLM_API_BASE=http://localhost:11434
+    # API:        LLM_MODEL=openrouter/qwen/qwen3.6-35b-a3b  +  LLM_API_KEY=sk-or-v1-...
+    llm_model: str = getenv("LLM_MODEL", "ollama/qwen2.5:7b")
     llm_api_key: str | None = getenv("LLM_API_KEY")
     llm_api_base: str | None = getenv("LLM_API_BASE")
+
     host: str = getenv("HOST", "0.0.0.0")
     port: int = int(getenv("PORT", "8000"))
 
