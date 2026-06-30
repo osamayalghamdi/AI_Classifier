@@ -54,7 +54,7 @@ def _make_store(monkeypatch, tmp_path, model, db_name="test.db", threshold=None)
     import ai_classification.config as config_mod
     from dataclasses import replace
 
-    monkeypatch.setattr(store_mod, "SentenceTransformer", lambda *a, **kw: model)
+    monkeypatch.setattr(store_mod, "SentenceTransformer", lambda *a, **_: model)
 
     overrides = {"db_path": str(tmp_path / db_name)}
     if threshold is not None:

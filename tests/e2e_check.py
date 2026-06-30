@@ -6,14 +6,12 @@ Tests the full classify() pipeline with a real LLM to verify:
   - Retry mechanism kicks in if needed
 """
 
-import json
 import sys
 import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from ai_classification.classifier import classify
-from ai_classification.models import ClassificationResult
 
 PASS = 0
 FAIL = 0
@@ -55,7 +53,7 @@ def check(
             print(f"    ❌  WRONG — {'; '.join(failures)}")
             FAIL += 1
         else:
-            print(f"    ✅  OK")
+            print("    ✅  OK")
             PASS += 1
     except Exception as e:
         print(f"    ❌  FAIL — {e}")
