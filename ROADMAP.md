@@ -1,12 +1,34 @@
-# Enterprise Roadmap
+# Roadmap
+
+## Status
+
+**Phase 1 (current, `main`)** — classification + live duplicate detection. New
+incidents are classified by the LLM, embedded, and checked against other *active*
+incidents so a call center sees "N similar open incidents" before escalating a
+duplicate. Marking an incident resolved removes it from future duplicate checks. No
+clustering, no reports, no LLM re-ranking. See [TODO.md](TODO.md) for the day-to-day
+checklist — right now that's mostly the Phase 1 accuracy validation gate.
+
+**Phase 2–3 (paused)** — incremental clustering, `/reports/daily` + `/reports/weekly`,
+LLM re-ranking of related incidents, and the enterprise hardening plan below. Management
+paused this to focus on proving classification accuracy first. All of that code —
+`link_to_cluster`, `add_to_cluster`, `get_report`, `find_candidates`,
+`llm_rerank_similar`, `summarize_cluster`, the clusters/cluster_members tables, the
+Reports frontend tab, and their tests — is intact and untouched on the `phases-2-3`
+branch. Resume by merging/cherry-picking from there once greenlit; don't rebuild it.
+
+---
+
+## Enterprise plan (reference — most of this is Phase 2–3+ and currently paused)
 
 This is the long-range plan for evolving the classifier from a working prototype into
 a system employees can rely on. It's organized by concern, not by sprint — pull items
-into [TODO.md](TODO.md) when they're actually being worked.
+into [TODO.md](TODO.md) when they're actually being worked, and only once Phase 2–3
+resumes.
 
-The core design instinct — LLM only at the edges (classification + cluster
-summarization), everything else deterministic and cheap (embeddings + SQL) — is right
-and should survive all of this. The work below is about wrapping that core in
+The core design instinct — LLM only at the edges (classification, and previously
+cluster summarization), everything else deterministic and cheap (embeddings + SQL) —
+is right and should survive all of this. The work below is about wrapping that core in
 identity, durability, feedback, and operational visibility.
 
 ---

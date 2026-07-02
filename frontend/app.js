@@ -64,9 +64,12 @@ function renderResult(data) {
   const reasoning = c.reasoning && !isFallback ? '<div class="reasoning-box"><strong>Reasoning</strong><br>' + esc(c.reasoning) + '</div>' : '';
 
   let relatedHTML = '';
-  if (data.related_incidents && data.related_incidents.length > 0) {
-    relatedHTML = '<div class="related-section"><h3>Related Incidents (' + data.related_incidents.length + ')</h3>';
-    for (const rel of data.related_incidents) {
+  const dupes = data.similar_open_incidents || [];
+  if (dupes.length > 0) {
+    relatedHTML = '<div class="related-section">' +
+      '<h3>⚠ ' + dupes.length + ' Similar Open Incident' + (dupes.length !== 1 ? 's' : '') + '</h3>' +
+      '<div class="related-hint">Check these before escalating — this may be a duplicate.</div>';
+    for (const rel of dupes) {
       relatedHTML +=
         '<div class="related-item fade-in">' +
           '<div class="related-item-header">' +
@@ -78,7 +81,6 @@ function renderResult(data) {
             '<span class="related-item-tag">' + esc(rel.classification.severity) + '</span>' +
             '<span class="related-item-tag">' + esc(rel.classification.incident_type) + '</span>' +
           '</div>' +
-          (rel.reasoning ? '<div class="related-item-reasoning">' + esc(rel.reasoning) + '</div>' : '') +
         '</div>';
     }
     relatedHTML += '</div>';
@@ -116,7 +118,7 @@ function loadHistory() {
     return;
   }
   area.innerHTML = items.slice().reverse().map(item =>
-    '<div class="history-item fade-in">' +
+    '<div class="history-item fade-in' + (item.resolved ? ' resolved' : '') + '">' +
       '<div class="history-item-title">' + esc(item.title) + '</div>' +
       '<div class="history-item-meta">' +
         '<span class="incident-id">' + esc(item.id || '—') + '</span>' +
@@ -125,6 +127,9 @@ function loadHistory() {
           '<span class="type-pill" style="background:var(--blue-bg);color:var(--blue)">' + esc(item.type) + '</span>' +
         '</div>' +
         '<span class="history-item-time">' + new Date(item.timestamp).toLocaleTimeString() + '</span>' +
+        (item.resolved
+          ? '<span class="resolve-badge">Resolved</span>'
+          : '<button class="resolve-btn" onclick="window.resolveIncident(\'' + esc(item.id) + '\')">Resolve</button>') +
       '</div>' +
     '</div>'
   ).join('');
@@ -137,64 +142,25 @@ function addToHistory(data) {
     id: data.incident_id, title: data.incident_title,
     severity: data.classification.severity, type: data.classification.incident_type,
     system: data.classification.affected_system, timestamp: new Date().toISOString(),
+    resolved: false,
   });
   localStorage.setItem('incident_history', JSON.stringify(history));
 }
 
-// ── Reports ──
-async function loadReport(period) {
-  const area = byId('reportArea');
-  area.innerHTML = '<div class="history-loading">Loading report…</div>';
+window.resolveIncident = async function(id) {
   try {
-    renderReport(await (await fetch(API + '/reports/' + period)).json());
+    const r = await fetch(API + '/incidents/' + encodeURIComponent(id) + '/resolve', { method: 'POST' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const stored = localStorage.getItem('incident_history');
+    const history = stored ? JSON.parse(stored) : [];
+    const item = history.find(h => h.id === id);
+    if (item) item.resolved = true;
+    localStorage.setItem('incident_history', JSON.stringify(history));
+    loadHistory();
   } catch (e) {
-    area.innerHTML = '<div class="result-error fade-in">Failed to load report: ' + esc(e.message) + '</div>';
+    alert('Failed to resolve: ' + e.message);
   }
-}
-
-function renderReport(data) {
-  const area = byId('reportArea');
-  byId('reportTotal').textContent = data.total_incidents + ' incident' + (data.total_incidents !== 1 ? 's' : '');
-  if (data.clusters.length === 0) {
-    area.innerHTML = '<div class="report-empty fade-in">No incidents in this period.</div>';
-    return;
-  }
-  area.innerHTML = data.clusters.map(cl => {
-    const badgeClass = 'report-badge-' + cl.worst_severity.toLowerCase();
-    const cid = esc(cl.cluster_id);
-    const incidents = cl.incidents.map(i =>
-      '<div class="report-incident-item">' +
-        '<span class="report-incident-id incident-id">' + esc(i.id) + '</span>' +
-        '<span class="report-incident-title">' + esc(i.title) + '</span>' +
-        '<span class="report-incident-sev type-pill type-severity-' + i.severity.replace(/ /g, '') + '">' + esc(i.severity) + '</span>' +
-      '</div>'
-    ).join('');
-    return '<div class="report-cluster fade-in">' +
-      '<div class="report-cluster-header" onclick="window.toggleIncidents(\'' + cid + '\')">' +
-        '<span class="report-cluster-title">' + esc(cl.affected_system) + ' / ' + esc(cl.affected_service) + '</span>' +
-        '<div class="report-cluster-badges">' +
-          '<span class="report-badge ' + badgeClass + '">' + esc(cl.worst_severity) + '</span>' +
-          '<span class="report-badge" style="background:var(--bg-input);color:var(--text-muted)">' + cl.count + '</span>' +
-        '</div>' +
-      '</div>' +
-      '<div class="report-summary">' + esc(cl.summary) + '</div>' +
-      '<span class="report-expand" onclick="window.toggleIncidents(\'' + cid + '\')">Show details ▾</span>' +
-      '<div class="report-incidents" id="report-incidents-' + cid + '">' + incidents + '</div>' +
-    '</div>';
-  }).join('');
-}
-
-window.toggleIncidents = function(clusterId) {
-  const el = byId('report-incidents-' + clusterId);
-  el.classList.toggle('open');
-  el.previousElementSibling.textContent = el.classList.contains('open') ? 'Hide details ▴' : 'Show details ▾';
 };
-
-// ── Tabs ──
-function switchTab(name) {
-  qa('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
-  qa('.tab-content').forEach(t => t.classList.toggle('active', t.id === 'tab-' + name));
-}
 
 // ── Init ──
 byId('classifyBtn').addEventListener('click', classify);
@@ -270,18 +236,9 @@ qa('.preset-chip').forEach(chip => {
     byId('description').value = chip.dataset.desc;
   });
 });
-qa('.tab').forEach(t => t.addEventListener('click', () => switchTab(t.dataset.tab)));
-qa('.report-period-btn').forEach(btn => {
-  btn.addEventListener('click', () => {
-    qa('.report-period-btn').forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
-    loadReport(btn.dataset.period);
-  });
-});
 document.addEventListener('keydown', e => {
   if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); classify(); }
 });
 
 checkHealth();
 loadHistory();
-loadReport('daily');

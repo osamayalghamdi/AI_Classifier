@@ -1,4 +1,4 @@
-"""Reset all incidents, clusters, and members from the incident store DB."""
+"""Reset all incidents from the incident store DB."""
 import sqlite3
 
 DB_PATH = "/data/incidents.db"
@@ -10,9 +10,6 @@ conn.row_factory = sqlite3.Row
 before = conn.execute("SELECT COUNT(*) as cnt FROM incidents").fetchone()["cnt"]
 print(f"Before: {before} incidents")
 
-# Delete in order (child tables first)
-conn.execute("DELETE FROM cluster_members")
-conn.execute("DELETE FROM clusters")
 conn.execute("DELETE FROM incidents")
 conn.commit()
 
