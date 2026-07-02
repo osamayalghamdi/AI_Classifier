@@ -157,6 +157,7 @@ body {
 .related-item-score { font-size: 12px; font-weight: 600; color: var(--accent); font-family: 'SF Mono', 'Fira Code', monospace; }
 .related-item-tags { display: flex; gap: 6px; flex-wrap: wrap; }
 .related-item-tag { font-size: 11px; padding: 2px 8px; border-radius: 4px; background: var(--bg-card); color: var(--text-muted); }
+.related-item-reasoning { font-size: 11px; color: var(--text-muted); margin-top: 6px; font-style: italic; }
 
 /* ── History ── */
 .history-empty { color: var(--text-muted); font-size: 14px; text-align: center; padding: 48px 20px; }

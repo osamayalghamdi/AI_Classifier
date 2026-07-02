@@ -13,14 +13,9 @@ from sentence_transformers import SentenceTransformer
 
 from .config import settings
 from .models import ClassificationResult
-from .schemas import Severity
+from .schemas import SEVERITY_RANK
 
 _log = logging.getLogger(__name__)
-
-# Highest severity = highest rank; used in max() comparisons.
-_SEVERITY_RANK: dict[str, int] = {
-    s.value: i for i, s in enumerate(reversed(list(Severity)))
-}
 
 
 @dataclass
@@ -29,6 +24,7 @@ class SimilarMatch:
     title: str
     similarity: float
     classification: ClassificationResult
+    reasoning: str | None = None
 
 
 class IncidentStore:
@@ -216,6 +212,41 @@ class IncidentStore:
                 best = (score, cid)
         return best[1] if best else None
 
+    def find_candidates(
+        self,
+        text: str,
+        *,
+        extracted_text: str = "",
+        top_n: int = 100,
+        classification: ClassificationResult | None = None,
+    ) -> list[dict]:
+        """Return top-N incidents by cosine similarity with no threshold — pre-filter for LLM re-ranking."""
+        if not self._ready or self._db is None or self._model is None:
+            return []
+        query_vec = self._embed(
+            self._build_embedding_text(text, "", extracted_text, classification=classification)
+        )
+        if query_vec is None:
+            return []
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT id, title, description, embedding, classification_json FROM incidents WHERE embedding IS NOT NULL"
+            ).fetchall()
+        scored = []
+        for row_id, row_title, row_desc, blob, class_json in rows:
+            if blob is None:
+                continue
+            score = self._cosine_similarity(query_vec, np.frombuffer(blob, dtype=np.float32))
+            scored.append((score, row_id, row_title, row_desc, class_json))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [
+            {
+                "id": rid, "title": rtitle, "description": rdesc,
+                "classification_json": cjson, "cosine_score": round(float(score), 4),
+            }
+            for score, rid, rtitle, rdesc, cjson in scored[:top_n]
+        ]
+
     # ── Persist ────────────────────────────────────────────────────
 
     def save_incident(
@@ -270,7 +301,7 @@ class IncidentStore:
             cluster_id = uuid.uuid4().hex[:12]
             sev = max(
                 [classification.severity] + [m.classification.severity for m in same_system],
-                key=lambda s: _SEVERITY_RANK.get(str(s), 0),
+                key=lambda s: SEVERITY_RANK.get(str(s), 0),
             )
             with self._lock:
                 self._db.execute(
@@ -293,7 +324,10 @@ class IncidentStore:
             self._db.commit()
         return cluster_id
 
-    def add_to_cluster(self, cluster_id: str, incident_id: str) -> None:
+    def add_to_cluster(
+        self, cluster_id: str, incident_id: str,
+        classification: ClassificationResult | None = None,
+    ) -> None:
         if not self._ready or self._db is None:
             return
         now = datetime.now(timezone.utc).isoformat()
@@ -302,6 +336,18 @@ class IncidentStore:
                 "INSERT OR IGNORE INTO cluster_members (cluster_id, incident_id, similarity) VALUES (?, ?, 1.0)",
                 (cluster_id, incident_id),
             )
+            if classification is not None:
+                row = self._db.execute(
+                    "SELECT worst_severity FROM clusters WHERE id = ?", (cluster_id,)
+                ).fetchone()
+                current = row[0] if row else None
+                incoming_rank = SEVERITY_RANK.get(str(classification.severity), 0)
+                current_rank = SEVERITY_RANK.get(str(current), -1)
+                if incoming_rank > current_rank:
+                    self._db.execute(
+                        "UPDATE clusters SET worst_severity = ? WHERE id = ?",
+                        (str(classification.severity), cluster_id),
+                    )
             self._db.execute("UPDATE clusters SET updated_at = ? WHERE id = ?", (now, cluster_id))
             self._db.commit()
 
@@ -360,25 +406,27 @@ class IncidentStore:
         clauses = ["1=1"]
         params: list = []
         if since:
-            clauses.append("c.updated_at >= ?")
+            clauses.append("i.created_at >= ?")
             params.append(since)
         if until:
-            clauses.append("c.updated_at < ?")
+            clauses.append("i.created_at < ?")
             params.append(until)
         where = " AND ".join(clauses)
         rows = self._db.execute(f"""
             SELECT c.id, c.summary, c.system, c.service, c.worst_severity,
                    COUNT(cm.incident_id) as cnt
-            FROM clusters c JOIN cluster_members cm ON cm.cluster_id = c.id
+            FROM clusters c
+            JOIN cluster_members cm ON cm.cluster_id = c.id
+            JOIN incidents i ON i.id = cm.incident_id
             WHERE {where} GROUP BY c.id ORDER BY cnt DESC
         """, params).fetchall()
         clusters = []
         for cid, summary, system, service, worst, cnt in rows:
-            incidents = self._db.execute("""
+            incidents = self._db.execute(f"""
                 SELECT i.id, i.title, i.classification_json, i.created_at
                 FROM incidents i JOIN cluster_members cm ON cm.incident_id = i.id
-                WHERE cm.cluster_id = ? ORDER BY i.created_at
-            """, (cid,)).fetchall()
+                WHERE cm.cluster_id = ? AND {where} ORDER BY i.created_at
+            """, [cid] + params).fetchall()
             incident_list = []
             for inc_id, inc_title, class_json, created_at in incidents:
                 try:
