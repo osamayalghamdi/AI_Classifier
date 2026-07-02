@@ -105,3 +105,6 @@ underlying need first — they're sized like their own mini-projects, not sub-bu
 | Human correction feedback loop | After Phase 1 validation |
 | Fine-tuning on your 10,000 incidents | After you have labeled data |
 | Chatbot for employees | Later |
+
+See [ROADMAP.md](ROADMAP.md) for the full enterprise plan (architecture, security,
+data layer, reliability, human-in-the-loop, UX) — this table is the short version.
