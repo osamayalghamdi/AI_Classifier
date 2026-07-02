@@ -16,6 +16,12 @@
 
 ## ☐ Phase 1 — Still needed
 
+- [ ] **Add proper logging** — structured logging so you can see what's happening:
+  - Every classify call: title, model used, latency, success/failure
+  - Every LLM call: prompt length, token count, retry attempts
+  - Clustering events: new cluster created, incident added to existing cluster
+  - Startup: model loaded, DB connected, embeddings ready
+  - Currently there are scattered `_log.debug()` and `print()` calls — unify everything under a single structured logger with consistent format + log level config via env
 - [ ] Export 100–200 real historical incidents to JSON
 - [ ] Run classifier on real data, compare predictions to existing labels
 - [ ] Measure accuracy per field (system, severity, type)
@@ -32,6 +38,19 @@
 | Medium | **Embedding-only mode** | `CLASSIFY_MODE=embedding` — skip LLM entirely, return top-N cosine matches (zero LLM latency) |
 | Low | **Cache recent classifications** | Short TTL cache for identical title+description |
 | Low | **Lazy summarization** | Don't re-summarize clusters on every classify, do it on a schedule |
+
+---
+
+## ☐ Phase 2 — Re-classification of active incidents
+
+Every active incident gets re-classified periodically (e.g. every 30 min) so the system improves its view over time as more context accumulates.
+
+- [ ] **Re-classify with history** — when re-classifying, pass the incident's past classifications + all related incidents as context. The LLM sees: "This was classified as X before. Since then, Y similar incidents appeared. Should it still be X?"
+- [ ] **Schedule via cron** — `RECLASSIFY_INTERVAL_MINUTES=30` env var. Background worker re-classifies active incidents on schedule.
+- [ ] **Track re-classification history** — store each re-classification result + timestamp, keep a running log per incident (not just overwrite)
+- [ ] **Report accuracy improves over time** — reports use the latest re-classification, not the first one. Clusters re-form based on the refined labels
+- [ ] **Weight recent incidents more** — newer incidents get higher weight in cluster similarity so that "the last 30 min" reflects current reality better
+- [ ] **UI hint** — show "Re-classified 5 min ago" next to each incident so users see it's alive
 
 ---
 
@@ -66,6 +85,7 @@ FEATURE_WEIGHT_ASSIGNEE=0       # ignore assignee entirely
 
 - [ ] **Order clusters by date** — incidents sorted chronologically within each report
 - [ ] **Report templates** — daily / weekly / monthly with configurable grouping
+- [ ] **Dynamic accuracy in reports** — reports show which classifications were refined since last run ("3 incidents re-classified from Major → Critical")
 
 ---
 
