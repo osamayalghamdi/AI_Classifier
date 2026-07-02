@@ -1,157 +1,81 @@
-# AI Incident Classifier — Phase 1 TODO
-
-**Goal of Phase 1:** Prove the current system works on real data. Keep it simple. Don't add new features yet.
-
-**Timeline:** 2 weeks
+# AI Incident Classifier — TODO
 
 ---
 
-## Week 1 — Fix bugs + get real data
+## ✅ Phase 1 — Done
 
-### Fix 3 small bugs (1 day)
-- [x] **Fix `worst_severity`** — update it when a worse incident joins a cluster (right now it's frozen at creation)
-- [x] **Fix report date filter** — count incidents by `incidents.created_at`, not `clusters.updated_at` (right now "today" can show old incidents)
-- [x] **Fix severity ranking in fallback** — use `SEVERITY_RANK`, not alphabetical `max()` (right now "Minor" beats "Critical")
-
-*These are fast. You can fix them in a day with Claude Code.*
-
-### Get real incidents (2–3 days)
-- [ ] Export 100–200 real historical incidents (they already have categories + solutions)
-- [ ] Save them to a file (JSON or CSV)
-- [ ] Make sure each has: title, description, system, and the existing label
+- [x] Fix `worst_severity` — updates when a worse incident joins a cluster
+- [x] Fix report date filter — counts by `incidents.created_at`, not `clusters.updated_at`
+- [x] Fix severity ranking fallback — uses `SEVERITY_RANK`, not alphabetical `max()`
+- [x] Service layer extraction (`main.py` → `service.py`)
+- [x] LLM re-ranking for related incidents (embedding pre-filter → LLM picks top 5)
+- [x] OCR support with EasyOCR
+- [x] OpenRouter API support as alternative to local Ollama
 
 ---
 
-## Week 2 — Test accuracy
+## ☐ Phase 1 — Still needed
 
-### Run the model (2 days)
-- [ ] Run the classifier on all the real incidents
-- [ ] Test with **Qwen 35B** (the production model) — not the laptop 7B
-- [ ] Save what the AI predicted vs. the existing label
-
-### Measure (2 days)
-- [ ] Count how many the AI got right (per field: system, severity, type)
-- [ ] Note which fields are strong, which are weak
-- [ ] Check Arabic incidents separately (do they classify worse than English?)
-
-### Report (1 day)
-- [ ] Write a 1-page summary: "AI got X% right. Strong: [...]. Weak: [...]."
-- [ ] Decide with manager: good enough to continue? (target: 80%+)
+- [ ] Export 100–200 real historical incidents to JSON
+- [ ] Run classifier on real data, compare predictions to existing labels
+- [ ] Measure accuracy per field (system, severity, type)
+- [ ] Check Arabic vs English accuracy separately
 
 ---
 
-## What you need from the manager / infra team
-- [ ] Access to the historical incidents (the 10,000 you have)
-- [ ] Access to test Qwen 35B (rent an A100 GPU, or pay-per-call API for testing)
+## ☐ Phase 2 — Performance
+
+| Priority | Item | Details |
+|---|---|---|
+| High | **Fast local mode** | `FAST_CLASSIFY=1` uses local Ollama 7B for instant feedback, 35B for batch runs |
+| High | **Async classify** | POST returns immediately with "processing", LLM runs in background, frontend polls |
+| Medium | **Embedding-only mode** | `CLASSIFY_MODE=embedding` — skip LLM entirely, return top-N cosine matches (zero LLM latency) |
+| Low | **Cache recent classifications** | Short TTL cache for identical title+description |
+| Low | **Lazy summarization** | Don't re-summarize clusters on every classify, do it on a schedule |
 
 ---
 
-## NOT in Phase 1 (save for later)
-These are real, but **don't touch them yet** — they're Phase 2+:
-- Vector index for scale (FAISS / pgvector) — only matters past a few thousand live incidents
-- Auth + rate limiting — needed before real users, not for testing
-- Move SQLite → Postgres
-- Human correction feedback loop
-- Fine-tuning on your 10,000 incidents
-- Chatbot for employees
+## ☐ Phase 2 — OCR
+
+- [ ] **Return structured text** — preserve line breaks, tag `[Arabic]` / `[English]` per block
+- [ ] **Arabic OCR quality** — benchmark easyocr vs surya-ocr on Arabic screenshots
+- [ ] **Auto-detect language** — don't hardcode, detect from the image
+- [ ] **Confidence score** — return confidence per line so LLM can weigh unreliable text lower
 
 ---
 
-## Phase 2 — LLM Re-ranking for Related Incidents
+## ☐ Phase 2 — Enriched incident schema
 
-### What & Why
-Right now `find_similar()` uses cosine similarity on embeddings to return the top 5 related incidents. This is fast but purely mathematical — it misses semantic nuance like the same root cause described in different words, or Arabic vs. English equivalents of the same incident.
-
-The idea: keep the embedding step as a fast pre-filter to grab a candidate pool (up to 100), then let the LLM read those candidates and pick the truly most similar ones. The LLM output maps back to the exact same `list[SimilarMatch]` format — nothing else in the pipeline changes.
-
-### Two-stage pipeline
+- [ ] **Supersedes / duplicates** — link incidents that supersede or duplicate each other
+- [ ] **Solution / resolution** — `resolved_at` + resolution text
+- [ ] **Escalations** — which team? at what level?
+- [ ] **Assignee / owner** — who was assigned
+- [ ] **Tickets / tasks** — links to Jira or related tasks
+- [ ] **Comments / timeline** — key events during the incident lifecycle
+- [ ] **Weighted feature control** — env vars to control how much each field weighs in similarity + classification:
 
 ```
-new incident
-     │
-     ▼
-[Stage 1 — embedding pre-filter]
-  cosine similarity (existing code, no threshold)
-  → top 100 candidates  (fast, no LLM)
-     │
-     ▼
-[Stage 2 — LLM re-rank]
-  pass: new incident + 100 candidates (id, title, description, classification)
-  LLM returns: top 5 {incident_id, similarity_percentage, reasoning}
-     │
-     ▼
-list[SimilarMatch]  ← same format as today
+FEATURE_WEIGHT_TITLE=2.0        # title is 2x more important
+FEATURE_WEIGHT_SOLUTION=0.5     # solution text matters less
+FEATURE_WEIGHT_ASSIGNEE=0       # ignore assignee entirely
 ```
-
-### Implementation plan
-
-- [ ] **`config.py`** — add two settings:
-  - `use_llm_reranking: bool = bool(getenv("USE_LLM_RERANKING", ""))` (off by default)
-  - `llm_rerank_candidates: int = int(getenv("LLM_RERANK_CANDIDATES", "100"))`
-
-- [ ] **`incident_store.py`** — add `find_candidates(text, *, top_n=100) -> list[dict]`:
-  - Same cosine loop as `find_similar()` but **no threshold**, just top-N
-  - Returns richer dicts: `{id, title, description, classification_json, cosine_score}`
-
-- [ ] **`classifier.py`** — add `llm_rerank_similar(query_title, query_description, candidates) -> list[dict]`:
-  - Builds a prompt: new incident details + numbered list of candidates
-  - LLM must return JSON array: `[{"id": "...", "similarity": 87, "reasoning": "..."}, ...]`
-  - Parse + validate the response (handle markdown fences, retry once on parse failure)
-  - Returns at most 5 entries, similarity as integer percentage (0–100)
-
-- [ ] **`incident_store.py`** — add `find_similar_llm_reranked(text, *, extracted_text="", classification=None) -> list[SimilarMatch]`:
-  - Calls `find_candidates()` to get up to 100
-  - Calls `llm_rerank_similar()` from classifier
-  - Looks up each returned ID to get `title` and `ClassificationResult`
-  - Converts percentage → float (e.g. 87 → 0.87) and returns `list[SimilarMatch]`
-  - Falls back to empty list if LLM fails (never crashes the classify flow)
-
-- [ ] **`main.py`** — in `_classify_and_store()`, swap in the new method when the flag is on:
-  ```python
-  if settings.use_llm_reranking:
-      matches = store.find_similar_llm_reranked(text, ...)
-  else:
-      matches = store.find_similar(text, ...)
-  ```
-
-### LLM prompt sketch
-
-**System:**
-```
-You are an incident similarity analyst.
-Given a new incident and a numbered list of historical incidents,
-identify the top 5 most semantically similar ones.
-
-Return ONLY a JSON array, no extra text:
-[
-  {"id": "<incident_id>", "similarity": <0-100>, "reasoning": "<one line>"},
-  ...
-]
-Rank by similarity descending. Return at most 5 items.
-```
-
-**User:**
-```
-New incident:
-  Title: <title>
-  Description: <description>
-  System: <affected_system> / <service>
-
-Historical incidents:
-1. [id=abc123] Title: "..." | System: ... | Description: "..."
-2. [id=def456] ...
-...
-```
-
-### Key constraints
-- Max 100 candidates to LLM — keeps prompt under ~12k tokens even for long descriptions
-- Similarity returned as integer 0–100 from LLM, converted to float 0.0–1.0 in `SimilarMatch`
-- Feature flag `USE_LLM_RERANKING=1` controls it; default is off (existing cosine path unchanged)
-- The entire stage-2 is wrapped in try/except — any LLM failure returns empty list (classify still succeeds)
-- Do NOT change `find_similar()` or anything that calls it — this is purely additive
 
 ---
 
-## One-line answer if the director asks "is it production-ready?"
+## ☐ Phase 2 — Reports
 
-> "It's a working prototype with the right design. Phase 1 proves accuracy on real data. After that we add auth, move to a proper database, and build a correction loop so it keeps improving. Well-understood steps, not a rebuild."
+- [ ] **Order clusters by date** — incidents sorted chronologically within each report
+- [ ] **Report templates** — daily / weekly / monthly with configurable grouping
+
+---
+
+## ☐ Future
+
+| Item | When |
+|---|---|
+| Auth + rate limiting | Before real users |
+| SQLite → PostgreSQL | When you need HA or concurrent writers |
+| Vector index (FAISS / pgvector) | Past a few thousand live incidents |
+| Human correction feedback loop | After Phase 1 validation |
+| Fine-tuning on your 10,000 incidents | After you have labeled data |
+| Chatbot for employees | Later |
