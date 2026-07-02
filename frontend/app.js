@@ -78,6 +78,7 @@ function renderResult(data) {
             '<span class="related-item-tag">' + esc(rel.classification.severity) + '</span>' +
             '<span class="related-item-tag">' + esc(rel.classification.incident_type) + '</span>' +
           '</div>' +
+          (rel.reasoning ? '<div class="related-item-reasoning">' + esc(rel.reasoning) + '</div>' : '') +
         '</div>';
     }
     relatedHTML += '</div>';

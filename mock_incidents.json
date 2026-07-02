@@ -1,0 +1,166 @@
+[
+  {
+    "title": "Nusuk payment gateway returns 504 on card validation",
+    "description": "During the 9-11 PM peak booking window, the card validation step times out for both Mada and Visa cardholders. Retrying the same transaction 2-3 times occasionally succeeds. Payment provider's own status page shows no incident."
+  },
+  {
+    "title": "Checkout fails after OTP confirmation with bank deduction shown",
+    "description": "Mutamir completed OTP verification for a 14,500 SAR Umrah package and the bank app shows the amount deducted, but the Nusuk booking still displays PAYMENT_FAILED. Transaction reference ALINMA-662-38492 has no matching confirmed booking."
+  },
+  {
+    "title": "Payment gateway intermittently declines valid Mada cards",
+    "description": "Around 15% of Mada checkout attempts are declined with CARD_DECLINED even though the cardholder has sufficient balance. No correlation found with time of day or specific bank. Support has no workaround besides retrying."
+  },
+  {
+    "title": "Currency conversion rounding error inflates SAR invoice total",
+    "description": "USD-to-SAR conversion on generated invoices adds an extra 0.30-0.50 SAR beyond the expected total due to a rounding step applied twice. Finance flagged a batch of 30+ invoices with the discrepancy."
+  },
+  {
+    "title": "Third-party card processor leaves transactions stuck in pending",
+    "description": "Card transactions remain in PENDING status for 6+ hours instead of resolving to success or failure. Mutamir cannot tell if payment went through, and support volume has spiked with status inquiries."
+  },
+  {
+    "title": "Refund for cancelled Umrah package stuck in pending for 7 days",
+    "description": "Mutamir cancelled within the 24-hour free-cancellation window, eligible for full refund per policy. REFUND-2026-55128 has shown PENDING_APPROVAL for a week with no agent action recorded, despite being marked 'escalated'."
+  },
+  {
+    "title": "Nusuk payment gateway completely down — all transactions failing",
+    "description": "Every payment attempt has returned 503 since 9:14 PM during the peak evening booking window. The payment provider's status page confirms a full outage on their end. No transactions are completing platform-wide."
+  },
+  {
+    "title": "Umrah booking form times out during Maghrib prayer rush",
+    "description": "Every evening for roughly 15-20 minutes around Maghrib, the booking portal becomes unresponsive under peak traffic and in-progress booking steps are not saved. Mutamir must restart the entire flow afterward."
+  },
+  {
+    "title": "Permit validation rejects valid Umrah visa numbers",
+    "description": "The Nusuk permit allocation step throws VALIDATION_FAILED for visa numbers that the visa system independently confirms as valid, blocking package confirmation. Affected mutamir cannot proceed past the permit step."
+  },
+  {
+    "title": "Group booking wizard loses selected package after adding travelers",
+    "description": "For groups larger than 10 mutamir, the previously selected Umrah package resets to default once additional travelers are added in step 3 of the booking wizard, forcing the whole selection to be redone."
+  },
+  {
+    "title": "Customer portal session expires mid-booking without warning",
+    "description": "Sessions on the Nusuk customer portal time out after 10 minutes of idle time while filling the multi-step booking form, with no warning and no autosave. Mutamir are dropped back to the login screen and lose all progress."
+  },
+  {
+    "title": "Permit allocation service shows no slots during peak season",
+    "description": "The Nusuk permit allocation service returns 'no permits available' even though the hotel and transport allocation backend confirms remaining capacity for the same dates. The two services appear out of sync."
+  },
+  {
+    "title": "Arabic translation typo on Umrah package confirmation page",
+    "description": "The booking confirmation page shows a misspelled Arabic word in the cancellation policy section. Cosmetic only, no functional impact, but flagged by several mutamir in feedback."
+  },
+  {
+    "title": "Family booking shows duplicate mutamir entries after merge",
+    "description": "When a father links his wife and children to his family Umrah account, the portal occasionally displays each dependent twice in the traveler list. Booking still proceeds correctly, but the duplicated rows confuse mutamir during review."
+  },
+  {
+    "title": "External flight availability API latency spiking to 8+ seconds",
+    "description": "Round-trip latency to the partner flight-booking API has climbed from a normal ~500ms to over 8 seconds during peak hours. A noticeable share of mutamir abandon the flight search before results load."
+  },
+  {
+    "title": "Visa status check connection intermittently times out",
+    "description": "The outbound connection to the external visa authority's status endpoint drops mid-request several times per hour, requiring 2-3 retries before a response comes back. No errors reported on the visa authority's side."
+  },
+  {
+    "title": "CDN serving stale Umrah package prices to Southeast Asia region",
+    "description": "Edge nodes serving Indonesia and Malaysia are caching outdated package listings, showing prices and availability that no longer match the current Nusuk catalog. Cache invalidation does not appear to be propagating."
+  },
+  {
+    "title": "DNS resolution delay for external visa verification endpoint",
+    "description": "Resolving the visa authority's hostname intermittently takes 3-4 seconds instead of the usual sub-100ms, adding noticeable latency to the visa verification step during checkout."
+  },
+  {
+    "title": "Brief network blip causes a failed Umrah visa submission",
+    "description": "A mutamir's visa submission failed with a generic connection error during a short network interruption. Resubmitting immediately afterward succeeded with no further issues."
+  },
+  {
+    "title": "Second mutamir reports identical transient visa submission failure",
+    "description": "Same generic connection error as other recent reports, occurring during a brief network interruption. Resubmission succeeded on the next attempt without changes."
+  },
+  {
+    "title": "SMS notifications to pilgrims delayed 2+ hours",
+    "description": "Visa approval and payment confirmation SMS messages are arriving 2 or more hours late through the outbound notification gateway. Several pilgrims report nearly missing time-sensitive deadlines as a result."
+  },
+  {
+    "title": "Email confirmation for visa approval not delivered",
+    "description": "Visa approval VISA-UM-7742 was issued but the confirmation email to the mutamir's address was never delivered. SMTP relay logs show the message accepted with no bounce recorded, and the deadline window has been affected."
+  },
+  {
+    "title": "Booking confirmation emails show garbled Arabic text",
+    "description": "Confirmation emails sent to pilgrims display corrupted Arabic characters in the subject line and body. The SMTP relay appears to be mishandling UTF-8 encoding for non-Latin subject headers."
+  },
+  {
+    "title": "Permit reminder notification not triggered before deadline",
+    "description": "The automated reminder meant to notify mutamir 48 hours before their permit confirmation deadline did not send for a batch of bookings, and several pilgrims missed the window as a result."
+  },
+  {
+    "title": "Database connection pool exhausted during evening booking peak",
+    "description": "App servers intermittently return 503 errors between 8 and 11 PM KSA as the database connection pool hits 100% utilization. No autoscaling or alerting triggered despite the sustained saturation."
+  },
+  {
+    "title": "Booking service response time degrades sharply after 9 PM",
+    "description": "Average response time for the booking service climbs from roughly 200ms to 6 seconds nightly, correlating with database connection pool saturation. No alert fired despite the sustained degradation."
+  },
+  {
+    "title": "Passport scan storage volume nearing capacity",
+    "description": "Storage allocated for uploaded passport and visa document scans is at 94% capacity. Risk of upload failures is growing as document submissions increase heading into peak Umrah season."
+  },
+  {
+    "title": "Compute autoscaling fails to add capacity during traffic spike",
+    "description": "The autoscaling group did not add nodes despite CPU utilization exceeding 90% for 20 minutes during a registration traffic spike. Manual intervention was required to add capacity and restore normal response times."
+  },
+  {
+    "title": "Check-in kiosk touchscreen unresponsive at Jeddah airport counter",
+    "description": "A self-service Umrah check-in kiosk at the airport counter stopped responding to touch input, requiring a manual power cycle to restore it. Caused a short queue backup during a busy arrival window."
+  },
+  {
+    "title": "Second airport check-in kiosk also freezes mid-session",
+    "description": "Another check-in kiosk at a different terminal froze mid-transaction with the same unresponsive touchscreen symptom. Power-cycling resolved it, consistent with the other recent kiosk report."
+  },
+  {
+    "title": "Accommodation allocation double-books Makkah hotel rooms",
+    "description": "Two separate mutamir groups were assigned the same room block for overlapping dates. Investigation points to an inventory sync issue between the Nusuk allocation service and the hotel partner's system."
+  },
+  {
+    "title": "Released hotel rooms not reflected in allocation system",
+    "description": "Rooms freed up after a partner hotel cancellation still show as booked in the Nusuk allocation system, blocking new mutamir groups from being assigned to those rooms even though capacity exists."
+  },
+  {
+    "title": "Transport bus allocation mismatched with updated group size",
+    "description": "A 45-seat bus was assigned to an Umrah group that grew to 60 people after late additions. The allocation logic did not re-check capacity against the updated group size before confirming transport."
+  },
+  {
+    "title": "Catering allocation count mismatched for group size",
+    "description": "Catering quantities for one Umrah group were calculated against the original headcount and not updated after several late additions, leaving the group short on meals for the first day."
+  },
+  {
+    "title": "Spike in failed login attempts on pilgrim accounts",
+    "description": "Over 3,000 failed login attempts from a small cluster of IP addresses targeted pilgrim accounts overnight, consistent with a credential-stuffing attempt. No successful unauthorized logins confirmed yet."
+  },
+  {
+    "title": "Mass account lockouts triggered after suspicious login activity",
+    "description": "Automated lockouts fired for over 200 pilgrim accounts within a 10-minute window following the failed-login spike. Support queue is flooded with unlock requests from legitimate users caught in the response."
+  },
+  {
+    "title": "Pilgrim account compromised via password reused from external breach",
+    "description": "A single pilgrim account was accessed using credentials matching a password exposed in an unrelated external data breach. Account was locked and the mutamir notified to reset credentials."
+  },
+  {
+    "title": "Visa status sync job lagging 4+ hours behind source system",
+    "description": "The nightly ETL job that pulls visa status updates from the external visa authority is running 4+ hours behind schedule. Nusuk is showing outdated approval status to mutamir who have already been approved."
+  },
+  {
+    "title": "Analytics dashboard shows duplicate incident counts after pipeline retry",
+    "description": "A retried ETL batch reprocessed a set of records without deduplication, inflating the weekly incident-count figures on the analytics dashboard by roughly 12% until corrected."
+  },
+  {
+    "title": "Manual data entry duplicates pilgrim records during migration",
+    "description": "A manual data correction during a records migration accidentally re-imported a batch of pilgrim records, creating duplicate entries for around 200 mutamir in the system."
+  },
+  {
+    "title": "OCR misreads passport expiry date during document scan",
+    "description": "The document scanning step occasionally misreads the passport expiry date by one digit, which can cause a valid passport to be flagged as expired. Caught during manual review before affecting a booking."
+  }
+]

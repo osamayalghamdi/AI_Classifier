@@ -9,9 +9,9 @@
 ## Week 1 — Fix bugs + get real data
 
 ### Fix 3 small bugs (1 day)
-- [ ] **Fix `worst_severity`** — update it when a worse incident joins a cluster (right now it's frozen at creation)
-- [ ] **Fix report date filter** — count incidents by `incidents.created_at`, not `clusters.updated_at` (right now "today" can show old incidents)
-- [ ] **Fix severity ranking in fallback** — use `_SEVERITY_RANK`, not alphabetical `max()` (right now "Minor" beats "Critical")
+- [x] **Fix `worst_severity`** — update it when a worse incident joins a cluster (right now it's frozen at creation)
+- [x] **Fix report date filter** — count incidents by `incidents.created_at`, not `clusters.updated_at` (right now "today" can show old incidents)
+- [x] **Fix severity ranking in fallback** — use `SEVERITY_RANK`, not alphabetical `max()` (right now "Minor" beats "Critical")
 
 *These are fast. You can fix them in a day with Claude Code.*
 
@@ -52,9 +52,103 @@ These are real, but **don't touch them yet** — they're Phase 2+:
 - Auth + rate limiting — needed before real users, not for testing
 - Move SQLite → Postgres
 - Human correction feedback loop
-- LLM re-ranking for related incidents
 - Fine-tuning on your 10,000 incidents
 - Chatbot for employees
+
+---
+
+## Phase 2 — LLM Re-ranking for Related Incidents
+
+### What & Why
+Right now `find_similar()` uses cosine similarity on embeddings to return the top 5 related incidents. This is fast but purely mathematical — it misses semantic nuance like the same root cause described in different words, or Arabic vs. English equivalents of the same incident.
+
+The idea: keep the embedding step as a fast pre-filter to grab a candidate pool (up to 100), then let the LLM read those candidates and pick the truly most similar ones. The LLM output maps back to the exact same `list[SimilarMatch]` format — nothing else in the pipeline changes.
+
+### Two-stage pipeline
+
+```
+new incident
+     │
+     ▼
+[Stage 1 — embedding pre-filter]
+  cosine similarity (existing code, no threshold)
+  → top 100 candidates  (fast, no LLM)
+     │
+     ▼
+[Stage 2 — LLM re-rank]
+  pass: new incident + 100 candidates (id, title, description, classification)
+  LLM returns: top 5 {incident_id, similarity_percentage, reasoning}
+     │
+     ▼
+list[SimilarMatch]  ← same format as today
+```
+
+### Implementation plan
+
+- [ ] **`config.py`** — add two settings:
+  - `use_llm_reranking: bool = bool(getenv("USE_LLM_RERANKING", ""))` (off by default)
+  - `llm_rerank_candidates: int = int(getenv("LLM_RERANK_CANDIDATES", "100"))`
+
+- [ ] **`incident_store.py`** — add `find_candidates(text, *, top_n=100) -> list[dict]`:
+  - Same cosine loop as `find_similar()` but **no threshold**, just top-N
+  - Returns richer dicts: `{id, title, description, classification_json, cosine_score}`
+
+- [ ] **`classifier.py`** — add `llm_rerank_similar(query_title, query_description, candidates) -> list[dict]`:
+  - Builds a prompt: new incident details + numbered list of candidates
+  - LLM must return JSON array: `[{"id": "...", "similarity": 87, "reasoning": "..."}, ...]`
+  - Parse + validate the response (handle markdown fences, retry once on parse failure)
+  - Returns at most 5 entries, similarity as integer percentage (0–100)
+
+- [ ] **`incident_store.py`** — add `find_similar_llm_reranked(text, *, extracted_text="", classification=None) -> list[SimilarMatch]`:
+  - Calls `find_candidates()` to get up to 100
+  - Calls `llm_rerank_similar()` from classifier
+  - Looks up each returned ID to get `title` and `ClassificationResult`
+  - Converts percentage → float (e.g. 87 → 0.87) and returns `list[SimilarMatch]`
+  - Falls back to empty list if LLM fails (never crashes the classify flow)
+
+- [ ] **`main.py`** — in `_classify_and_store()`, swap in the new method when the flag is on:
+  ```python
+  if settings.use_llm_reranking:
+      matches = store.find_similar_llm_reranked(text, ...)
+  else:
+      matches = store.find_similar(text, ...)
+  ```
+
+### LLM prompt sketch
+
+**System:**
+```
+You are an incident similarity analyst.
+Given a new incident and a numbered list of historical incidents,
+identify the top 5 most semantically similar ones.
+
+Return ONLY a JSON array, no extra text:
+[
+  {"id": "<incident_id>", "similarity": <0-100>, "reasoning": "<one line>"},
+  ...
+]
+Rank by similarity descending. Return at most 5 items.
+```
+
+**User:**
+```
+New incident:
+  Title: <title>
+  Description: <description>
+  System: <affected_system> / <service>
+
+Historical incidents:
+1. [id=abc123] Title: "..." | System: ... | Description: "..."
+2. [id=def456] ...
+...
+```
+
+### Key constraints
+- Max 100 candidates to LLM — keeps prompt under ~12k tokens even for long descriptions
+- Similarity returned as integer 0–100 from LLM, converted to float 0.0–1.0 in `SimilarMatch`
+- Feature flag `USE_LLM_RERANKING=1` controls it; default is off (existing cosine path unchanged)
+- The entire stage-2 is wrapped in try/except — any LLM failure returns empty list (classify still succeeds)
+- Do NOT change `find_similar()` or anything that calls it — this is purely additive
 
 ---
 

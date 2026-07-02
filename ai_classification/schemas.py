@@ -34,6 +34,14 @@ class Severity(StrEnum):
     cosmetic = "Cosmetic"
 
 
+# Highest severity = highest rank; use with max(..., key=SEVERITY_RANK.get)
+# instead of max() directly — Severity values sort alphabetically wrong
+# ("Minor" > "Critical").
+SEVERITY_RANK: dict[str, int] = {
+    s.value: i for i, s in enumerate(reversed(list(Severity)))
+}
+
+
 class Urgency(StrEnum):
     immediate = "Immediate"
     high = "High"

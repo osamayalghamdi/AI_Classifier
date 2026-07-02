@@ -1,6 +1,6 @@
 """Pydantic models for API requests, responses, and the LLM classification output."""
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .schemas import AffectedSystem, IncidentType, Severity, Urgency, Category, SERVICES_BY_SYSTEM
 
@@ -39,11 +39,33 @@ class ClassificationResult(BaseModel):
         )
 
 
+class RerankItem(BaseModel):
+    """One LLM-ranked candidate from `llm_rerank_similar`'s raw JSON array output."""
+
+    id: str
+    similarity: int
+    reasoning: str = ""
+
+    @field_validator("id", mode="before")
+    @classmethod
+    def _coerce_id(cls, v: object) -> object:
+        # LLMs sometimes echo the candidate id as a bare JSON number.
+        return str(v) if isinstance(v, (int, float)) else v
+
+    @field_validator("similarity")
+    @classmethod
+    def _clamp_similarity(cls, v: int) -> int:
+        # LLMs occasionally return values outside 0-100 — clamp rather than reject
+        # so one sloppy field doesn't discard an otherwise-usable match.
+        return max(0, min(100, v))
+
+
 class RelatedIncident(BaseModel):
     id: str
     title: str
     similarity: float = Field(ge=0.0, le=1.0)
     classification: ClassificationResult
+    reasoning: str | None = None
 
 
 class ClassifyResponse(BaseModel):
