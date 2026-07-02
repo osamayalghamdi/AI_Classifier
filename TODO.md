@@ -14,22 +14,33 @@
 
 ---
 
-## ☐ Phase 1 — Still needed
+## 🚧 Phase 1 — Blocking gate (do this next, in order)
 
-- [ ] **Add proper logging** — structured logging so you can see what's happening:
-  - Every classify call: title, model used, latency, success/failure
-  - Every LLM call: prompt length, token count, retry attempts
-  - Clustering events: new cluster created, incident added to existing cluster
-  - Startup: model loaded, DB connected, embeddings ready
-  - Currently there are scattered `_log.debug()` and `print()` calls — unify everything under a single structured logger with consistent format + log level config via env
+Nothing below this section should get real investment until this comes back. It's the
+one number that tells you whether the rest of the roadmap is worth building.
+
 - [ ] Export 100–200 real historical incidents to JSON
 - [ ] Run classifier on real data, compare predictions to existing labels
 - [ ] Measure accuracy per field (system, severity, type)
 - [ ] Check Arabic vs English accuracy separately
+- [ ] Write a 1-page summary, decide with manager: 80%+ good enough to continue?
+
+**Minimal logging to support this run** — not a full structured-logging overhaul, just
+enough to debug the accuracy pass and see where predictions go wrong:
+- [ ] Every classify call: title, model used, latency, success/failure
+- [ ] Every LLM call: retry attempts, parse failures
+
+(Full structured logging — token counts, clustering events, log-level config via
+env — belongs in Phase 2, once there's an actual production traffic pattern to log.)
 
 ---
 
-## ☐ Phase 2 — Performance
+## ☐ Phase 2 — Provisional (revisit after the accuracy numbers land)
+
+Everything from here down is a reasonable idea, not a committed plan. If accuracy comes
+back weak, most of this gets re-scoped or dropped.
+
+### Performance
 
 | Priority | Item | Details |
 |---|---|---|
@@ -39,31 +50,14 @@
 | Low | **Cache recent classifications** | Short TTL cache for identical title+description |
 | Low | **Lazy summarization** | Don't re-summarize clusters on every classify, do it on a schedule |
 
----
-
-## ☐ Phase 2 — Re-classification of active incidents
-
-Every active incident gets re-classified periodically (e.g. every 30 min) so the system improves its view over time as more context accumulates.
-
-- [ ] **Re-classify with history** — when re-classifying, pass the incident's past classifications + all related incidents as context. The LLM sees: "This was classified as X before. Since then, Y similar incidents appeared. Should it still be X?"
-- [ ] **Schedule via cron** — `RECLASSIFY_INTERVAL_MINUTES=30` env var. Background worker re-classifies active incidents on schedule.
-- [ ] **Track re-classification history** — store each re-classification result + timestamp, keep a running log per incident (not just overwrite)
-- [ ] **Report accuracy improves over time** — reports use the latest re-classification, not the first one. Clusters re-form based on the refined labels
-- [ ] **Weight recent incidents more** — newer incidents get higher weight in cluster similarity so that "the last 30 min" reflects current reality better
-- [ ] **UI hint** — show "Re-classified 5 min ago" next to each incident so users see it's alive
-
----
-
-## ☐ Phase 2 — OCR
+### OCR
 
 - [ ] **Return structured text** — preserve line breaks, tag `[Arabic]` / `[English]` per block
 - [ ] **Arabic OCR quality** — benchmark easyocr vs surya-ocr on Arabic screenshots
 - [ ] **Auto-detect language** — don't hardcode, detect from the image
 - [ ] **Confidence score** — return confidence per line so LLM can weigh unreliable text lower
 
----
-
-## ☐ Phase 2 — Enriched incident schema
+### Enriched incident schema
 
 - [ ] **Supersedes / duplicates** — link incidents that supersede or duplicate each other
 - [ ] **Solution / resolution** — `resolved_at` + resolution text
@@ -71,17 +65,8 @@ Every active incident gets re-classified periodically (e.g. every 30 min) so the
 - [ ] **Assignee / owner** — who was assigned
 - [ ] **Tickets / tasks** — links to Jira or related tasks
 - [ ] **Comments / timeline** — key events during the incident lifecycle
-- [ ] **Weighted feature control** — env vars to control how much each field weighs in similarity + classification:
 
-```
-FEATURE_WEIGHT_TITLE=2.0        # title is 2x more important
-FEATURE_WEIGHT_SOLUTION=0.5     # solution text matters less
-FEATURE_WEIGHT_ASSIGNEE=0       # ignore assignee entirely
-```
-
----
-
-## ☐ Phase 2 — Reports
+### Reports
 
 - [ ] **Order clusters by date** — incidents sorted chronologically within each report
 - [ ] **Report templates** — daily / weekly / monthly with configurable grouping
@@ -89,7 +74,28 @@ FEATURE_WEIGHT_ASSIGNEE=0       # ignore assignee entirely
 
 ---
 
-## ☐ Future
+## ❓ Needs confirmation before building — not yet scoped as real work
+
+These aren't rejected, just unproven. Don't start either without confirming the
+underlying need first — they're sized like their own mini-projects, not sub-bullets.
+
+- **Re-classification of active incidents** — background worker re-classifies every
+  active incident every N minutes with accumulated context (past classification +
+  new related incidents), tracks re-classification history, re-forms clusters on the
+  refined labels, weights recent incidents higher in similarity, shows "re-classified
+  5 min ago" in the UI. Real feature, real scope (scheduler, history table, cluster
+  re-forming logic). **Is there an observed case where incidents are actually
+  misclassified early and corrected later, or is this speculative?** If nobody's hit
+  that problem yet, it can wait.
+- **Weighted feature control** (`FEATURE_WEIGHT_TITLE=2.0`, etc.) — configurable
+  per-field weighting for similarity + classification. Premature without accuracy
+  data showing *which* field is actually dragging predictions down. Add this only
+  after Phase 1 measurement identifies a specific field that needs it — don't build
+  the knob before you know which way to turn it.
+
+---
+
+## Future
 
 | Item | When |
 |---|---|
