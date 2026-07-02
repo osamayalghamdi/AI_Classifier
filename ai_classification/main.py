@@ -1,9 +1,9 @@
 """FastAPI application — endpoints only."""
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 
-from .models import ClassifyRequest, ClassifyResponse, ReportResponse
-from .service import lifespan, get_health, classify_and_store, build_daily_report, build_weekly_report
+from .models import ClassifyRequest, ClassifyResponse, ResolveResponse
+from .service import lifespan, get_health, classify_and_store, resolve_incident
 
 app = FastAPI(title="AI Incident Classification", version="0.2.0", lifespan=lifespan)
 
@@ -23,11 +23,8 @@ def classify_incident_get(title: str, description: str = ""):
     return classify_and_store(title, description)
 
 
-@app.get("/reports/daily", response_model=ReportResponse)
-def report_daily():
-    return build_daily_report()
-
-
-@app.get("/reports/weekly", response_model=ReportResponse)
-def report_weekly():
-    return build_weekly_report()
+@app.post("/incidents/{incident_id}/resolve", response_model=ResolveResponse)
+def resolve(incident_id: str):
+    if not resolve_incident(incident_id):
+        raise HTTPException(status_code=404, detail="Incident not found")
+    return ResolveResponse(incident_id=incident_id, status="resolved")

@@ -24,8 +24,5 @@ class Settings:
     embedding_model_name: str = getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
     similarity_threshold: float = float(getenv("SIMILARITY_THRESHOLD", "0.80"))
 
-    use_llm_reranking: bool = bool(getenv("USE_LLM_RERANKING", ""))
-    llm_rerank_candidates: int = int(getenv("LLM_RERANK_CANDIDATES", "100"))
-
 
 settings = Settings()

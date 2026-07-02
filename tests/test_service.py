@@ -1,11 +1,10 @@
 """Tests for service — orchestration between classifier and store."""
 
-from dataclasses import replace
-
 import pytest
 
 import ai_classification.service as service
-from ai_classification.models import ClassificationResult, RerankItem
+from ai_classification.models import ClassificationResult
+from ai_classification.incident_store import SimilarMatch
 from ai_classification.schemas import AffectedSystem, IncidentType, Severity, Urgency, Category
 
 
@@ -24,77 +23,63 @@ def _make_result(**overrides) -> ClassificationResult:
     return ClassificationResult(**defaults)
 
 
-def _make_candidate(result: ClassificationResult, id_="abc123"):
-    return {
-        "id": id_,
-        "title": "Similar incident",
-        "description": "d",
-        "classification_json": result.model_dump_json(),
-        "cosine_score": 0.5,
-    }
+# ── classify_and_store ──────────────────────────────────────────────
 
 
-# ── _llm_matches ─────────────────────────────────────────────────────
-
-
-class TestLlmMatches:
-    def test_no_candidates_returns_empty_without_calling_llm(self, monkeypatch):
-        monkeypatch.setattr(service.store, "find_candidates", lambda *a, **k: [])
-        called = []
-        monkeypatch.setattr(service, "llm_rerank_similar", lambda *a, **k: called.append(1) or [])
-        result = service._llm_matches("title", "desc", "", _make_result())
-        assert result == []
-        assert called == []
-
-    def test_maps_ranked_items_to_similar_match(self, monkeypatch):
+class TestClassifyAndStore:
+    def test_saves_incident_and_returns_id(self, monkeypatch):
         result_cls = _make_result()
-        candidates = [_make_candidate(result_cls)]
-        monkeypatch.setattr(service.store, "find_candidates", lambda *a, **k: candidates)
+        monkeypatch.setattr(service, "classify", lambda title, desc: result_cls)
+        monkeypatch.setattr(service.store, "find_similar", lambda *a, **k: [])
+        saved = {}
         monkeypatch.setattr(
-            service, "llm_rerank_similar",
-            lambda *a, **k: [RerankItem(id="abc123", similarity=87, reasoning="same cause")],
+            service.store, "save_incident",
+            lambda iid, title, desc, cls, extracted_text="": saved.update(id=iid, title=title),
         )
-        matches = service._llm_matches("title", "desc", "", result_cls)
-        assert len(matches) == 1
-        assert matches[0].id == "abc123"
-        assert matches[0].title == "Similar incident"
-        assert matches[0].similarity == pytest.approx(0.87)
-        assert matches[0].reasoning == "same cause"
+        monkeypatch.setattr(service.store, "generate_id", lambda: "abc123")
 
-    def test_llm_failure_returns_empty_list(self, monkeypatch):
+        resp = service.classify_and_store("Checkout down", "504 errors")
+        assert resp.incident_id == "abc123"
+        assert resp.incident_title == "Checkout down"
+        assert resp.classification == result_cls
+        assert saved == {"id": "abc123", "title": "Checkout down"}
+
+    def test_maps_similar_matches_to_response(self, monkeypatch):
         result_cls = _make_result()
-        monkeypatch.setattr(service.store, "find_candidates", lambda *a, **k: [_make_candidate(result_cls)])
+        monkeypatch.setattr(service, "classify", lambda title, desc: result_cls)
+        monkeypatch.setattr(service.store, "save_incident", lambda *a, **k: None)
+        monkeypatch.setattr(service.store, "generate_id", lambda: "new-id")
+        match = SimilarMatch(id="dup-1", title="Similar incident", similarity=0.91, classification=result_cls)
+        monkeypatch.setattr(service.store, "find_similar", lambda *a, **k: [match])
 
-        def boom(*a, **k):
-            raise ValueError("LLM exploded")
+        resp = service.classify_and_store("Checkout down", "504 errors")
+        assert len(resp.similar_open_incidents) == 1
+        dupe = resp.similar_open_incidents[0]
+        assert dupe.id == "dup-1"
+        assert dupe.title == "Similar incident"
+        assert dupe.similarity == pytest.approx(0.91)
 
-        monkeypatch.setattr(service, "llm_rerank_similar", boom)
-        matches = service._llm_matches("title", "desc", "", result_cls)
-        assert matches == []
-
-    def test_ignores_ranked_item_with_unknown_id(self, monkeypatch):
+    def test_no_similar_incidents_returns_empty_list(self, monkeypatch):
         result_cls = _make_result()
-        monkeypatch.setattr(service.store, "find_candidates", lambda *a, **k: [_make_candidate(result_cls)])
-        monkeypatch.setattr(
-            service, "llm_rerank_similar",
-            lambda *a, **k: [RerankItem(id="does-not-exist", similarity=90)],
-        )
-        matches = service._llm_matches("title", "desc", "", result_cls)
-        assert matches == []
+        monkeypatch.setattr(service, "classify", lambda title, desc: result_cls)
+        monkeypatch.setattr(service.store, "save_incident", lambda *a, **k: None)
+        monkeypatch.setattr(service.store, "generate_id", lambda: "new-id")
+        monkeypatch.setattr(service.store, "find_similar", lambda *a, **k: [])
+
+        resp = service.classify_and_store("Checkout down", "504 errors")
+        assert resp.similar_open_incidents == []
 
 
-# ── find_matches routing ────────────────────────────────────────────
+# ── resolve_incident ─────────────────────────────────────────────────
 
 
-class TestFindMatches:
-    def test_routes_to_cosine_when_flag_off(self, monkeypatch):
-        monkeypatch.setattr(service, "settings", replace(service.settings, use_llm_reranking=False))
-        monkeypatch.setattr(service, "_cosine_matches", lambda *a, **k: "cosine")
-        monkeypatch.setattr(service, "_llm_matches", lambda *a, **k: "llm")
-        assert service.find_matches("t", "d", "", _make_result()) == "cosine"
+class TestResolveIncident:
+    def test_delegates_to_store(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(service.store, "resolve_incident", lambda iid: calls.append(iid) or True)
+        assert service.resolve_incident("abc123") is True
+        assert calls == ["abc123"]
 
-    def test_routes_to_llm_when_flag_on(self, monkeypatch):
-        monkeypatch.setattr(service, "settings", replace(service.settings, use_llm_reranking=True))
-        monkeypatch.setattr(service, "_cosine_matches", lambda *a, **k: "cosine")
-        monkeypatch.setattr(service, "_llm_matches", lambda *a, **k: "llm")
-        assert service.find_matches("t", "d", "", _make_result()) == "llm"
+    def test_returns_false_for_unknown_incident(self, monkeypatch):
+        monkeypatch.setattr(service.store, "resolve_incident", lambda iid: False)
+        assert service.resolve_incident("does-not-exist") is False

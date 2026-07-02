@@ -1,16 +1,11 @@
 """LLM-based incident classifier — provider-agnostic via LiteLLM."""
 
 import json
-import logging
 
 from litellm import completion
 
-_log = logging.getLogger(__name__)
-
-from pydantic import ValidationError
-
 from .config import settings
-from .models import ClassificationResult, RerankItem
+from .models import ClassificationResult
 from .schemas import (
     AffectedSystem,
     IncidentType,
@@ -18,7 +13,6 @@ from .schemas import (
     Urgency,
     Category,
     SERVICES_BY_SYSTEM,
-    SEVERITY_RANK,
 )
 
 
@@ -276,73 +270,6 @@ def _build_retry_prompt(user_prompt: str, last_error: str) -> str:
 # ── Public API ────────────────────────────────────────────────────────
 
 
-def _parse_rerank_response(raw: str) -> list[RerankItem]:
-    _log.debug("LLM rerank raw: %s", raw)
-    parsed = json.loads(_extract_json_str(raw))
-    if not isinstance(parsed, list):
-        raise ValueError(f"expected a JSON array, got {type(parsed).__name__}")
-
-    items: list[RerankItem] = []
-    for entry in parsed[:5]:
-        try:
-            items.append(RerankItem.model_validate(entry))
-        except ValidationError as e:
-            _log.debug("Skipping invalid rerank item %r: %s", entry, e)
-    return items
-
-
-def llm_rerank_similar(
-    query_title: str,
-    query_description: str,
-    candidates: list[dict],
-) -> list[RerankItem]:
-    """Ask the LLM to pick the top 5 most similar incidents from a candidate pool.
-
-    Retries once on parse failure, mirroring `classify()`.
-    """
-    if not candidates:
-        return []
-
-    lines = []
-    for i, c in enumerate(candidates, 1):
-        try:
-            cls = ClassificationResult.model_validate(json.loads(c["classification_json"]))
-            cls_str = f"{cls.affected_system} / {cls.service} / {cls.incident_type}"
-        except Exception:
-            cls_str = "Unknown"
-        desc = (c.get("description") or "")[:200]
-        lines.append(f'{i}. [id={c["id"]}] "{c["title"]}" | {cls_str} | "{desc}"')
-
-    system_prompt = (
-        "You are an incident similarity analyst.\n"
-        "Given a new incident and a list of historical incidents, identify the top 5 most similar ones.\n"
-        "Consider: same root cause, same system behavior, same symptoms — even if described differently "
-        "or in a different language (Arabic/English).\n\n"
-        "Return ONLY a JSON array, no extra text:\n"
-        '[{"id": "<incident_id>", "similarity": <0-100>, "reasoning": "<one line>"}, ...]\n'
-        "Rank by similarity descending. Return at most 5 items."
-    )
-    user_prompt = (
-        f'New incident:\n  Title: "{query_title}"\n  Description: "{query_description}"\n\n'
-        f"Historical incidents:\n" + "\n".join(lines)
-    )
-
-    try:
-        raw = _call_llm([
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ])
-        return _parse_rerank_response(raw)
-    except Exception as e:
-        last_error = str(e)
-
-    raw = _call_llm([
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": _build_retry_prompt(user_prompt, last_error)},
-    ])
-    return _parse_rerank_response(raw)
-
-
 def classify(title: str, description: str) -> ClassificationResult:
     """Classify an incident. Always returns — falls back to low-confidence on LLM failure."""
     user_prompt = _build_user_prompt(title, description)
@@ -373,39 +300,3 @@ def classify(title: str, description: str) -> ClassificationResult:
         confidence="low",
         reasoning=f"Classification failed after 2 attempts. Last error: {last_error}",
     )
-
-
-def summarize_cluster(incidents: list[dict]) -> str:
-    """Summarize a cluster of related incidents into 2–3 sentences."""
-    lines = [
-        f'{i}. "{inc["title"]}" — {c.affected_system} / {c.service} / '
-        f'{c.incident_type} / {c.severity} — "{inc.get("description", "")}"'
-        for i, inc in enumerate(incidents, 1)
-        for c in [inc["classification"]]
-    ]
-    try:
-        raw = _call_llm([
-            {
-                "role": "system",
-                "content": (
-                    "You are an incident analyst. Write 2–3 sentences "
-                    "covering the underlying issue, which system is affected, "
-                    "and the overall impact. No formatting, no JSON, no labels."
-                ),
-            },
-            {
-                "role": "user",
-                "content": f"Related incidents (same problem):\n\n{chr(10).join(lines)}\n\nSummary:",
-            },
-        ])
-        return raw.strip().strip('"')
-    except Exception:
-        c = incidents[0]["classification"]
-        worst = max(
-            (i["classification"].severity for i in incidents),
-            key=lambda s: SEVERITY_RANK.get(str(s), 0),
-        )
-        return (
-            f"{len(incidents)} related incidents affecting {c.affected_system} / {c.service}. "
-            f"Worst severity: {worst}."
-        )

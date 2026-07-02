@@ -1,8 +1,14 @@
 # AI Incident Classifier
 
-Structured incident classification via LLM. Feed it a title and description, get back validated categories plus a daily/weekly report of clustered incidents.
+Structured incident classification via LLM, with live duplicate detection. Feed it a
+title and description, get back validated categories plus a list of similar *open*
+incidents so a call center doesn't escalate the same issue twice.
 
-**How the LLM is used** — classification (always), cluster summarization (once per cluster). Everything else is embedding cosine similarity + SQL. Reports return in < 10ms with zero LLM calls.
+**Phase 1 scope.** Clustering, reports, and LLM re-ranking exist on the `phases-2-3`
+branch, paused. See [ROADMAP.md](ROADMAP.md) for status and the longer-range plan.
+
+**How the LLM is used** — classification only, once per incident. Duplicate detection
+is embedding cosine similarity against active incidents — no LLM call, no clustering.
 
 ## Architecture
 
@@ -12,20 +18,15 @@ Incident submitted (+ optional image/PDF → OCR text)
        ▼
   Qwen2.5:7b ──→ Structured labels (system, service, type, severity…)
        │
-       ├── Save to SQLite (embedding = title + description + OCR text + labels)
-       ├── Check cluster centroids ──→ matched? → join that cluster
-       │     (fast: O(clusters), no member scan)
-       ├── Show top 5 similar incidents as "related"
-       └── Cluster has ≥2 members? ──→ LLM writes/updates summary
-                                          centroid = mean of all member embeddings
+       ├── Embed (title + description + OCR text + labels)
+       ├── Cosine similarity against ACTIVE incidents only ──→ "N similar open incidents"
+       └── Save to SQLite (status = active)
 
-Report requested
+Incident resolved
        │
        ▼
-  SQL join: clusters + members ──→ sorted by count → < 10ms response
+  POST /incidents/{id}/resolve ──→ status = resolved, drops out of future duplicate checks
 ```
-
-**Key insight**: clusters are built incrementally at classification time. The report is just a read.
 
 ## Stack
 
@@ -53,11 +54,10 @@ curl -X POST http://localhost:8000/classify \
     "description": "Users in EU see 504 errors during purchase."
   }'
 
-# Reports
-curl http://localhost:8000/reports/daily
-curl http://localhost:8000/reports/weekly
+# Mark an incident resolved (stops it from surfacing as a duplicate)
+curl -X POST http://localhost:8000/incidents/<incident_id>/resolve
 
-# Frontend (tabs: Classify + Reports)
+# Frontend
 open http://localhost:8082
 ```
 
@@ -87,15 +87,27 @@ open http://localhost:8082
     "reasoning": "Partial degradation of checkout."
   },
   "incident_id": "a1b2c3d4e5f6",
-  "related_incidents": [
-    { "id": "...", "title": "PayPal checkout errors", "similarity": 0.72, "classification": { ... } }
+  "similar_open_incidents": [
+    { "id": "...", "title": "PayPal checkout errors", "similarity": 0.87, "classification": { ... } }
   ]
 }
 ```
 
+`similar_open_incidents` only ever contains incidents with `status = active` — once an
+incident is resolved it stops counting as a potential duplicate.
+
 ### GET /classify
 
 Same shape, query-parameter variant: `?title=...&description=...`
+
+### POST /incidents/{incident_id}/resolve
+
+Marks an incident resolved so it no longer surfaces in future duplicate checks.
+Returns `404` if the ID is unknown.
+
+```json
+{ "incident_id": "a1b2c3d4e5f6", "status": "resolved" }
+```
 
 ### POST /ocr
 
@@ -105,27 +117,6 @@ as `extracted_text` in `/classify`.
 
 ```json
 { "text": "...", "has_low_confidence": false, "low_confidence_words": [] }
-```
-
-### GET /reports/daily | /reports/weekly
-
-```json
-{
-  "period": "Today",
-  "total_incidents": 9,
-  "clusters": [
-    {
-      "summary": "Widespread payment gateway failures affecting multiple providers.",
-      "affected_system": "Payment Gateway",
-      "affected_service": "Checkout",
-      "count": 5,
-      "worst_severity": "Critical",
-      "incidents": [
-        { "id": "...", "title": "PayPal errors", "severity": "Major", "created_at": "..." }
-      ]
-    }
-  ]
-}
 ```
 
 ### GET /health
@@ -154,13 +145,9 @@ Each system has its own services (e.g. `Payment Gateway` → `Checkout`, `Refund
 "Stripe payment timeouts | Classified as: Payment Gateway / Checkout / Degradation / Performance"
 ```
 
-This makes "PayPal errors" and "Stripe timeouts" cluster together via their shared fingerprint, even with different wording.
+This makes "PayPal errors" and "Stripe timeouts" match as duplicates via their shared fingerprint, even with different wording.
 
-**Same-system filter.** Incidents only cluster with others that share the same `affected_system`. A VPN incident can't leak into a Payment Gateway cluster.
-
-**Member-average centroid.** Each cluster's centroid is the normalized mean of all member incident embeddings, recalculated whenever the cluster summary updates. New incidents check centroids first — O(clusters) instead of O(incidents) — and fall back to per-incident similarity if no centroid matches.
-
-**Incremental clustering.** Clusters are built at classification time, not query time. Reports are fast SQL reads with no LLM calls.
+**Active-only duplicate search.** Similarity search only scans incidents with `status = active`. A resolved incident stops flagging new submissions as duplicates — the goal is "is anyone currently handling this," not "has this ever happened before."
 
 **Strict validation + graceful fallback.** LLM output goes through Pydantic validation. If the LLM fails twice, a low-confidence fallback is returned instead of an error.
 
@@ -172,16 +159,17 @@ This makes "PayPal errors" and "Stripe timeouts" cluster together via their shar
 | `LLM_API_KEY` | — | API key (optional for Ollama) |
 | `LLM_API_BASE` | — | Self-hosted LLM endpoint |
 | `DB_PATH` | `/data/incidents.db` | SQLite path (persistent volume) |
-| `SIMILARITY_THRESHOLD` | `0.35` | Cosine similarity threshold |
+| `SIMILARITY_THRESHOLD` | `0.35` | Cosine similarity threshold for duplicate detection |
 | `EMBEDDING_MODEL` | `all-MiniLM-L6-v2` | Sentence-transformer model |
 
 ## Files
 
 ```
 ai_classification/
-├── main.py           → Routes: classify, reports, health
-├── classifier.py     → LLM prompts, retry logic, cluster summarization
-├── incident_store.py → SQLite, embeddings, incremental clustering
+├── main.py           → Routes: classify, resolve, health
+├── service.py         → Orchestration + app lifecycle
+├── classifier.py     → LLM prompts, retry logic
+├── incident_store.py → SQLite, embeddings, active-only similarity search
 ├── models.py         → Pydantic request/response schemas
 ├── schemas.py        → Taxonomy enums
 └── config.py         → Env-based settings
@@ -191,14 +179,15 @@ ocr/
 └── Dockerfile
 
 frontend/
-├── index.html        → Single-page UI (Classify + Reports tabs, file upload for OCR)
-├── app.js            → API calls, rendering, history
+├── index.html        → Single-page UI (Classify tab, file upload for OCR)
+├── app.js             → API calls, rendering, history, resolve action
 ├── style.css
-├── nginx.conf        → Static files + proxy to api/ocr
+├── nginx.conf         → Static files + proxy to api/ocr
 └── Dockerfile
 
 tests/
-├── test_classifier.py    — Unit tests for prompt building & validation (mocked LLM)
-├── test_incident_store.py — Unit tests for embeddings, similarity, clustering, reports
-└── e2e_check.py          — End-to-end with real Ollama
+├── test_classifier.py     — Unit tests for prompt building & validation (mocked LLM)
+├── test_incident_store.py — Unit tests for embeddings, similarity, resolve
+├── test_service.py        — Unit tests for orchestration
+└── e2e_check.py           — End-to-end with real Ollama
 ```

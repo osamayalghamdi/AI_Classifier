@@ -1,10 +1,10 @@
-"""Tests for IncidentStore — embeddings, similarity search, clustering, reporting."""
+"""Tests for IncidentStore — embeddings and live-duplicate similarity search."""
 
 import threading
 import numpy as np
 import pytest
 
-from ai_classification.incident_store import IncidentStore, SimilarMatch
+from ai_classification.incident_store import IncidentStore
 from ai_classification.models import ClassificationResult
 from ai_classification.schemas import (
     AffectedSystem, IncidentType, Severity, Urgency, Category,
@@ -135,6 +135,12 @@ class TestSaveIncident:
         row = store._db.execute("SELECT id FROM incidents WHERE id=?", (iid,)).fetchone()
         assert row is not None
 
+    def test_defaults_to_active_status(self, store):
+        iid = store.generate_id()
+        store.save_incident(iid, "Title", "Desc", _make_result())
+        row = store._db.execute("SELECT status FROM incidents WHERE id=?", (iid,)).fetchone()
+        assert row[0] == "active"
+
     def test_stores_extracted_text(self, store):
         iid = store.generate_id()
         result = _make_result()
@@ -157,7 +163,7 @@ class TestSaveIncident:
         assert len(ids) == 100
 
 
-# ── find_similar ──────────────────────────────────────────────────────
+# ── find_similar (live deduplication) ──────────────────────────────────
 
 
 class TestFindSimilar:
@@ -172,8 +178,8 @@ class TestFindSimilar:
         # Insert incident directly with the `base` embedding so we control the vector.
         s._db.execute(
             "INSERT INTO incidents "
-            "(id, title, description, extracted_text, embedding, classification_json, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, datetime('now'))",
+            "(id, title, description, extracted_text, embedding, classification_json, status, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, 'active', datetime('now'))",
             (iid, "title", "desc", "", base.tobytes(), result.model_dump_json()),
         )
         s._db.commit()
@@ -225,8 +231,8 @@ class TestFindSimilar:
         # Insert incident with `base` vector directly.
         s._db.execute(
             "INSERT INTO incidents "
-            "(id, title, description, extracted_text, embedding, classification_json, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, datetime('now'))",
+            "(id, title, description, extracted_text, embedding, classification_json, status, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, 'active', datetime('now'))",
             (iid, "title", "desc", "some ocr text", base.tobytes(), result.model_dump_json()),
         )
         s._db.commit()
@@ -238,452 +244,52 @@ class TestFindSimilar:
         assert any(m.id == iid for m in matches_base)
         assert not any(m.id == iid for m in matches_far)
 
-
-# ── find_candidates ───────────────────────────────────────────────────
-
-
-class TestFindCandidates:
-    def test_empty_store_returns_empty(self, store):
-        assert store.find_candidates("something") == []
-
-    def test_returns_expected_fields(self, store_with_vecs):
+    def test_resolved_incident_excluded_from_matches(self, store_with_vecs):
+        """A duplicate that's already resolved shouldn't keep flagging new submissions."""
         s, base, near, far = store_with_vecs
         result = _make_result()
         iid = s.generate_id()
 
-        # Insert directly with the `base` embedding so the score is deterministic
+        # Insert directly with the `base` embedding for a deterministic score
         # (save_incident mixes the classification fingerprint into the embedded
         # text, which no longer matches a fixed key in FixedVecModel's vec_map).
         s._db.execute(
             "INSERT INTO incidents "
-            "(id, title, description, extracted_text, embedding, classification_json, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, datetime('now'))",
+            "(id, title, description, extracted_text, embedding, classification_json, status, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, 'active', datetime('now'))",
             (iid, "title", "desc", "", base.tobytes(), result.model_dump_json()),
         )
         s._db.commit()
 
-        candidates = s.find_candidates("BASE")
-        assert len(candidates) == 1
-        c = candidates[0]
-        assert c["id"] == iid
-        assert c["title"] == "title"
-        assert "description" in c
-        assert "classification_json" in c
-        assert c["cosine_score"] == pytest.approx(1.0, abs=1e-4)
+        matches_before = s.find_similar("BASE", threshold=0.90)
+        assert any(m.id == iid for m in matches_before)
 
-    def test_no_threshold_includes_far_matches(self, store_with_vecs):
-        """Unlike find_similar (threshold=0.90), find_candidates returns everything."""
-        s, base, near, far = store_with_vecs
-        result = _make_result()
-        iid = s.generate_id()
-        s.save_incident(iid, "FAR", "FAR", result)
+        assert s.resolve_incident(iid) is True
 
-        candidates = s.find_candidates("BASE")
-        assert any(c["id"] == iid for c in candidates)
-
-    def test_respects_top_n(self, store_with_vecs):
-        s, base, near, far = store_with_vecs
-        result = _make_result()
-        for _ in range(5):
-            iid = s.generate_id()
-            s.save_incident(iid, "BASE", "BASE", result)
-
-        candidates = s.find_candidates("BASE", top_n=3)
-        assert len(candidates) == 3
-
-    def test_sorted_by_cosine_score_descending(self, store_with_vecs):
-        s, base, near, far = store_with_vecs
-        result = _make_result()
-        iid_far = s.generate_id()
-        iid_near = s.generate_id()
-        s.save_incident(iid_far, "FAR", "FAR", result)
-        s.save_incident(iid_near, "NEAR", "NEAR", result)
-
-        candidates = s.find_candidates("BASE")
-        scores = [c["cosine_score"] for c in candidates]
-        assert scores == sorted(scores, reverse=True)
+        matches_after = s.find_similar("BASE", threshold=0.90)
+        assert not any(m.id == iid for m in matches_after)
 
 
-# ── find_cluster_by_similarity ────────────────────────────────────────
+# ── resolve_incident ─────────────────────────────────────────────────
 
 
-class TestFindClusterBySimilarity:
-    def test_returns_none_when_no_clusters(self, store):
-        assert store.find_cluster_by_similarity("anything") is None
-
-    def test_matches_cluster_above_threshold(self, store_with_vecs):
-        s, base, near, far = store_with_vecs
-        result = _make_result()
-        iid = s.generate_id()
-        s.save_incident(iid, "BASE", "BASE", result)
-        cluster_id = s.link_to_cluster(iid, result, [])
-
-        # Create a fake centroid matching BASE
-        centroid = base
-        s._db.execute(
-            "UPDATE clusters SET centroid_embedding=? WHERE id=?",
-            (centroid.tobytes(), cluster_id),
-        )
-        s._db.commit()
-
-        # Fixture sets similarity_threshold=0.90; centroid is exactly `base` → score=1.0
-        found = s.find_cluster_by_similarity("BASE")
-        assert found == cluster_id
-
-    def test_system_filter_excludes_wrong_system(self, store_with_vecs):
-        s, base, near, far = store_with_vecs
-        crm_result = _make_result(affected_system=AffectedSystem.crm)
-        iid = s.generate_id()
-        s.save_incident(iid, "BASE", "BASE", crm_result)
-        cluster_id = s.link_to_cluster(iid, crm_result, [])
-
-        s._db.execute(
-            "UPDATE clusters SET centroid_embedding=? WHERE id=?",
-            (base.tobytes(), cluster_id),
-        )
-        s._db.commit()
-
-        # Searching with a different system should not match (system filter applies)
-        network_result = _make_result(affected_system=AffectedSystem.network, service="VPN")
-        found = s.find_cluster_by_similarity("BASE", classification=network_result)
-        assert found is None
-
-
-# ── link_to_cluster ───────────────────────────────────────────────────
-
-
-class TestLinkToCluster:
-    def test_no_matches_returns_none(self, store):
+class TestResolveIncident:
+    def test_resolving_known_incident_returns_true(self, store):
         iid = store.generate_id()
         store.save_incident(iid, "T", "D", _make_result())
-        result = store.link_to_cluster(iid, _make_result(), [])
-        assert result is None
-
-    def test_creates_new_cluster_from_matches(self, store):
-        result = _make_result()
-        iid1 = store.generate_id()
-        iid2 = store.generate_id()
-        store.save_incident(iid1, "T1", "D1", result)
-        store.save_incident(iid2, "T2", "D2", result)
-
-        # Construct the match manually to avoid coupling to find_similar threshold behavior.
-        match = SimilarMatch(id=iid1, title="T1", similarity=0.95, classification=result)
-        cluster_id = store.link_to_cluster(iid2, result, [match])
-        assert cluster_id is not None
-
-        row = store._db.execute(
-            "SELECT COUNT(*) FROM cluster_members WHERE cluster_id=?", (cluster_id,)
-        ).fetchone()
-        assert row[0] >= 1
-
-    def test_links_to_existing_cluster(self, store):
-        result = _make_result()
-        iid1 = store.generate_id()
-        iid2 = store.generate_id()
-        store.save_incident(iid1, "T1", "D1", result)
-
-        matches = [
-            SimilarMatch(id=iid1, title="T1", similarity=0.95, classification=result)
-        ]
-        cluster_id = store.link_to_cluster(iid2, result, matches)
-        assert cluster_id is not None
-
-        # Third incident should join the same cluster
-        iid3 = store.generate_id()
-        store.save_incident(iid3, "T3", "D3", result)
-        matches2 = [
-            SimilarMatch(id=iid1, title="T1", similarity=0.94, classification=result)
-        ]
-        cluster_id2 = store.link_to_cluster(iid3, result, matches2)
-        assert cluster_id2 == cluster_id
-
-    def test_cross_system_not_linked(self, store):
-        crm_result = _make_result(affected_system=AffectedSystem.crm)
-        net_result = _make_result(affected_system=AffectedSystem.network, service="VPN")
-
-        iid_crm = store.generate_id()
-        iid_net = store.generate_id()
-        store.save_incident(iid_crm, "CRM issue", "desc", crm_result)
-        store.save_incident(iid_net, "VPN issue", "desc", net_result)
-
-        # Match across systems — link_to_cluster should filter by system
-        crm_match = SimilarMatch(id=iid_crm, title="CRM issue", similarity=0.95, classification=crm_result)
-        cluster_id = store.link_to_cluster(iid_net, net_result, [crm_match])
-        assert cluster_id is None  # no same-system match
-
-    def test_worst_severity_is_max(self, store):
-        major = _make_result(severity=Severity.major)
-        critical = _make_result(severity=Severity.critical)
-
-        iid1 = store.generate_id()
-        iid2 = store.generate_id()
-        store.save_incident(iid1, "T1", "D1", major)
-        store.save_incident(iid2, "T2", "D2", critical)
-
-        match = SimilarMatch(id=iid1, title="T1", similarity=0.95, classification=major)
-        cluster_id = store.link_to_cluster(iid2, critical, [match])
-        row = store._db.execute(
-            "SELECT worst_severity FROM clusters WHERE id=?", (cluster_id,)
-        ).fetchone()
-        assert row[0] == "Critical"
-
-
-# ── recalculate_centroid_from_members ─────────────────────────────────
-
-
-class TestRecalculateCentroid:
-    def test_centroid_is_mean_of_members(self, store_with_vecs):
-        s, base, near, far = store_with_vecs
-        result = _make_result()
-
-        iid1 = s.generate_id()
-        iid2 = s.generate_id()
-        s.save_incident(iid1, "BASE", "BASE", result)
-        s.save_incident(iid2, "NEAR", "NEAR", result)
-
-        match = SimilarMatch(id=iid1, title="BASE", similarity=0.95, classification=result)
-        cluster_id = s.link_to_cluster(iid2, result, [match])
-
-        s.recalculate_centroid_from_members(cluster_id)
-
-        blob = s._db.execute(
-            "SELECT centroid_embedding FROM clusters WHERE id=?", (cluster_id,)
-        ).fetchone()[0]
-        assert blob is not None
-        centroid = np.frombuffer(blob, dtype=np.float32)
-        # Centroid should be normalized (unit vector)
-        assert abs(np.linalg.norm(centroid) - 1.0) < 1e-5
-
-    def test_update_cluster_summary_recalculates_centroid(self, store):
-        result = _make_result()
-        iid1 = store.generate_id()
-        iid2 = store.generate_id()
-        store.save_incident(iid1, "T1", "D1", result)
-        store.save_incident(iid2, "T2", "D2", result)
-
-        match = SimilarMatch(id=iid1, title="T1", similarity=0.95, classification=result)
-        cluster_id = store.link_to_cluster(iid2, result, [match])
-
-        store.update_cluster_summary(cluster_id, "Two related incidents affecting CRM portal.")
-
-        blob = store._db.execute(
-            "SELECT centroid_embedding FROM clusters WHERE id=?", (cluster_id,)
-        ).fetchone()[0]
-        assert blob is not None
-
-
-# ── add_to_cluster ────────────────────────────────────────────────────
-
-
-class TestAddToCluster:
-    def test_adds_incident_to_existing_cluster(self, store):
-        result = _make_result()
-        iid1 = store.generate_id()
-        iid2 = store.generate_id()
-        iid3 = store.generate_id()
-        store.save_incident(iid1, "T1", "D1", result)
-        store.save_incident(iid2, "T2", "D2", result)
-        store.save_incident(iid3, "T3", "D3", result)
-
-        match = SimilarMatch(id=iid1, title="T1", similarity=0.95, classification=result)
-        cluster_id = store.link_to_cluster(iid2, result, [match])
-
-        store.add_to_cluster(cluster_id, iid3)
-
-        count = store._db.execute(
-            "SELECT COUNT(*) FROM cluster_members WHERE cluster_id=?", (cluster_id,)
-        ).fetchone()[0]
-        assert count >= 3
-
-    def test_duplicate_add_is_idempotent(self, store):
-        result = _make_result()
-        iid1 = store.generate_id()
-        iid2 = store.generate_id()
-        store.save_incident(iid1, "T1", "D1", result)
-        store.save_incident(iid2, "T2", "D2", result)
-
-        match = SimilarMatch(id=iid1, title="T1", similarity=0.95, classification=result)
-        cluster_id = store.link_to_cluster(iid2, result, [match])
-
-        # Add same incident twice — should not create duplicate row
-        store.add_to_cluster(cluster_id, iid2)
-        store.add_to_cluster(cluster_id, iid2)
-
-        count = store._db.execute(
-            "SELECT COUNT(*) FROM cluster_members WHERE cluster_id=? AND incident_id=?",
-            (cluster_id, iid2),
-        ).fetchone()[0]
-        assert count == 1
-
-
-# ── get_report ────────────────────────────────────────────────────────
-
-
-class TestGetReport:
-    def test_empty_store_returns_empty(self, store):
-        assert store.get_report() == []
-
-    def test_returns_cluster_with_incidents(self, store):
-        result = _make_result()
-        iid1 = store.generate_id()
-        iid2 = store.generate_id()
-        store.save_incident(iid1, "T1", "D1", result)
-        store.save_incident(iid2, "T2", "D2", result)
-
-        match = SimilarMatch(id=iid1, title="T1", similarity=0.95, classification=result)
-        store.link_to_cluster(iid2, result, [match])
-
-        report = store.get_report()
-        assert len(report) >= 1
-        cluster = report[0]
-        assert cluster["count"] >= 2
-        assert cluster["affected_system"] == "CRM"
-        assert "cluster_id" in cluster
-        assert len(cluster["incidents"]) >= 2
-
-    def test_report_includes_cluster_id(self, store):
-        result = _make_result()
-        iid1 = store.generate_id()
-        iid2 = store.generate_id()
-        store.save_incident(iid1, "T1", "D1", result)
-        store.save_incident(iid2, "T2", "D2", result)
-
-        match = SimilarMatch(id=iid1, title="T1", similarity=0.95, classification=result)
-        cluster_id = store.link_to_cluster(iid2, result, [match])
-
-        report = store.get_report()
-        assert report[0]["cluster_id"] == cluster_id
-
-    def test_report_since_filter(self, store):
-        """Clusters updated before the since cutoff should be excluded."""
-        result = _make_result()
-        iid1 = store.generate_id()
-        iid2 = store.generate_id()
-        store.save_incident(iid1, "T1", "D1", result)
-        store.save_incident(iid2, "T2", "D2", result)
-        match = SimilarMatch(id=iid1, title="T1", similarity=0.95, classification=result)
-        store.link_to_cluster(iid2, result, [match])
-
-        # Future cutoff — nothing should appear
-        report = store.get_report(since="2099-01-01T00:00:00+00:00")
-        assert report == []
-
-
-# ── worst_severity updates on add_to_cluster ────────────────────────
-
-
-class TestAddToClusterSeverity:
-    def test_worse_incident_raises_cluster_severity(self, store):
-        minor = _make_result(severity=Severity.minor)
-        critical = _make_result(severity=Severity.critical)
-
-        iid1 = store.generate_id()
-        iid2 = store.generate_id()
-        iid3 = store.generate_id()
-        store.save_incident(iid1, "T1", "D1", minor)
-        store.save_incident(iid2, "T2", "D2", minor)
-        store.save_incident(iid3, "T3", "D3", critical)
-
-        match = SimilarMatch(id=iid1, title="T1", similarity=0.95, classification=minor)
-        cluster_id = store.link_to_cluster(iid2, minor, [match])
-
-        store.add_to_cluster(cluster_id, iid3, critical)
-
-        row = store._db.execute(
-            "SELECT worst_severity FROM clusters WHERE id=?", (cluster_id,)
-        ).fetchone()
-        assert row[0] == "Critical"
-
-    def test_milder_incident_does_not_lower_cluster_severity(self, store):
-        critical = _make_result(severity=Severity.critical)
-        minor = _make_result(severity=Severity.minor)
-
-        iid1 = store.generate_id()
-        iid2 = store.generate_id()
-        iid3 = store.generate_id()
-        store.save_incident(iid1, "T1", "D1", critical)
-        store.save_incident(iid2, "T2", "D2", critical)
-        store.save_incident(iid3, "T3", "D3", minor)
-
-        match = SimilarMatch(id=iid1, title="T1", similarity=0.95, classification=critical)
-        cluster_id = store.link_to_cluster(iid2, critical, [match])
-
-        store.add_to_cluster(cluster_id, iid3, minor)
-
-        row = store._db.execute(
-            "SELECT worst_severity FROM clusters WHERE id=?", (cluster_id,)
-        ).fetchone()
-        assert row[0] == "Critical"
-
-    def test_no_classification_leaves_severity_unchanged(self, store):
-        result = _make_result(severity=Severity.major)
-        iid1 = store.generate_id()
-        iid2 = store.generate_id()
-        iid3 = store.generate_id()
-        store.save_incident(iid1, "T1", "D1", result)
-        store.save_incident(iid2, "T2", "D2", result)
-        store.save_incident(iid3, "T3", "D3", result)
-
-        match = SimilarMatch(id=iid1, title="T1", similarity=0.95, classification=result)
-        cluster_id = store.link_to_cluster(iid2, result, [match])
-
-        store.add_to_cluster(cluster_id, iid3)  # no classification passed
-
-        row = store._db.execute(
-            "SELECT worst_severity FROM clusters WHERE id=?", (cluster_id,)
-        ).fetchone()
-        assert row[0] == "Major"
-
-
-# ── get_report — created_at-based date filter ────────────────────────
-
-
-class TestGetReportCreatedAtFilter:
-    def test_since_filters_by_incident_created_at_not_cluster_updated_at(self, store):
-        """An old incident in a cluster that was just touched should NOT count as 'recent'."""
-        result = _make_result()
-        iid1 = store.generate_id()
-        iid2 = store.generate_id()
-        store.save_incident(iid1, "Old incident", "D1", result)
-        store.save_incident(iid2, "New incident", "D2", result)
-
-        match = SimilarMatch(id=iid1, title="Old incident", similarity=0.95, classification=result)
-        store.link_to_cluster(iid2, result, [match])
-
-        # Backdate the old incident so only iid2 falls inside the "since" window.
-        store._db.execute(
-            "UPDATE incidents SET created_at = '2000-01-01T00:00:00+00:00' WHERE id = ?", (iid1,)
-        )
-        store._db.commit()
-
-        report = store.get_report(since="2099-01-01T00:00:00+00:00")
-        assert report == []  # neither incident is actually recent enough
-
-        report = store.get_report(since="2020-01-01T00:00:00+00:00")
-        assert len(report) == 1
-        # Only the recent incident should be counted/listed, not the backdated one.
-        assert report[0]["count"] == 1
-        assert [i["id"] for i in report[0]["incidents"]] == [iid2]
-
-    def test_cluster_touched_today_but_incidents_all_old_is_excluded(self, store):
-        result = _make_result()
-        iid1 = store.generate_id()
-        iid2 = store.generate_id()
-        store.save_incident(iid1, "T1", "D1", result)
-        store.save_incident(iid2, "T2", "D2", result)
-
-        match = SimilarMatch(id=iid1, title="T1", similarity=0.95, classification=result)
-        cluster_id = store.link_to_cluster(iid2, result, [match])
-
-        # Both incidents are old, but clusters.updated_at is "now" (set by link_to_cluster).
-        store._db.execute(
-            "UPDATE incidents SET created_at = '2000-01-01T00:00:00+00:00' WHERE id IN (?, ?)",
-            (iid1, iid2),
-        )
-        store._db.commit()
-
-        report = store.get_report(since="2099-01-01T00:00:00+00:00")
-        assert report == []
+        assert store.resolve_incident(iid) is True
+
+        row = store._db.execute("SELECT status FROM incidents WHERE id=?", (iid,)).fetchone()
+        assert row[0] == "resolved"
+
+    def test_resolving_unknown_incident_returns_false(self, store):
+        assert store.resolve_incident("does-not-exist") is False
+
+    def test_resolving_twice_is_idempotent(self, store):
+        iid = store.generate_id()
+        store.save_incident(iid, "T", "D", _make_result())
+        assert store.resolve_incident(iid) is True
+        assert store.resolve_incident(iid) is True
 
 
 # ── Thread safety ─────────────────────────────────────────────────────
@@ -711,28 +317,3 @@ class TestConcurrency:
         assert errors == [], f"Errors during concurrent saves: {errors}"
         count = store._db.execute("SELECT COUNT(*) FROM incidents").fetchone()[0]
         assert count == 20
-
-    def test_concurrent_cluster_links_do_not_corrupt(self, store):
-        """Concurrent cluster links should not produce duplicate cluster_members rows."""
-        result = _make_result()
-        anchor_id = store.generate_id()
-        store.save_incident(anchor_id, "Anchor", "base", result)
-        anchor_match = SimilarMatch(id=anchor_id, title="Anchor", similarity=0.95, classification=result)
-
-        errors = []
-
-        def worker():
-            try:
-                iid = store.generate_id()
-                store.save_incident(iid, "Worker", "desc", result)
-                store.link_to_cluster(iid, result, [anchor_match])
-            except Exception as e:
-                errors.append(e)
-
-        threads = [threading.Thread(target=worker) for _ in range(10)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
-
-        assert errors == [], f"Errors during concurrent links: {errors}"
