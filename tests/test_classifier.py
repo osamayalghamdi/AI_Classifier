@@ -3,8 +3,8 @@
 import json
 import pytest
 
-from ai_classification.classifier import classify, _extract_json_str
-from ai_classification.models import ClassificationResult
+from ai_classification.core.classifier import classify, _extract_json_str
+from ai_classification.domain.models import ClassificationResult
 
 
 # ── _extract_json_str (minimal fence-stripper) ────────────────────────
@@ -60,7 +60,7 @@ def _patch_completion(monkeypatch):
     Supports retry: stores outputs in a list and pops from the front
     on each call, so both attempt 1 and retry can return the same data.
     """
-    import ai_classification.classifier as mod
+    import ai_classification.core.classifier as mod
 
     outputs = []
 
@@ -87,6 +87,7 @@ class TestClassifyHappyPath:
             "category": "Software",
             "confidence": "high",
             "reasoning": "CRM portal slow under load",
+            "canonical_statement": "CRM portal responds slowly under load.",
         }))
         result = classify("CRM slow", "Portal is crawling")
         assert isinstance(result, ClassificationResult)
@@ -108,6 +109,7 @@ class TestClassifyHappyPath:
             "urgency": "Immediate",
             "category": "Network Issue",
             "confidence": "high",
+            "canonical_statement": "All DNS queries fail.",
         }))
         result = classify("DNS down", "All DNS queries failing")
         assert result.reasoning is None
@@ -117,7 +119,8 @@ class TestClassifyHappyPath:
             '```json\n{"affected_system": "Email", "service": "SMTP Relay",'
             '"incident_type": "Unavailability", "severity": "Major",'
             '"urgency": "High", "category": "Software",'
-            '"confidence": "medium", "reasoning": "SMTP relay unreachable"}\n```'
+            '"confidence": "medium", "reasoning": "SMTP relay unreachable",'
+            '"canonical_statement": "SMTP relay is unreachable, outgoing email fails."}\n```'
         )
         result = classify("Email down", "Cannot send emails")
         assert result.affected_system == "Email"
@@ -228,6 +231,7 @@ class TestClassifyRetry:
             "urgency": "High",
             "category": "Software",
             "confidence": "high",
+            "canonical_statement": "Test incident.",
         })
         _patch_completion.append(bad)
         _patch_completion.append(good)

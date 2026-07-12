@@ -1,14 +1,8 @@
-"""Pydantic models for API requests, responses, and the LLM classification output."""
+"""Internal domain models — the LLM classification contract and derived types."""
 
 from pydantic import BaseModel, Field, model_validator
 
-from .schemas import AffectedSystem, IncidentType, Severity, Urgency, Category, SERVICES_BY_SYSTEM
-
-
-class ClassifyRequest(BaseModel):
-    title: str = Field(min_length=1, max_length=300)
-    description: str = Field(default="", max_length=8000)
-    extracted_text: str = Field(default="", max_length=20000)
+from .taxonomy import AffectedSystem, IncidentType, Severity, Urgency, Category, SERVICES_BY_SYSTEM
 
 
 class ClassificationResult(BaseModel):
@@ -22,6 +16,13 @@ class ClassificationResult(BaseModel):
     category: Category
     confidence: str = Field(pattern=r"^(low|medium|high)$")
     reasoning: str | None = None
+    canonical_statement: str = Field(
+        description="One dense sentence in English stating only observable "
+        "symptoms and conditions. Include: what happened, when it started "
+        "(if stated), scope (which users/environments), and inconsistency "
+        "if mentioned. Never guess root cause. Write in English regardless "
+        "of ticket language. Optimized for embedding similarity."
+    )
 
     @model_validator(mode="after")
     def _check_service_in_system(self) -> "ClassificationResult":
@@ -46,15 +47,4 @@ class SimilarOpenIncident(BaseModel):
     title: str
     similarity: float = Field(ge=0.0, le=1.0)
     classification: ClassificationResult
-
-
-class ClassifyResponse(BaseModel):
-    incident_title: str
-    classification: ClassificationResult
-    incident_id: str | None = None
-    similar_open_incidents: list[SimilarOpenIncident] = Field(default_factory=list)
-
-
-class ResolveResponse(BaseModel):
-    incident_id: str
-    status: str
+    canonical_statement: str = Field(default="")

@@ -1,0 +1,41 @@
+"""Pydantic request/response models for the HTTP API."""
+
+from pydantic import BaseModel, Field
+
+from ..domain.models import ClassificationResult, SimilarOpenIncident
+
+
+class ClassifyRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=300)
+    description: str = Field(default="", max_length=8000)
+    extracted_text: str = Field(default="", max_length=20000)
+    documents: list[str] = Field(default_factory=list)
+    assign_group: str = Field(default="")
+    assignee: str = Field(default="")
+    priority: str = Field(default="medium")
+    notes: str | None = None
+    discussion_history: list[dict] = Field(default_factory=list)
+    escalation_info: str | None = None
+    completion_code: str | None = None
+
+
+class ClassifyResponse(BaseModel):
+    incident_title: str
+    classification: ClassificationResult
+    incident_id: str | None = None
+    similar_open_incidents: list[SimilarOpenIncident] = Field(default_factory=list)
+
+
+class ResolveResponse(BaseModel):
+    incident_id: str
+    status: str
+
+
+class ClassifyBatchRequest(BaseModel):
+    incidents: list[ClassifyRequest] = Field(min_length=1, max_length=50)
+
+
+class ClassifyBatchResponse(BaseModel):
+    results: list[ClassifyResponse]
+    total: int
+    failed: int

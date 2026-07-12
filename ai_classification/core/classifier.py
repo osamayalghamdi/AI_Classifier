@@ -1,12 +1,17 @@
-"""LLM-based incident classifier — provider-agnostic via LiteLLM."""
+"""LLM-based incident classifier — provider-agnostic via LiteLLM.
+
+Plus classify-and-persist orchestration: calls the classifier, checks for
+duplicates via the store, saves the result.
+"""
 
 import json
+import logging
 
 from litellm import completion
 
-from .config import settings
-from .models import ClassificationResult
-from .schemas import (
+from ..config import settings
+from ..domain.models import ClassificationResult, SimilarOpenIncident
+from ..domain.taxonomy import (
     AffectedSystem,
     IncidentType,
     Severity,
@@ -14,6 +19,10 @@ from .schemas import (
     Category,
     SERVICES_BY_SYSTEM,
 )
+from ..api.schemas import ClassifyResponse, ClassifyBatchResponse
+from .store import store
+
+_log = logging.getLogger(__name__)
 
 
 # ── Few-shot examples ─────────────────────────────────────────────────
@@ -34,6 +43,7 @@ FEW_SHOT_EXAMPLES = [
             "category": "Performance",
             "confidence": "high",
             "reasoning": "Partial degradation of checkout, not a full outage.",
+            "canonical_statement": "Payment checkout: EU users receive 504 errors; payment provider operational.",
         },
     },
     {
@@ -51,6 +61,7 @@ FEW_SHOT_EXAMPLES = [
             "category": "Network Issue",
             "confidence": "high",
             "reasoning": "VPN flapping degrades connectivity for a branch office.",
+            "canonical_statement": "VPN tunnel: Connection between HQ and Dubai drops and reconnects every 5 minutes, affecting 50 users.",
         },
     },
     {
@@ -68,6 +79,7 @@ FEW_SHOT_EXAMPLES = [
             "category": "Configuration",
             "confidence": "medium",
             "reasoning": "Expired cert blocks HTTPS access, but portal backend is healthy.",
+            "canonical_statement": "Customer portal: HTTPS blocked by SSL certificate expired 2 days ago, backend healthy.",
         },
     },
     {
@@ -85,6 +97,7 @@ FEW_SHOT_EXAMPLES = [
             "category": "Hardware",
             "confidence": "high",
             "reasoning": "Database disk near capacity may cause autovacuum failures.",
+            "canonical_statement": "Database storage: PostgreSQL primary server /data at 98% capacity, autovacuum may fail.",
         },
     },
     {
@@ -102,6 +115,7 @@ FEW_SHOT_EXAMPLES = [
             "category": "Security",
             "confidence": "high",
             "reasoning": "High-volume brute-force attack on admin panel requires immediate response.",
+            "canonical_statement": "Admin login: 5000+ failed attempts from 12 distinct IPs, possible brute-force attack.",
         },
     },
     {
@@ -122,6 +136,7 @@ FEW_SHOT_EXAMPLES = [
                 "Full outage with 100% failure rate caused by third-party provider failure. "
                 "incident_type=Outage (what happened), category=External / Third Party (why it happened)."
             ),
+            "canonical_statement": "Payment checkout: All transactions failing with 503 errors since 14:32 UTC, provider outage confirmed.",
         },
     },
 ]
@@ -142,6 +157,7 @@ def _build_examples_block() -> str:
     return "\n\n".join(blocks)
 
 
+# Build the full system prompt with taxonomy and examples
 def _build_system_prompt() -> str:
     systems = "\n".join(f"  - {s.value}" for s in AffectedSystem)
     types = "\n".join(f"  - {t.value}" for t in IncidentType)
@@ -190,6 +206,14 @@ category — WHY IT HAPPENED (the root cause type, pick ONE of these):
 
 confidence: "low", "medium", or "high"
 reasoning: short explanation (optional)
+canonical_statement: one dense sentence in English stating observable
+  symptoms and the affected component. Include: what happened, which
+  component/system is affected (e.g. "notification delivery", "login
+  authentication", "payment checkout"), scope (which users/environments),
+  and inconsistency if mentioned. Start with the component name to anchor
+  similar tickets together. Never guess root cause. Never add details not
+  present. Write in English regardless of ticket language. Optimized for
+  embedding similarity.
 
 Rules:
 - Pick the single best label per field.
@@ -199,6 +223,7 @@ Rules:
 - Respond with JSON only — no commentary before or after."""
 
 
+# Build user message with title and description
 def _build_user_prompt(title: str, description: str) -> str:
     return f"## Title\n{title}\n\n## Description\n{description}"
 
@@ -206,6 +231,7 @@ def _build_user_prompt(title: str, description: str) -> str:
 # ── JSON parsing ──────────────────────────────────────────────────────
 
 
+# Strip markdown code fences from LLM response
 def _extract_json_str(raw: str) -> str:
     """Strip optional markdown code fences that some local models add."""
     text = raw.strip()
@@ -219,6 +245,7 @@ def _extract_json_str(raw: str) -> str:
     return text.strip()
 
 
+# Parse JSON and validate against ClassificationResult schema
 def _parse_and_validate(raw: str) -> ClassificationResult:
     return ClassificationResult.model_validate(json.loads(_extract_json_str(raw)))
 
@@ -231,6 +258,7 @@ _SYSTEM_PROMPT = _build_system_prompt()
 # ── LLM calls ────────────────────────────────────────────────────────
 
 
+# Call the LLM via LiteLLM, handle errors and Qwen3 reasoning
 def _call_llm(messages: list[dict]) -> str:
     kwargs: dict = dict(
         model=settings.llm_model,
@@ -258,6 +286,7 @@ def _call_llm(messages: list[dict]) -> str:
     return content
 
 
+# Build retry prompt with the last error for a second attempt
 def _build_retry_prompt(user_prompt: str, last_error: str) -> str:
     return (
         f"{user_prompt}\n\n---\n"
@@ -270,26 +299,37 @@ def _build_retry_prompt(user_prompt: str, last_error: str) -> str:
 # ── Public API ────────────────────────────────────────────────────────
 
 
+# Public API: classify an incident, retry once on failure, fallback to low-confidence
 def classify(title: str, description: str) -> ClassificationResult:
     """Classify an incident. Always returns — falls back to low-confidence on LLM failure."""
+    _log.info("Classifying — title='%s'", title[:60])
     user_prompt = _build_user_prompt(title, description)
 
     try:
-        return _parse_and_validate(_call_llm([
+        result = _parse_and_validate(_call_llm([
             {"role": "system", "content": _SYSTEM_PROMPT},
             {"role": "user", "content": user_prompt},
         ]))
+        _log.info("Classification succeeded — system=%s, severity=%s, confidence=%s",
+                  result.affected_system, result.severity, result.confidence)
+        return result
     except Exception as e:
         last_error = str(e)
+        _log.warning("First classification attempt failed: %s", last_error)
 
     try:
-        return _parse_and_validate(_call_llm([
+        result = _parse_and_validate(_call_llm([
             {"role": "system", "content": _SYSTEM_PROMPT},
             {"role": "user", "content": _build_retry_prompt(user_prompt, last_error)},
         ]))
+        _log.info("Classification succeeded on retry — system=%s, severity=%s",
+                  result.affected_system, result.severity)
+        return result
     except Exception as e:
         last_error = str(e)
+        _log.error("Classification failed after retry: %s", last_error)
 
+    _log.warning("Using fallback low-confidence classification for '%s'", title[:60])
     return ClassificationResult(
         affected_system=AffectedSystem.other,
         service="General / Unspecified",
@@ -299,4 +339,90 @@ def classify(title: str, description: str) -> ClassificationResult:
         category=Category.other,
         confidence="low",
         reasoning=f"Classification failed after 2 attempts. Last error: {last_error}",
+        canonical_statement=f"Incident reported: {title[:120]}",
     )
+
+
+# ── Classify-and-persist orchestration ──────────────────────────────────
+
+
+# Classify a single incident and save to store
+def classify_and_store(
+    title: str,
+    description: str,
+    extracted_text: str = "",
+    documents: list[str] | None = None,
+    assign_group: str = "",
+    assignee: str = "",
+    priority: str = "medium",
+    notes: str | None = None,
+    discussion_history: list[dict] | None = None,
+    escalation_info: str | None = None,
+    completion_code: str | None = None,
+) -> ClassifyResponse:
+    _log.info("Classifying incident — title='%s', group='%s', priority=%s", title[:60], assign_group, priority)
+
+    result = classify(title, description)
+
+    embed_text = result.canonical_statement or f"{title} {description}"
+
+    matches = store.find_similar(embed_text, extracted_text=extracted_text, classification=result)
+
+    incident_id = store.generate_id()
+    store.save_incident(
+        incident_id, title, description, result, extracted_text,
+        documents=documents or [],
+        assign_group=assign_group,
+        assignee=assignee,
+        priority=priority,
+        notes=notes,
+        discussion_history=discussion_history or [],
+        escalation_info=escalation_info,
+        completion_code=completion_code,
+    )
+
+    _log.info("Incident %s classified — system=%s, severity=%s, confidence=%s, dupes=%d",
+              incident_id, result.affected_system, result.severity, result.confidence, len(matches))
+
+    return ClassifyResponse(
+        incident_title=title,
+        classification=result,
+        incident_id=incident_id,
+        similar_open_incidents=[
+            SimilarOpenIncident(
+                id=m.id,
+                title=m.title,
+                similarity=round(m.similarity, 4),
+                classification=m.classification,
+                canonical_statement=m.classification.canonical_statement,
+            )
+            for m in matches
+        ],
+    )
+
+
+# Classify multiple incidents in batch
+def classify_batch(incidents: list[dict]) -> ClassifyBatchResponse:
+    results = []
+    failed = 0
+    for inc in incidents:
+        try:
+            r = classify_and_store(
+                inc.get("title", ""),
+                inc.get("description", ""),
+                inc.get("extracted_text", ""),
+                documents=inc.get("documents"),
+                assign_group=inc.get("assign_group", ""),
+                assignee=inc.get("assignee", ""),
+                priority=inc.get("priority", "medium"),
+                notes=inc.get("notes"),
+                discussion_history=inc.get("discussion_history"),
+                escalation_info=inc.get("escalation_info"),
+                completion_code=inc.get("completion_code"),
+            )
+            results.append(r)
+        except Exception as e:
+            _log.error("Batch classify failed for '%s': %s", inc.get("title", "")[:40], e)
+            failed += 1
+    _log.info("Batch classify — %d/%d succeeded", len(results), len(incidents))
+    return ClassifyBatchResponse(results=results, total=len(incidents), failed=failed)

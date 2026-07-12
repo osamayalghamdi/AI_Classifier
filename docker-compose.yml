@@ -1,58 +1,20 @@
 services:
-  # ── Local LLM runner (Ollama) ──────────────────────────────────────
-  ollama:
-    image: ollama/ollama:latest
-    runtime: nvidia
+  postgres:
+    image: pgvector/pgvector:pg17
+    container_name: ai_pg
     environment:
-      - NVIDIA_VISIBLE_DEVICES=all
+      POSTGRES_USER: aiuser
+      POSTGRES_PASSWORD: aipass
+      POSTGRES_DB: ai_incidents
+    ports:
+      - "5432:5432"
     volumes:
-      - ollama_data:/root/.ollama
+      - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD", "ollama", "list"]
-      interval: 10s
-      timeout: 5s
+      test: ["CMD-SHELL", "pg_isready -U aiuser -d ai_incidents"]
+      interval: 5s
+      timeout: 3s
       retries: 5
-    restart: unless-stopped
-
-  # ── Classification API ─────────────────────────────────────────────
-  api:
-    build: .
-    ports:
-      - "8000:8000"
-    environment:
-      - LLM_MODEL=ollama/qwen2.5:7b
-      - LLM_API_BASE=http://ollama:11434
-      - SIMILARITY_THRESHOLD=0.35
-      - DB_PATH=/data/incidents.db
-    volumes:
-      - incidents_data:/data
-    depends_on:
-      ollama:
-        condition: service_healthy
-    restart: unless-stopped
-
-  # ── Frontend (nginx) ────────────────────────────────────────────
-  frontend:
-    build:
-      context: .
-      dockerfile: frontend/Dockerfile
-    ports:
-      - "8082:80"
-    depends_on:
-      - api
-      - ocr
-    restart: unless-stopped
-
-  # ── OCR Service (PaddleOCR) ─────────────────────────────────────
-  ocr:
-    build: ocr
-    runtime: nvidia
-    environment:
-      - NVIDIA_VISIBLE_DEVICES=all
-    ports:
-      - "8001:8001"
-    restart: unless-stopped
 
 volumes:
-  ollama_data:
-  incidents_data:
+  pgdata:

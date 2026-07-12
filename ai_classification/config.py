@@ -20,9 +20,19 @@ class Settings:
     host: str = getenv("HOST", "0.0.0.0")
     port: int = int(getenv("PORT", "8000"))
 
-    db_path: str = getenv("DB_PATH", "incidents.db")
-    embedding_model_name: str = getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+    embedding_model_name: str = getenv("EMBEDDING_MODEL", "BAAI/bge-m3")
     similarity_threshold: float = float(getenv("SIMILARITY_THRESHOLD", "0.80"))
+
+    # ── Ticketing system sync ────────────────────────────────────────────
+    ticketing_api_url: str = getenv("TICKETING_API_URL", "http://localhost:8002")
+    sync_interval_seconds: int = int(getenv("SYNC_INTERVAL", "60"))
+
+    # ── PostgreSQL ───────────────────────────────────────────────────────
+    pg_host: str = getenv("PG_HOST", "localhost")
+    pg_port: int = int(getenv("PG_PORT", "5432"))
+    pg_user: str = getenv("PG_USER", "aiuser")
+    pg_password: str = getenv("PG_PASSWORD", "aipass")
+    pg_database: str = getenv("PG_DATABASE", "ai_incidents")
 
 
 settings = Settings()
