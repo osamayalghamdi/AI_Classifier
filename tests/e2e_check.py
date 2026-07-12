@@ -11,7 +11,7 @@ import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from ai_classification.classifier import classify
+from ai_classification.core.classifier import classify
 
 PASS = 0
 FAIL = 0

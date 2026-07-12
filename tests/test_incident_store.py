@@ -1,14 +1,24 @@
-"""Tests for IncidentStore — embeddings and live-duplicate similarity search."""
+"""Tests for IncidentStore — PostgreSQL + pgvector embeddings and live-duplicate
+similarity search.
+
+Runs against a real Postgres database (see conftest.py) rather than mocking
+psycopg2 — catches real SQL/pgvector integration bugs a mock would miss.
+"""
 
 import threading
+from dataclasses import replace
+
 import numpy as np
 import pytest
 
-from ai_classification.incident_store import IncidentStore
-from ai_classification.models import ClassificationResult
-from ai_classification.schemas import (
+from ai_classification.core.store import IncidentStore, VECTOR_DIM
+from ai_classification.domain.models import ClassificationResult
+from ai_classification.domain.taxonomy import (
     AffectedSystem, IncidentType, Severity, Urgency, Category,
 )
+from ai_classification.config import settings as base_settings
+
+from .conftest import TEST_PG_DATABASE
 
 
 # ── Helpers ───────────────────────────────────────────────────────────
@@ -24,13 +34,17 @@ def _make_result(**overrides) -> ClassificationResult:
         category=Category.software,
         confidence="high",
         reasoning="test",
+        canonical_statement="Test incident.",
     )
     defaults.update(overrides)
     return ClassificationResult(**defaults)
 
 
 class FixedVecModel:
-    """Mock embedding model — returns vectors from a predefined map, random for unknowns."""
+    """Mock embedding model — returns vectors from a predefined map, random for unknowns.
+
+    Vectors are VECTOR_DIM-wide to match the real `vector(VECTOR_DIM)` column.
+    """
 
     def __init__(self, vec_map: dict[str, np.ndarray] | None = None):
         self._map = vec_map or {}
@@ -40,7 +54,7 @@ class FixedVecModel:
             v = self._map[text].copy()
         else:
             rng = np.random.RandomState(abs(hash(text)) % (2 ** 31))
-            v = rng.randn(8).astype(np.float32)
+            v = rng.randn(VECTOR_DIM).astype(np.float32)
         if normalize_embeddings:
             norm = np.linalg.norm(v)
             if norm > 0:
@@ -48,45 +62,95 @@ class FixedVecModel:
         return v.astype(np.float32)
 
 
-def _make_store(monkeypatch, tmp_path, model, db_name="test.db", threshold=None):
-    """Build an IncidentStore with a mocked model and isolated SQLite DB."""
-    import ai_classification.incident_store as store_mod
-    import ai_classification.config as config_mod
-    from dataclasses import replace
+def _pad(vec: np.ndarray) -> np.ndarray:
+    """Embed a short test vector into a full VECTOR_DIM-wide vector (signal in the
+    first dims, zero elsewhere) so it fits the real `vector(VECTOR_DIM)` column."""
+    full = np.zeros(VECTOR_DIM, dtype=np.float32)
+    full[: len(vec)] = vec
+    return full
+
+
+def _truncate(s: IncidentStore) -> None:
+    conn = s._getconn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("TRUNCATE incidents")
+        conn.commit()
+    finally:
+        s._putconn(conn)
+
+
+def _insert_raw(
+    s: IncidentStore, iid: str, title: str, description: str,
+    extracted_text: str, embedding: np.ndarray, classification: ClassificationResult,
+    status: str = "active",
+) -> None:
+    """Insert a row directly, bypassing save_incident's embedding logic, so a
+    test can pin the exact stored vector for deterministic similarity checks."""
+    conn = s._getconn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO incidents "
+                "(id, title, description, extracted_text, embedding, classification_json, status, created_at) "
+                "VALUES (%s, %s, %s, %s, %s::vector, %s, %s, NOW())",
+                (iid, title, description, extracted_text, embedding.tolist(),
+                 classification.model_dump_json(), status),
+            )
+        conn.commit()
+    finally:
+        s._putconn(conn)
+
+
+def _get_embedding(s: IncidentStore, iid: str):
+    conn = s._getconn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT embedding FROM incidents WHERE id = %s", (iid,))
+            row = cur.fetchone()
+    finally:
+        s._putconn(conn)
+    return row[0] if row else None
+
+
+def _make_store(monkeypatch, model, threshold=None):
+    """Build an IncidentStore against the real test Postgres database."""
+    import ai_classification.core.store as store_mod
 
     monkeypatch.setattr(store_mod, "SentenceTransformer", lambda *a, **_: model)
 
-    overrides = {"db_path": str(tmp_path / db_name)}
+    overrides = {"pg_database": TEST_PG_DATABASE}
     if threshold is not None:
         overrides["similarity_threshold"] = threshold
-    new_settings = replace(config_mod.settings, **overrides)
-    monkeypatch.setattr(store_mod, "settings", new_settings)
+    test_settings = replace(base_settings, **overrides)
+    monkeypatch.setattr(store_mod, "settings", test_settings)
 
     s = IncidentStore()
     s.setup()
+    _truncate(s)
     return s
 
 
 @pytest.fixture
-def store(monkeypatch, tmp_path):
-    """IncidentStore with mocked embeddings and a fresh SQLite file per test."""
-    s = _make_store(monkeypatch, tmp_path, FixedVecModel())
+def store(monkeypatch):
+    """IncidentStore with mocked embeddings, against a truncated test database."""
+    s = _make_store(monkeypatch, FixedVecModel())
     yield s
     s.close()
 
 
 @pytest.fixture
-def store_with_vecs(monkeypatch, tmp_path):
+def store_with_vecs(monkeypatch):
     """Store where known keys map to controlled unit vectors for similarity tests."""
     # Two nearly-identical vectors (dot ≈ 0.99) and one orthogonal vector.
-    base = np.array([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
-    near = np.array([0.995, 0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
+    base = _pad(np.array([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32))
+    near = _pad(np.array([0.995, 0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32))
     near /= np.linalg.norm(near)
-    far = np.array([0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
+    far = _pad(np.array([0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32))
 
     vec_map: dict[str, np.ndarray] = {"BASE": base, "NEAR": near, "FAR": far}
 
-    s = _make_store(monkeypatch, tmp_path, FixedVecModel(vec_map), db_name="vecs.db", threshold=0.90)
+    s = _make_store(monkeypatch, FixedVecModel(vec_map), threshold=0.90)
     yield s, base, near, far
     s.close()
 
@@ -132,31 +196,23 @@ class TestSaveIncident:
         iid = store.generate_id()
         result = _make_result()
         store.save_incident(iid, "Test incident", "Some description", result)
-        row = store._db.execute("SELECT id FROM incidents WHERE id=?", (iid,)).fetchone()
-        assert row is not None
+        assert store.get_incident(iid) is not None
 
     def test_defaults_to_active_status(self, store):
         iid = store.generate_id()
         store.save_incident(iid, "Title", "Desc", _make_result())
-        row = store._db.execute("SELECT status FROM incidents WHERE id=?", (iid,)).fetchone()
-        assert row[0] == "active"
+        assert store.get_incident(iid)["status"] == "active"
 
     def test_stores_extracted_text(self, store):
         iid = store.generate_id()
         result = _make_result()
         store.save_incident(iid, "Title", "Desc", result, extracted_text="OCR data")
-        row = store._db.execute(
-            "SELECT extracted_text FROM incidents WHERE id=?", (iid,)
-        ).fetchone()
-        assert row[0] == "OCR data"
+        assert store.get_incident(iid)["extracted_text"] == "OCR data"
 
     def test_stores_embedding_blob(self, store):
         iid = store.generate_id()
         store.save_incident(iid, "T", "D", _make_result())
-        row = store._db.execute(
-            "SELECT embedding FROM incidents WHERE id=?", (iid,)
-        ).fetchone()
-        assert row[0] is not None
+        assert _get_embedding(store, iid) is not None
 
     def test_generate_id_is_unique(self, store):
         ids = {store.generate_id() for _ in range(100)}
@@ -176,13 +232,7 @@ class TestFindSimilar:
         iid = s.generate_id()
 
         # Insert incident directly with the `base` embedding so we control the vector.
-        s._db.execute(
-            "INSERT INTO incidents "
-            "(id, title, description, extracted_text, embedding, classification_json, status, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, 'active', datetime('now'))",
-            (iid, "title", "desc", "", base.tobytes(), result.model_dump_json()),
-        )
-        s._db.commit()
+        _insert_raw(s, iid, "title", "desc", "", base, result)
 
         # Querying "BASE" → model returns `base` → cosine(base, base) = 1.0 ≥ 0.90
         matches = s.find_similar("BASE", threshold=0.90)
@@ -229,13 +279,7 @@ class TestFindSimilar:
         iid = s.generate_id()
 
         # Insert incident with `base` vector directly.
-        s._db.execute(
-            "INSERT INTO incidents "
-            "(id, title, description, extracted_text, embedding, classification_json, status, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, 'active', datetime('now'))",
-            (iid, "title", "desc", "some ocr text", base.tobytes(), result.model_dump_json()),
-        )
-        s._db.commit()
+        _insert_raw(s, iid, "title", "desc", "some ocr text", base, result)
 
         # Querying "BASE" (→ `base` vector) matches; querying "FAR" (→ `far` vector) does not.
         matches_base = s.find_similar("BASE", extracted_text="", threshold=0.90)
@@ -253,13 +297,7 @@ class TestFindSimilar:
         # Insert directly with the `base` embedding for a deterministic score
         # (save_incident mixes the classification fingerprint into the embedded
         # text, which no longer matches a fixed key in FixedVecModel's vec_map).
-        s._db.execute(
-            "INSERT INTO incidents "
-            "(id, title, description, extracted_text, embedding, classification_json, status, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, 'active', datetime('now'))",
-            (iid, "title", "desc", "", base.tobytes(), result.model_dump_json()),
-        )
-        s._db.commit()
+        _insert_raw(s, iid, "title", "desc", "", base, result)
 
         matches_before = s.find_similar("BASE", threshold=0.90)
         assert any(m.id == iid for m in matches_before)
@@ -278,9 +316,7 @@ class TestResolveIncident:
         iid = store.generate_id()
         store.save_incident(iid, "T", "D", _make_result())
         assert store.resolve_incident(iid) is True
-
-        row = store._db.execute("SELECT status FROM incidents WHERE id=?", (iid,)).fetchone()
-        assert row[0] == "resolved"
+        assert store.get_incident(iid)["status"] == "resolved"
 
     def test_resolving_unknown_incident_returns_false(self, store):
         assert store.resolve_incident("does-not-exist") is False
@@ -315,5 +351,4 @@ class TestConcurrency:
             t.join()
 
         assert errors == [], f"Errors during concurrent saves: {errors}"
-        count = store._db.execute("SELECT COUNT(*) FROM incidents").fetchone()[0]
-        assert count == 20
+        assert len(store.list_incidents()) == 20
