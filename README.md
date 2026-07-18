@@ -164,32 +164,60 @@ This makes "PayPal errors" and "Stripe timeouts" match as duplicates via their s
 | `SIMILARITY_THRESHOLD` | `0.35` | Cosine similarity threshold for duplicate detection |
 | `EMBEDDING_MODEL` | `all-MiniLM-L6-v2` | Sentence-transformer model |
 
-## Files
+## Project Structure
 
 ```
-ai_classification/
-├── main.py           → Routes: classify, resolve, health
-├── service.py         → Orchestration + app lifecycle
-├── classifier.py     → LLM prompts, retry logic
-├── incident_store.py → SQLite, embeddings, active-only similarity search
-├── models.py         → Pydantic request/response schemas
-├── schemas.py        → Taxonomy enums
-└── config.py         → Env-based settings
+AI_Classifier/
+│
+├── ai_classification/              # Backend (FastAPI + LLM)
+│   ├── main.py                     # FastAPI entry point
+│   ├── config.py                   # Env-based settings
+│   ├── sync.py                     # Background ticketing sync
+│   ├── api/
+│   │   ├── routes.py               # HTTP endpoints: classify, incidents, reports
+│   │   └── schemas.py              # Request/response schemas
+│   ├── core/
+│   │   ├── classifier.py           # LLM classification + retry
+│   │   ├── store.py                # SQLite + cosine similarity
+│   │   └── grouping.py             # Graph clustering + LLM validator
+│   └── domain/
+│       ├── models.py               # Pydantic models
+│       └── taxonomy.py             # Enums: system, type, severity, services
+│
+├── frontend/                       # Web UIs
+│   ├── index.html                  # Old classify form (port 8082)
+│   └── dashboard/                  # ⬅ New three-lens incident dashboard
+│       ├── index.html              #   UI shell (dark theme, bilingual, RTL-ready)
+│       ├── app.js                  #   All logic: role switching, filtering, clustering
+│       └── data.js                 #   Mock data: 150+ tickets, 16 clusters, 4 teams
+│
+├── ocr/
+│   └── ocr_server.py              # EasyOCR microservice (AR/EN, port 8003)
+│
+├── ticketing_simulator/           # Mock ticketing system
+│   ├── main.py                    # FastAPI (port 8002), 276 bilingual incidents
+│   ├── generated_nusuk_data.json  # Synthetic seed data
+│   └── pyproject.toml
+│
+├── tests/                         # 60 unit + e2e tests
+│   ├── test_classifier.py         # 21 tests — LLM parsing, retry
+│   ├── test_incident_store.py     # 33 tests — embeddings, similarity, resolve
+│   ├── test_service.py            # 6 tests — orchestration
+│   ├── e2e_check.py               # End-to-end with real Ollama
+│   └── conftest.py                # Test fixtures
+│
+├── docs/
+│   ├── NOTES.md                   # Design review + build plan (authoritative)
+│   ├── ROADMAP.md                 # Enterprise plan
+│   ├── TODO.md                    # Phase tracking
+│   └── CLAUDE.md                  # Agent instructions
+│
+├── scripts/
+│   ├── generate_nusuk_data.py     # Synthetic bilingual ticket generator
+│   ├── find_threshold.py          # Similarity threshold finder
+│   └── reset_db.py                # Reset incidents database
+│
+├── docker-compose.yml             # Full stack (backend + frontend + ocr + simulator)
+├── pyproject.toml                 # Python deps (pip install -e .)
+└── README.md                      # This file
 
-ocr/
-├── ocr_server.py     → EasyOCR microservice (English + Arabic)
-└── Dockerfile
-
-frontend/
-├── index.html        → Single-page UI (Classify tab, file upload for OCR)
-├── app.js             → API calls, rendering, history, resolve action
-├── style.css
-├── nginx.conf         → Static files + proxy to api/ocr
-└── Dockerfile
-
-tests/
-├── test_classifier.py     — Unit tests for prompt building & validation (mocked LLM)
-├── test_incident_store.py — Unit tests for embeddings, similarity, resolve
-├── test_service.py        — Unit tests for orchestration
-└── e2e_check.py           — End-to-end with real Ollama
-```
