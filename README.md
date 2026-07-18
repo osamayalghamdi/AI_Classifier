@@ -11,7 +11,7 @@ LLM-powered incident classification with duplicate detection and graph-based gro
 | Layer | Tech |
 |-------|------|
 | API | FastAPI + Uvicorn |
-| LLM | LiteLLM (provider-agnostic) — default: Qwen2.5:7b via Ollama |
+| LLM | LiteLLM (provider-agnostic) — current: Qwen3.6-35B-A3B via OpenRouter (swappable to local Qwen2.5:7b via Ollama) |
 | Embeddings | sentence-transformers (all-MiniLM-L6-v2 / bge-m3) |
 | Storage | PostgreSQL + pgvector (HNSW ANN index) |
 | OCR | EasyOCR (English + Arabic) |
