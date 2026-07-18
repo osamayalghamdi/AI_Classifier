@@ -112,7 +112,7 @@ Minimum bar for internal company use:
   phone numbers. Decide a policy: redact before sending to the LLM? Encrypt at rest?
   Retention period? If the LLM ever moves off-prem (API calls leaving the network),
   this becomes a compliance question, not a technical one — get data residency and
-  DPA sign-off before any pilgrim data leaves KSA infrastructure.
+  DPA sign-off before any customer data leaves KSA infrastructure.
 - **Hardening**: rate limiting per user, request size limits on the API (not just
   OCR), CSRF story for the frontend, secrets in a vault (not `.env` in compose),
   containers running as non-root, TLS everywhere, and file-type validation on OCR
