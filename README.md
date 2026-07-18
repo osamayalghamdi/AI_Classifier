@@ -2,7 +2,7 @@
 
 <img width="2600" height="1235" alt="architecture-flow" src="https://github.com/user-attachments/assets/7a7826db-2b64-4f22-8de9-6c2108c67a12" />
 
-An **incident classification + grouping system** for customer support call centers. Feed it a support ticket, get back a structured classification, similar open incidents, and a grouped view of what's actually happening.
+An **incident classification + grouping system** for customer support teams. Feed it a support ticket, get back a structured classification, similar open incidents, and a grouped view of what's actually happening.
 
 > **One shift lead, one dashboard, ten seconds** — see what's on fire, what's recurring, and fix one root cause instead of touching 20 tickets.
 
