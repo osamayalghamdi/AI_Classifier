@@ -1,5 +1,7 @@
 # AI Incident Classifier
 
+
+
 Structured incident classification via LLM, with live duplicate detection. Feed it a
 title and description, get back validated categories plus a list of similar *open*
 incidents so a call center doesn't escalate the same issue twice.
