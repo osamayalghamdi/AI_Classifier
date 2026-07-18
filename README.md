@@ -1,7 +1,6 @@
 # AI Incident Classifier
 
-![Uploading architecture-flow.png…]()
-
+<img width="2600" height="1235" alt="architecture-flow" src="https://github.com/user-attachments/assets/7a7826db-2b64-4f22-8de9-6c2108c67a12" />
 
 Structured incident classification via LLM, with live duplicate detection. Feed it a
 title and description, get back validated categories plus a list of similar *open*
