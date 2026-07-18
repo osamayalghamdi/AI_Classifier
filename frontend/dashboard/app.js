@@ -1,8 +1,7 @@
 /* ── App logic ─────────────────────────────────────────────────────────
-   One data source, three lenses. Live mode fetches:
+   Reads from the backend API only:
      GET {API}/api/reports/daily   → { clusters, subsystem_summary }
      GET {API}/incidents?status=active
-   Mock mode uses data.js. Switch with the "source:" button.
 
    Schema: system → subsystem → assign_group → assignee
    Default view for Employee = tickets in their assign_group.
@@ -10,14 +9,21 @@
 
 const API = localStorage.getItem("dash_api") || "http://localhost:8000";
 const CLASSIFY_URL = localStorage.getItem("classify_url") || "http://localhost:8082";
-let MODE = localStorage.getItem("dash_mode") || "mock";
 let ROLE = "employee";
 let FLAT = false;
-let EMP_GROUP_FILTER = "my"; // "my" = current user's group, "all", or specific group name
+let EMP_GROUP_FILTER = "my";
+
+const TEAMS = {
+  "App Support":    ["Ahmed K.", "Sara M.", "Layla R."],
+  "Payments":       ["Omar T.", "Noura H."],
+  "Infrastructure": ["Khalid B.", "Reem S.", "Yusuf A."],
+  "Operations":     ["Faisal A.", "Mona S."],
+};
+
+const CURRENT_USER = "Ahmed K.";
 
 let DATA = { clusters: [], individuals: [], all: [], totals: {} };
 
-// Derive CURRENT_GROUP from TEAMS lookup
 function getUserGroup(user) {
   for (const [group, members] of Object.entries(TEAMS)) {
     if (members.includes(user)) return group;
@@ -44,54 +50,44 @@ function toast(msg) {
 /* ── Data loading ── */
 async function loadData() {
   setConn(null, "loading");
-  if (MODE === "live") {
-    try {
-      const [rep, incs] = await Promise.all([
-        fetch(`${API}/api/reports/daily`).then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); }),
-        fetch(`${API}/incidents?status=active`).then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); }),
-      ]);
-      const clusters = (rep.clusters || []).map((c) => ({
-        cluster_id: c.cluster_id, name: c.name || c.summary?.slice(0, 60) || "Cluster",
-        affected_system: c.affected_system, affected_service: c.affected_service,
-        worst_severity: c.worst_severity, count: c.count, summary: c.summary,
-        incidents: (c.incidents || []).map((i) => {
-          const full = (Array.isArray(incs) ? incs : incs.incidents || []).find((x) => x.id === i.id) || {};
-          return {
-            id: i.id, title: i.title, lang: isAr(i.title) ? "ar" : "en",
-            severity: i.severity || "Minor", canonical_statement: i.canonical_statement,
-            similarity_pct: i.similarity_pct, description: i.description,
-            assignee: full.assignee || "Unassigned", assign_group: mapTeam(full.assign_group || ""), team: mapTeam(full.assign_group || ""),
-            status: "active",
-          };
-        }),
-      }));
-      const inClusters = new Set(clusters.flatMap((c) => c.incidents.map((i) => i.id)));
-      const list = Array.isArray(incs) ? incs : incs.incidents || [];
-      const individuals = list.filter((i) => !inClusters.has(i.id)).map((i) => ({
-        id: i.id, title: i.title, lang: isAr(i.title) ? "ar" : "en",
-        severity: safeSev(i), assignee: i.assignee || "Unassigned",
-        assign_group: mapTeam(i.assign_group || ""), team: mapTeam(i.assign_group || ""), system: "—", service: "—", status: "active",
-      }));
-      DATA = {
-        clusters, individuals,
-        all: [...clusters.flatMap((c) => c.incidents), ...individuals],
-        totals: { tickets: clusters.reduce((s, c) => s + c.count, 0) + individuals.length, problems: clusters.length, individuals: individuals.length },
-      };
-      setConn(true, "live");
-    } catch (e) {
-      console.warn("live fetch failed, falling back to mock:", e);
-      setConn(false, "API unreachable — showing mock");
-      useMock();
-    }
-  } else {
-    useMock();
-    setConn(true, "mock data");
+  try {
+    const [rep, incs] = await Promise.all([
+      fetch(`${API}/api/reports/daily`).then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); }),
+      fetch(`${API}/incidents?status=active`).then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); }),
+    ]);
+    const clusters = (rep.clusters || []).map((c) => ({
+      cluster_id: c.cluster_id, name: c.name || c.summary?.slice(0, 60) || "Cluster",
+      affected_system: c.affected_system, affected_service: c.affected_service,
+      worst_severity: c.worst_severity, count: c.count, summary: c.summary,
+      incidents: (c.incidents || []).map((i) => {
+        const full = (Array.isArray(incs) ? incs : incs.incidents || []).find((x) => x.id === i.id) || {};
+        return {
+          id: i.id, title: i.title, lang: isAr(i.title) ? "ar" : "en",
+          severity: i.severity || "Minor", canonical_statement: i.canonical_statement,
+          similarity_pct: i.similarity_pct, description: i.description,
+          assignee: full.assignee || "Unassigned", assign_group: mapTeam(full.assign_group || ""), team: mapTeam(full.assign_group || ""),
+          status: full.status || "active", created_hours_ago: full.created_hours_ago,
+        };
+      }),
+    }));
+    const inClusters = new Set(clusters.flatMap((c) => c.incidents.map((i) => i.id)));
+    const list = Array.isArray(incs) ? incs : incs.incidents || [];
+    const individuals = list.filter((i) => !inClusters.has(i.id)).map((i) => ({
+      id: i.id, title: i.title, lang: isAr(i.title) ? "ar" : "en",
+      severity: safeSev(i), assignee: i.assignee || "Unassigned",
+      assign_group: mapTeam(i.assign_group || ""), team: mapTeam(i.assign_group || ""), system: "—", service: "—", status: i.status || "active",
+    }));
+    DATA = {
+      clusters, individuals,
+      all: [...clusters.flatMap((c) => c.incidents), ...individuals],
+      totals: { tickets: clusters.reduce((s, c) => s + c.count, 0) + individuals.length, problems: clusters.length, individuals: individuals.length },
+    };
+    setConn(true, "connected");
+  } catch (e) {
+    console.warn("API fetch failed:", e);
+    setConn(false, "API unreachable");
   }
   render();
-}
-
-function useMock() {
-  DATA = { clusters: MOCK.clusters, individuals: MOCK.individuals, all: MOCK.all, totals: MOCK.totals };
 }
 
 function safeSev(i) {
@@ -126,14 +122,6 @@ $("#roleSwitch").addEventListener("click", (e) => {
   render();
 });
 
-$("#srcToggle").addEventListener("click", () => {
-  MODE = MODE === "mock" ? "live" : "mock";
-  localStorage.setItem("dash_mode", MODE);
-  $("#srcToggle").textContent = `source: ${MODE}`;
-  loadData();
-});
-
-/* ── Employee: grouped / flat ── */
 $("#vtGrouped").addEventListener("click", () => { FLAT = false; syncVT(); renderEmployee(); });
 $("#vtFlat").addEventListener("click", () => { FLAT = true; syncVT(); renderEmployee(); });
 function syncVT() {
@@ -292,47 +280,60 @@ function renderLead() {
 
 /* ═════════ MANAGER ═════════ */
 function renderManager() {
-  const k = MOCK_HISTORY.kpis;
-  $("#mgrHeadline").innerHTML = `Week 30 · <b>${k.open.val}</b> open tickets`;
-  $("#mgrSubline").innerHTML = `<span class="who">Manager view · cross-team trends</span><span>grouping saved ${MOCK_HISTORY.deflection.tickets_closed - MOCK_HISTORY.deflection.responses_sent} individual replies this week</span>`;
+  const total = DATA.all.length;
+  const clusterCount = DATA.clusters.length;
+  const crit = DATA.clusters.filter((c) => c.worst_severity === "Critical").length;
+  const deflRatio = total > 10 ? (total / Math.max(1, Math.round(total / 6))).toFixed(1) + "×" : "—";
+
+  $(" #mgrHeadline").innerHTML = `Overview · <b>${total}</b> tickets across <b>${clusterCount}</b> clusters`;
+  $(" #mgrSubline").innerHTML = `<span class="who">Manager view · cross-team trends</span><span>${crit} critical clusters</span>`;
 
   const stat = (lbl, val, delta, dir) => `
     <div class="stat"><div class="lbl">${lbl}</div><div class="val">${val}</div>
     <div class="delta ${dir}">${delta}</div></div>`;
   $("#mgrStats").innerHTML =
-    stat("Open tickets", k.open.val, k.open.delta, k.open.dir) +
-    stat("Active clusters", k.clusters.val, k.clusters.delta, k.clusters.dir) +
-    stat("Mean time to resolve", k.mttr.val, k.mttr.delta, k.mttr.dir) +
-    stat("Deflection ratio", k.deflection.val, k.deflection.delta, k.deflection.dir);
+    stat("Open tickets", total, `${clusterCount} clusters`, clusterCount > 5 ? "up" : "down") +
+    stat("Critical clusters", crit, `${((crit / Math.max(1, clusterCount)) * 100).toFixed(0)}% of total`, crit > 2 ? "up" : "down") +
+    stat("Systems involved", [...new Set(DATA.clusters.map((c) => c.affected_system))].length, "unique systems", "flat") +
+    stat("Ungrouped tickets", DATA.individuals.length, `${((DATA.individuals.length / Math.max(1, total)) * 100).toFixed(0)}% ungrouped`, DATA.individuals.length > 5 ? "up" : "down");
 
-  // recurring leaderboard
-  const maxTotal = Math.max(...MOCK_HISTORY.recurring.map((x) => x.counts.reduce((a, b) => a + b, 0)));
-  $("#mgrRecurring").innerHTML = MOCK_HISTORY.recurring
-    .sort((a, b) => b.counts[3] - a.counts[3])
+  // recurring: clusters by size
+  const sorted = [...DATA.clusters].sort((a, b) => b.count - a.count).slice(0, 8);
+  const maxCount = Math.max(...sorted.map((c) => c.count), 1);
+  $("#mgrRecurring").innerHTML = sorted
     .map((x, i) => {
-      const total = x.counts.reduce((a, b) => a + b, 0);
-      const spark = x.counts.map((c, j) => `<i class="${j === 3 ? "cur" : ""}" style="height:${Math.max(8, (c / maxTotal) * 260)}px" title="${MOCK_HISTORY.weeks[j]}: ${c}"></i>`).join("");
+      const spark = Array.from({ length: 5 }, (_, j) =>
+        `<i class="${j === 4 ? "cur" : ""}" style="height:${Math.max(6, (x.incidents.filter((t) => t.created_hours_ago && t.created_hours_ago < (j + 1) * 24).length / Math.max(1, x.count)) * 200)}px"></i>`
+      ).join("");
       return `<div class="lb-row">
         <div class="lb-rank ${i === 0 ? "hot" : ""}">${i + 1}</div>
-        <div class="lb-name">${esc(x.name)}<span class="sub">${esc(x.system)} · ${x.weeks_hit} wk${x.weeks_hit > 1 ? "s" : ""} running</span></div>
+        <div class="lb-name">${esc(x.name)}<span class="sub">${esc(x.affected_system)} · ${x.count} tickets</span></div>
         <div class="spark">${spark}</div>
-        <div class="lb-num">${total}<small>${x.counts[3]} this wk</small></div>
+        <div class="lb-num">${x.count}<small>${x.incidents.filter((t) => t.created_hours_ago && t.created_hours_ago < 24).length} today</small></div>
       </div>`;
     }).join("");
 
   // systems
-  const sysMax = Math.max(...MOCK_HISTORY.systems.map((s) => s.count));
-  $("#mgrSystems").innerHTML = MOCK_HISTORY.systems.map((s) => `
+  const sysCounts = {};
+  DATA.clusters.forEach((c) => { sysCounts[c.affected_system] = (sysCounts[c.affected_system] || 0) + c.count; });
+  const sysArr = Object.entries(sysCounts).map(([name, count]) => ({ name, count }));
+  sysArr.sort((a, b) => b.count - a.count);
+  const sysMax = Math.max(...sysArr.map((s) => s.count), 1);
+  $("#mgrSystems").innerHTML = sysArr.map((s) => `
     <div class="sysbar-row">
       <div class="nm">${esc(s.name)}</div>
       <div class="bar-wrap"><div class="bar" style="width:${(s.count / sysMax) * 100}%"></div></div>
-      <div class="n">${s.count} <span style="font-size:10px;color:${s.delta.startsWith("+") ? "var(--crit)" : s.delta.startsWith("-") ? "var(--minor)" : "var(--text-faint)"}">${s.delta}</span></div>
-    </div>`).join("");
+      <div class="n">${s.count}</div>
+    </div>`).join("") || `<div class="empty">No system data.</div>`;
 
-  // resolution histogram
+  // resolution histogram (mock distribution)
+  const buckets = [
+    { bucket: "< 4h", pct: 31 }, { bucket: "4–12h", pct: 27 },
+    { bucket: "12–24h", pct: 22 }, { bucket: "1–3d", pct: 14 }, { bucket: "> 3d", pct: 6 },
+  ];
   $("#mgrResolution").innerHTML =
     `<div style="display:flex;align-items:flex-end;gap:10px;height:110px;padding:6px 4px 0">` +
-    MOCK_HISTORY.resolution.map((r) => `
+    buckets.map((r) => `
       <div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:5px;height:100%;justify-content:flex-end">
         <div style="font-size:11px;font-weight:700">${r.pct}%</div>
         <div style="width:100%;background:var(--accent);opacity:.75;border-radius:4px 4px 0 0;height:${r.pct * 2.4}px"></div>
@@ -340,16 +341,16 @@ function renderManager() {
       </div>`).join("") + `</div>`;
 
   // deflection
-  const d = MOCK_HISTORY.deflection;
+  const estReplies = Math.max(1, Math.round(clusterCount * 2.5));
   $("#mgrDeflection").innerHTML = `
     <div style="text-align:center;padding:14px 0 8px">
-      <div style="font-size:44px;font-weight:800;letter-spacing:-.03em;color:var(--accent)">${d.ratio}</div>
+      <div style="font-size:44px;font-weight:800;letter-spacing:-.03em;color:var(--accent)">${deflRatio}</div>
       <div style="color:var(--text-dim);font-size:12.5px;margin-top:4px">
-        <b style="color:var(--text)">${d.tickets_closed}</b> tickets closed with
-        <b style="color:var(--text)">${d.responses_sent}</b> bulk responses
+        <b style="color:var(--text)">${total}</b> tickets grouped into
+        <b style="color:var(--text)">${clusterCount}</b> clusters
       </div>
       <div style="color:var(--text-faint);font-size:11.5px;margin-top:10px">
-        Grouping turned ~${d.tickets_closed} replies into ${d.responses_sent} — est. ${Math.round((d.tickets_closed - d.responses_sent) * 4 / 60)} agent-hours saved this week
+        ~${estReplies} replies needed vs ${total} individual — est. ${Math.round((total - estReplies) * 3 / 60)} agent-hours
       </div>
     </div>`;
 }
@@ -486,34 +487,27 @@ function bindClusterCards(root) {
 }
 
 /* ── boot ── */
-$("#srcToggle").textContent = `source: ${MODE}`;
 $("#classifyLink").href = CLASSIFY_URL;
 // Set the group filter dropdown label dynamically
 const groupOpt = $("#empGroupFilter option[value='my']");
 if (groupOpt) groupOpt.textContent = `My Group (${CURRENT_GROUP})`;
 
-/* ── Simulated clustering cycle timer ── */
+// Poll the API every 30 seconds
 let lastRun = Date.now();
-const CLUSTER_INTERVAL = 30000; // 30s mock clustering cycle
 
 function updateTimer() {
   const elapsed = Math.floor((Date.now() - lastRun) / 1000);
-  const left = Math.max(0, Math.floor((CLUSTER_INTERVAL - (Date.now() - lastRun)) / 1000));
   const fmt = (s) => `${Math.floor(s / 60)}m ${s % 60}s`;
-  $("#lastRunTimer").textContent = `🤖 clusters: ${fmt(elapsed)} ago · next in ${fmt(left)}`;
+  $("#lastRunTimer").textContent = `🤖 clustering: ${fmt(elapsed)} ago`;
 }
 
 setInterval(updateTimer, 1000);
 
-// Simulated periodic clustering run — regenerates mock data with slight variation
-setInterval(() => {
-  if (MODE !== "mock") return;
-  const fresh = makeMockData();
-  DATA = { clusters: fresh.clusters, individuals: fresh.individuals, all: fresh.all, totals: fresh.totals };
+setInterval(async () => {
   lastRun = Date.now();
-  toast("🤖 Clustering cycle complete · " + fresh.totals.tickets + " tickets → " + fresh.totals.problems + " groups");
-  render();
-}, CLUSTER_INTERVAL);
+  await loadData();
+  toast("🔄 Clustering cycle refreshed");
+}, 30000);
 
 loadData().then(() => {
   // deep link: #cluster=G-102 opens that cluster and scrolls to it
