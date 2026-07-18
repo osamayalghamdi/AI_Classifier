@@ -29,83 +29,68 @@ _log = logging.getLogger(__name__)
 
 FEW_SHOT_EXAMPLES = [
     {
-        "title": "Checkout timeouts for 20% of users",
-        "description": (
-            "Users in the EU region see 504 errors when completing "
-            "purchases. Payment provider reports no outage."
-        ),
+        "title": "Login page returning 500 errors for 30% of users",
+        "description": "Users seeing 500 Internal Server Error when attempting to log in via the web portal. Started 20 minutes ago. Auth service health check passing.",
         "output": {
-            "affected_system": "Payment Gateway",
-            "service": "Checkout",
+            "affected_system": "Infrastructure",
+            "service": "Compute (EC2 / VMs)",
             "incident_type": "Degradation",
             "severity": "Major",
             "urgency": "High",
             "category": "Performance",
             "confidence": "high",
-            "reasoning": "Partial degradation of checkout, not a full outage.",
-            "canonical_statement": "Payment checkout: EU users receive 504 errors; payment provider operational.",
+            "reasoning": "Partial login failure with auth service healthy suggests web server or load balancer issue.",
+            "canonical_statement": "Login: 30% of users receive 500 errors on web portal; auth service is healthy.",
         },
     },
     {
-        "title": "VPN tunnel to branch office flapping",
-        "description": (
-            "Site-to-site VPN between HQ and Dubai office drops and "
-            "reconnects every 5 minutes. Affects 50 users."
-        ),
+        "title": "Payment checkout failing — transactions timing out",
+        "description": "Checkout process times out at payment step for all users in APAC region. Payment provider status page shows no outage.",
         "output": {
-            "affected_system": "Network",
-            "service": "VPN",
+            "affected_system": "Payment Gateway",
+            "service": "Checkout",
             "incident_type": "Degradation",
-            "severity": "Major",
-            "urgency": "High",
-            "category": "Network Issue",
+            "severity": "Critical",
+            "urgency": "Immediate",
+            "category": "Performance",
             "confidence": "high",
-            "reasoning": "VPN flapping degrades connectivity for a branch office.",
-            "canonical_statement": "VPN tunnel: Connection between HQ and Dubai drops and reconnects every 5 minutes, affecting 50 users.",
+            "reasoning": "APAC-only checkout timeouts with provider reporting no issues suggests regional routing or gateway instance problem.",
+            "canonical_statement": "Payment checkout: APAC users experiencing timeouts at payment step; payment provider is operational.",
         },
     },
     {
-        "title": "Expired SSL certificate on customer portal",
-        "description": (
-            "Users see a security warning when visiting the portal. "
-            "Certificate expired 2 days ago."
-        ),
+        "title": "Email notifications not being delivered to users",
+        "description": "Password reset and welcome emails not arriving since deployment v3.2.1. SMTP relay logs show messages queued but not sent.",
         "output": {
-            "affected_system": "CRM",
-            "service": "Customer Portal",
+            "affected_system": "Email",
+            "service": "SMTP Relay",
             "incident_type": "Unavailability",
             "severity": "Major",
             "urgency": "High",
-            "category": "Configuration",
+            "category": "Software",
             "confidence": "medium",
-            "reasoning": "Expired cert blocks HTTPS access, but portal backend is healthy.",
-            "canonical_statement": "Customer portal: HTTPS blocked by SSL certificate expired 2 days ago, backend healthy.",
+            "reasoning": "Emails queued but not sent correlates with recent deployment, likely a software regression.",
+            "canonical_statement": "Email delivery: Password reset and welcome emails queued but not sent since deployment v3.2.1.",
         },
     },
     {
-        "title": "Production database disk is 98% full",
-        "description": (
-            "The PostgreSQL primary server /data partition is at 98% "
-            "capacity. Auto-vacuum may fail soon."
-        ),
+        "title": "Database query performance degraded after schema change",
+        "description": "Reports dashboard taking 30+ seconds to load. Slow query log shows full table scans on orders table after adding new index.",
         "output": {
-            "affected_system": "Infrastructure",
-            "service": "Storage",
+            "affected_system": "Data Pipeline",
+            "service": "Data Warehouse",
             "incident_type": "Degradation",
             "severity": "Major",
             "urgency": "High",
-            "category": "Hardware",
+            "category": "Configuration",
             "confidence": "high",
-            "reasoning": "Database disk near capacity may cause autovacuum failures.",
-            "canonical_statement": "Database storage: PostgreSQL primary server /data at 98% capacity, autovacuum may fail.",
+            "reasoning": "New index causing full table scans — query planner regression after schema change.",
+            "canonical_statement": "Reports dashboard: Queries on orders table use full table scans after schema change, load time exceeds 30 seconds.",
         },
     },
     {
-        "title": "Suspicious login attempts on admin panel",
-        "description": (
-            "5000+ failed login attempts from 12 different IPs. "
-            "Possible brute-force attack targeting the admin interface."
-        ),
+        "title": "Admin panel brute-force attack detected",
+        "description": "5000+ failed login attempts from 15 distinct IPs targeting admin accounts. Rate limiting not triggering.",
         "output": {
             "affected_system": "Security",
             "service": "IAM",
@@ -114,29 +99,23 @@ FEW_SHOT_EXAMPLES = [
             "urgency": "Immediate",
             "category": "Security",
             "confidence": "high",
-            "reasoning": "High-volume brute-force attack on admin panel requires immediate response.",
-            "canonical_statement": "Admin login: 5000+ failed attempts from 12 distinct IPs, possible brute-force attack.",
+            "reasoning": "High-volume brute-force attack on admin accounts with rate limiting failure requires immediate response.",
+            "canonical_statement": "Admin login: 5000+ failed attempts from 15 distinct IPs; rate limiting not engaging.",
         },
     },
     {
-        "title": "Payment gateway completely down — all transactions failing",
-        "description": (
-            "503 errors on every payment attempt since 14:32 UTC. "
-            "Our payment provider's status page shows a full outage."
-        ),
+        "title": "API gateway returning 503 — all downstream calls failing",
+        "description": "All API requests returning 503 errors since 14:32 UTC. Downstream services are healthy individually. Gateway logs show connection pool exhausted.",
         "output": {
-            "affected_system": "Payment Gateway",
-            "service": "Checkout",
+            "affected_system": "Infrastructure",
+            "service": "Load Balancer",
             "incident_type": "Outage",
             "severity": "Critical",
             "urgency": "Immediate",
-            "category": "External / Third Party",
+            "category": "Configuration",
             "confidence": "high",
-            "reasoning": (
-                "Full outage with 100% failure rate caused by third-party provider failure. "
-                "incident_type=Outage (what happened), category=External / Third Party (why it happened)."
-            ),
-            "canonical_statement": "Payment checkout: All transactions failing with 503 errors since 14:32 UTC, provider outage confirmed.",
+            "reasoning": "Full outage with connection pool exhaustion on gateway while downstream services are healthy points to gateway config issue.",
+            "canonical_statement": "API gateway: All requests returning 503 since 14:32 UTC; connection pool exhausted, downstream services healthy.",
         },
     },
 ]
@@ -166,61 +145,51 @@ def _build_system_prompt() -> str:
     categories = "\n".join(f"  - {c.value}" for c in Category)
     services_by_system = {s.value: svcs for s, svcs in SERVICES_BY_SYSTEM.items()}
 
-    return f"""You classify IT incident tickets into fixed categories.
+    return f"""You classify IT support tickets into structured categories. Return ONLY valid JSON.
 
-Return ONLY valid JSON with NO extra text. Each field value must be a SINGLE STRING (not a list).
+## JSON Schema
+{{
+  "affected_system": "string — one from the list below",
+  "service": "string — one service from the chosen system's list",
+  "incident_type": "Spike | Degradation | Unavailability | Outage — the symptom/what happened",
+  "severity": "Critical | Major | Minor | Cosmetic",
+  "urgency": "Immediate | High | Medium | Low",
+  "category": "Hardware | Software | Network Issue | Security | Performance | Configuration | Human Error | External / Third Party | Other — the root cause type/why it happened",
+  "confidence": "low | medium | high",
+  "reasoning": "short explanation of your choices",
+  "canonical_statement": "one dense English sentence: what happened, which component, scope. Never guess root cause."
+}}
 
+## Key Rules
+- incident_type = WHAT HAPPENED (symptom). category = WHY IT HAPPENED (root cause type). Never mix them.
+- service must be a single string from the chosen system's service list.
+- If unsure, pick the closest match and set confidence "low".
+- Respond with JSON only — no markdown, no commentary.
+
+## Examples
 {_build_examples_block()}
 
----
+## Allowed Values
 
-Now classify the user's incident using the same JSON format.
-
-Pick exactly one from each list below.
-
-CRITICAL — TWO DIFFERENT FIELDS, TWO DIFFERENT LISTS:
-  • incident_type = WHAT HAPPENED (the symptom): Spike | Degradation | Unavailability | Outage
-  • category      = WHY IT HAPPENED (the root cause type): Hardware | Software | Network Issue | Security | Performance | Configuration | Human Error | External / Third Party | Other
-  NEVER put an incident_type value (Spike/Degradation/Unavailability/Outage) into the category field.
-
-CRITICAL: "service" must be a SINGLE STRING. Pick ONE service name from the list
-shown for your chosen affected_system. Do NOT return a list.
-
-affected_system (pick ONE of these):
+affected_system (pick one):
 {systems}
 
-service (pick ONE SERVICE STRING from the relevant list below):
+services per system (pick one service from your chosen system):
 {json.dumps(services_by_system, indent=2)}
 
-incident_type — WHAT HAPPENED (the symptom type, pick ONE of these):
+incident_type — WHAT HAPPENED (symptom, pick one):
 {types}
 
-severity (pick ONE of these):
+severity (pick one):
 {severities}
 
-urgency (pick ONE of these):
+urgency (pick one):
 {urgencies}
 
-category — WHY IT HAPPENED (the root cause type, pick ONE of these):
+category — WHY IT HAPPENED (root cause type, pick one):
 {categories}
 
-confidence: "low", "medium", or "high"
-reasoning: short explanation (optional)
-canonical_statement: one dense sentence in English stating observable
-  symptoms and the affected component. Include: what happened, which
-  component/system is affected (e.g. "notification delivery", "login
-  authentication", "payment checkout"), scope (which users/environments),
-  and inconsistency if mentioned. Start with the component name to anchor
-  similar tickets together. Never guess root cause. Never add details not
-  present. Write in English regardless of ticket language. Optimized for
-  embedding similarity.
-
-Rules:
-- Pick the single best label per field.
-- "service" must be a SINGLE STRING, never a list.
-- The category field must always be a root cause type (Hardware/Software/etc.), never a symptom type.
-- If nothing fits well, pick the closest and set confidence "low".
-- Respond with JSON only — no commentary before or after."""
+canonical_statement: Include component name first, describe symptoms and scope. English only. Facts only — no inferred causes."""
 
 
 # Build user message with title and description
