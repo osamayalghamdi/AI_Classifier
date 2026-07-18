@@ -2,78 +2,114 @@
 
 <img width="2600" height="1235" alt="architecture-flow" src="https://github.com/user-attachments/assets/7a7826db-2b64-4f22-8de9-6c2108c67a12" />
 
-An **incident classification + grouping system** for customer support teams. Feed it a support ticket, get back a structured classification, similar open incidents, and a grouped view of what's actually happening.
-
-> **One shift lead, one dashboard, ten seconds** — see what's on fire, what's recurring, and fix one root cause instead of touching 20 tickets.
+LLM-powered incident classification with duplicate detection and graph-based grouping. Submit a ticket, get back structured labels + similar open incidents + cluster context.
 
 ---
 
-## Architecture
+## Stack
 
-```
-Ticket → LLM classifies → Embedding → Similarity search → Cluster → Dashboard
-         (1 call/ticket)   (bge-m3)   (pgvector/SQLite)   (graph)  (3 lenses)
-```
+| Layer | Tech |
+|-------|------|
+| API | FastAPI + Uvicorn |
+| LLM | LiteLLM (provider-agnostic) — default: Qwen2.5:7b via Ollama |
+| Embeddings | sentence-transformers (all-MiniLM-L6-v2 / bge-m3) |
+| Storage | PostgreSQL + pgvector (HNSW ANN index) |
+| OCR | EasyOCR (English + Arabic) |
+| Frontend | Vanilla JS (no build step) |
+| Sync | Background thread polls external ticketing API |
 
-| Layer | Tech | Role |
-|-------|------|------|
-| API | FastAPI + Uvicorn | REST endpoints |
-| LLM | Qwen2.5:7b via Ollama (swappable via LiteLLM) | Classification + group validation |
-| Embeddings | all-MiniLM-L6-v2 / bge-m3 | Cosine similarity for duplicates |
-| Storage | SQLite | Incidents + vectors |
-| Frontend | Vanilla JS (no build step) | 3-role dashboard |
+---
 
-**Key design:** LLM does 2 things only — classify every ticket and validate proposed groups. Everything else (duplicate search, clustering) is math. No LLM calls on page refresh.
+## API
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/classify` | Classify + find duplicates |
+| GET | `/classify` | Same via query params |
+| POST | `/classify/batch` | Batch classify |
+| GET | `/incidents` | List incidents (?status=active) |
+| GET | `/incidents/{id}` | Get one |
+| POST | `/incidents/{id}/resolve` | Mark resolved |
+| GET | `/api/reports/{period}` | Clustered report |
+| GET | `/health` | Service status |
+| POST | `/reset` | Delete all |
 
 ---
 
 ## Dashboard — Three Lenses
 
-One API (`/api/clusters?scope=me|team|all`), three views:
+Live at `frontend/dashboard/` (standalone, `python3 -m http.server 8085`).
 
 | Role | Question | Default scope |
 |------|----------|--------------|
-| **Agent** | "What are my 50 tickets?" | Their assign_group, grouped by root cause |
+| **Engineer** | "What are my tickets?" | Their assign_group, grouped by root cause |
 | **Shift Lead** | "What's on fire for my team?" | Team clusters ranked by severity × growth |
-| **Manager** | "How are we doing this week?" | Cross-team trends, recurring patterns, deflection |
+| **Manager** | "How are we doing?" | Cross-team trends, recurring patterns, deflection |
 
-Key features in the employee view:
+Features:
 - **Group filter** — My Group / All / specific team
-- **Status split** — each cluster expands into Active / Escalated / Pending / Third-party / Verify / Resolved sections, each with colored left border
+- **Status-split clusters** — each cluster splits into Active / Escalated / Pending / Third-party / Verify / Resolved sections with colored borders
 - **Grouped/Flat toggle** — cluster view or raw ticket list
-- **Search + severity filter** — find tickets fast
-- **Shared cluster badges** — gold tag when a root cause spans multiple teams
-- **Simulated clustering timer** — shows last refresh, auto-refreshes every 30s
+- **Search + severity filter**
+- **Shared cluster badges** — gold tag when a root cause spans teams
+- **Simulated clustering cycle** — refreshes every 30s, shows timer
+
+Runs in **mock mode** by default (82 tickets, 16 clusters, 4 teams). Toggle to live mode via the top-bar button.
 
 ---
 
-## Project Structure
+## Classification Taxonomy
+
+9 systems, each with its own services:
+
+| System | Example Services |
+|--------|-----------------|
+| CRM | Sales, Customer Portal, Lead Management, Reporting |
+| ERP | Inventory, Procurement, HR, Finance |
+| Payment Gateway | Checkout, Refunds, Fraud Detection, Billing |
+| Infrastructure | Compute, Storage, Load Balancer, DNS |
+| Network | VPN, Firewall, CDN, DNS Resolution |
+| Security | IAM, SIEM, DLP, Endpoint Protection |
+| Email | SMTP Relay, Spam Filter, Mailbox Store |
+| Data Pipeline | ETL Jobs, Streaming, Data Warehouse |
+| Other | General |
+
+Plus: 4 incident types (Spike / Degradation / Unavailability / Outage), 4 severities, 4 urgencies, 9 root-cause categories.
+
+---
+
+## Project Layout
 
 ```
 AI_Classifier/
-├── ai_classification/              # Backend (FastAPI + LLM)
-│   ├── main.py                     # Entry point
-│   ├── config.py                   # Env settings
-│   ├── sync.py                     # Ticketing sync worker
-│   ├── api/   routes.py, schemas.py
-│   ├── core/  classifier.py, store.py, grouping.py
-│   └── domain/ models.py, taxonomy.py
-│
+├── ai_classification/
+│   ├── main.py              # FastAPI entry
+│   ├── config.py             # Env-based settings
+│   ├── sync.py               # Background ticketing sync
+│   ├── api/
+│   │   ├── routes.py         # HTTP endpoints
+│   │   └── schemas.py        # Request/response schemas
+│   ├── core/
+│   │   ├── classifier.py     # LLM classification (LiteLLM)
+│   │   ├── store.py          # PostgreSQL + pgvector
+│   │   └── grouping.py       # Graph clustering + LLM validation
+│   └── domain/
+│       ├── models.py         # Pydantic models
+│       └── taxonomy.py       # Enums + services
 ├── frontend/
-│   ├── index.html                  # Classify form (port 8082)
-│   └── dashboard/                  # Three-lens dashboard
-│       ├── index.html              # UI shell (dark, bilingual, RTL-ready)
-│       ├── app.js                  # Logic: roles, filters, clustering
-│       └── data.js                 # Mock data: 150+ tickets, 16 clusters
-│
-├── ocr/                            # EasyOCR microservice (AR/EN)
-├── ticketing_simulator/            # Mock ticketing API (276 bilingual tickets)
-├── tests/                          # 60 unit + e2e tests
-│
-├── NOTES.md                        # Design review (authoritative — read this first)
-├── ROADMAP.md                      # Enterprise plan
-├── pyproject.toml                  # Python deps
-└── docker-compose.yml              # Full stack
+│   ├── index.html            # Classify form (port 8082)
+│   └── dashboard/            # Three-lens dashboard
+│       ├── index.html        # UI shell
+│       ├── app.js            # Logic + rendering
+│       └── data.js           # Mock data generator
+├── ocr/ocr_server.py         # EasyOCR microservice
+├── ticketing_simulator/      # Mock ticketing API
+├── tests/                    # 42 tests
+│   ├── test_classifier.py    # 15 tests
+│   ├── test_incident_store.py# 22 tests
+│   └── test_service.py       # 5 tests
+├── docker-compose.yml        # Full stack
+└── pyproject.toml
 ```
 
 ---
@@ -82,16 +118,15 @@ AI_Classifier/
 
 ```bash
 # Backend
-cd ai_classification && pip install -e . && uvicorn main:app --reload --port 8000
+cd ai_classification
+pip install -e .
+uvicorn main:app --reload --port 8000
 
-# Dashboard (standalone, no build)
-cd frontend/dashboard && python3 -m http.server 8085
-
-# Open
+# Dashboard (no build)
+cd frontend/dashboard
+python3 -m http.server 8085
 open http://localhost:8085
 ```
-
-The dashboard runs in **mock mode** by default — 82 tickets, 16 clusters, 4 teams. Click "source: mock" in the top bar to switch to live mode (requires backend).
 
 ---
 
@@ -99,11 +134,9 @@ The dashboard runs in **mock mode** by default — 82 tickets, 16 clusters, 4 te
 
 ```
 Active → Escalated → Third-party → Verify → Resolved
-         ↑               ↑
-         Needs help      Waiting on external
 ```
 
-Each status gets its own colored section in the cluster card. New statuses can be added by extending `STATUS_COLORS` in `app.js`.
+Each status has its own colored section inside cluster cards. Add new statuses in `STATUS_COLORS` in `app.js`.
 
 ---
 
@@ -111,9 +144,10 @@ Each status gets its own colored section in the cluster card. New statuses can b
 
 | File | What |
 |------|------|
-| `frontend/dashboard/index.html` | Dashboard UI shell |
-| `frontend/dashboard/app.js` | All logic: roles, filters, status colors, rendering |
-| `frontend/dashboard/data.js` | Mock data generator (deterministic seed) |
-| `ai_classification/core/classifier.py` | LLM classification prompt + retry |
+| `frontend/dashboard/app.js` | Dashboard logic: roles, filters, status colors |
+| `frontend/dashboard/data.js` | Mock data generator (deterministic) |
+| `ai_classification/core/classifier.py` | LLM classification + retry |
+| `ai_classification/core/store.py` | PostgreSQL + pgvector store |
 | `ai_classification/core/grouping.py` | Graph clustering + LLM validator |
-| `NOTES.md` | Full design rationale (start here) |
+| `ai_classification/domain/taxonomy.py` | Classification enums |
+| `NOTES.md` | Full design rationale |
