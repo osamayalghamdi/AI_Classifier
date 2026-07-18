@@ -3,93 +3,356 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AI Incident Classifier</title>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link href="style.css" rel="stylesheet">
+<title>My Queue — Incident Classifier</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=IBM+Plex+Sans+Arabic:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#0d1117;--surface:#161b22;--surface-2:#1c2230;--border:#2b333f;--text:#e6edf3;--text-dim:#8b949e;--text-faint:#6e7681;--accent:#58a6ff;--crit:#f85149;--major:#e8963c;--minor:#3fb950;--low:#3fb950;--radius:8px;--radius-sm:6px}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{font-family:'Inter','IBM Plex Sans Arabic',system-ui,sans-serif;background:var(--bg);color:var(--text);font-size:14px;line-height:1.5}
+[dir=rtl],.rtl{direction:rtl;text-align:right;font-family:'IBM Plex Sans Arabic','Inter',sans-serif}
+header{background:var(--surface);border-bottom:1px solid var(--border);padding:0 24px;position:sticky;top:0;z-index:100}
+.header-inner{max-width:1400px;margin:0 auto;display:flex;align-items:center;justify-content:space-between;height:56px;gap:16px}
+.logo{display:flex;align-items:center;gap:8px;font-weight:600;font-size:15px}
+.logo-icon{width:30px;height:30px;border-radius:6px;background:linear-gradient(135deg,#58a6ff,#a371f7);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:12px;color:#fff}
+.header-right{display:flex;align-items:center;gap:10px}
+.health-badge{display:flex;align-items:center;gap:6px;padding:4px 10px;border-radius:20px;background:var(--surface-2);border:1px solid var(--border);font-size:11px;color:var(--text-dim)}
+.health-dot{width:7px;height:7px;border-radius:50%;background:var(--text-faint)}
+.health-dot.ok{background:var(--low);box-shadow:0 0 6px rgba(63,185,80,.6)}
+.health-dot.err{background:var(--crit);box-shadow:0 0 6px rgba(248,81,73,.6)}
+.api-toggle{background:none;border:1px solid var(--border);color:var(--text-dim);padding:4px 8px;border-radius:var(--radius-sm);cursor:pointer;font-size:11px;font-family:inherit;font-weight:500}
+.api-toggle:hover{border-color:var(--accent);color:var(--accent)}
+main{max-width:1400px;margin:0 auto;padding:24px}
+.headline{font-size:22px;font-weight:700;margin-bottom:4px}
+.headline span{font-size:13px;font-weight:600;color:var(--accent);vertical-align:middle}
+.subline{display:flex;flex-wrap:wrap;gap:10px;align-items:center;font-size:13px;color:var(--text-dim);margin-bottom:20px}
+.subline .who{font-weight:500;color:var(--text)}
+.chip{padding:2px 10px;border-radius:12px;font-size:11px;font-weight:600}
+.chip.crit{background:rgba(248,81,73,.12);color:var(--crit)}
+.filter-bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:16px}
+.filter-bar .count{font-size:12px;color:var(--text-faint);margin-left:auto}
+.form-input{background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);padding:7px 10px;font-size:13px;font-family:inherit;outline:none;transition:border-color .15s}
+.form-input:focus{border-color:var(--accent)}
+.form-input::placeholder{color:var(--text-faint)}
+.form-select{background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);padding:7px 8px;font-size:12px;font-family:inherit;cursor:pointer}
+.btn{background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-dim);padding:6px 12px;font-size:12px;font-family:inherit;font-weight:500;cursor:pointer;transition:all .15s}
+.btn:hover{border-color:var(--accent);color:var(--text)}
+.btn.active{background:var(--accent);border-color:var(--accent);color:#fff}
+.cluster{margin-bottom:10px;border-radius:var(--radius);border:1px solid var(--border);background:var(--surface);overflow:hidden}
+.cluster-head{display:flex;align-items:center;gap:10px;padding:12px 14px;cursor:pointer;user-select:none;transition:background .15s}
+.cluster-head:hover{background:var(--surface-2)}
+.chev{font-size:10px;color:var(--text-faint);transition:transform .15s;width:12px;text-align:center}
+.cluster.open .chev{transform:rotate(90deg)}
+.c-title{flex:1;min-width:0}
+.c-name{font-weight:600;font-size:14px;display:block;margin-bottom:2px}
+.c-tags{display:flex;flex-wrap:wrap;gap:5px}
+.tag{font-size:10.5px;padding:1px 7px;border-radius:4px;background:var(--surface-2);color:var(--text-dim);border:1px solid var(--border)}
+.tag.sys{background:rgba(88,166,255,.08);color:var(--accent);border-color:rgba(88,166,255,.2)}
+.tag.growth{color:var(--crit);background:rgba(248,81,73,.08);border-color:rgba(248,81,73,.2)}
+.c-right{text-align:right}
+.sev{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;padding:3px 9px;border-radius:4px}
+.sev.Critical{background:rgba(248,81,73,.12);color:var(--crit)}
+.sev.Major{background:rgba(232,150,60,.12);color:var(--major)}
+.sev.Minor{background:rgba(63,185,80,.12);color:var(--minor)}
+.sev.Cosmetic{background:rgba(139,148,158,.12);color:var(--text-dim)}
+.c-body{display:none;border-top:1px solid var(--border);padding:0}
+.cluster.open .c-body{display:block}
+.c-summary{padding:10px 14px;font-size:12.5px;color:var(--text-dim);line-height:1.6;border-bottom:1px solid var(--border)}
+.c-actions{display:flex;flex-wrap:wrap;gap:6px;padding:10px 14px;border-bottom:1px solid var(--border)}
+.c-actions .btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.c-actions .btn.primary:hover{opacity:.85}
+.btn.danger{color:var(--crit);border-color:rgba(248,81,73,.3)}
+.btn.danger:hover{background:rgba(248,81,73,.08);border-color:var(--crit)}
+.t-rows{padding:4px 0}
+.t-row{display:flex;align-items:center;gap:8px;padding:8px 14px;transition:background .1s}
+.t-row:hover{background:var(--surface-2)}
+.t-id{font-size:10.5px;color:var(--text-faint);font-family:monospace;width:60px;flex-shrink:0}
+.t-main{flex:1;min-width:0}
+.t-title{font-size:13px;font-weight:500}
+.t-meta{font-size:11px;color:var(--text-faint);margin-top:1px}
+.t-right{display:flex;align-items:center;gap:8px;flex-shrink:0}
+.sim{font-size:11px;color:var(--accent);font-family:monospace;font-weight:500}
+.mini-sev{width:8px;height:8px;border-radius:50%;display:inline-block}
+.mini-sev.Critical{background:var(--crit)}
+.mini-sev.Major{background:var(--major)}
+.mini-sev.Minor{background:var(--minor)}
+.mini-sev.Cosmetic{background:var(--text-faint)}
+.x-btn{background:none;border:none;color:var(--text-faint);cursor:pointer;font-size:13px;padding:2px;opacity:0;transition:opacity .15s}
+.t-row:hover .x-btn,.t-row:focus-within .x-btn{opacity:1}
+.x-btn:hover{color:var(--crit)}
+.ind-section{margin-top:16px}
+.ind-head{display:flex;align-items:center;gap:10px;font-size:12px;font-weight:600;color:var(--text-dim);text-transform:uppercase;letter-spacing:.04em;margin-bottom:8px}
+.ind-head .line{flex:1;height:1px;background:var(--border)}
+.ind-table .t-row{padding:6px 14px;border:1px solid transparent;border-radius:var(--radius-sm)}
+.ind-table .t-row:hover{border-color:var(--border)}
+.empty{text-align:center;padding:32px;color:var(--text-faint);font-size:13px}
+.timer{font-size:11px;color:var(--text-faint);text-align:center;padding:16px 0 8px}
+.toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:10px 20px;font-size:13px;color:var(--text);box-shadow:0 4px 16px rgba(0,0,0,.5);z-index:999;opacity:0;transition:opacity .25s}
+.toast.show{opacity:1}
+::-webkit-scrollbar{width:5px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+</style>
 </head>
 <body>
 
-<header class="app-header">
+<header>
   <div class="header-inner">
-    <div class="logo"><div class="logo-icon">AI</div> Incident Classifier</div>
-    <div class="health-badge" id="healthBadge">
-      <span class="health-dot" id="healthDot"></span>
-      <span id="healthText">Checking…</span>
+    <div class="logo"><div class="logo-icon">AI</div> My Queue</div>
+    <div class="header-right">
+      <button class="api-toggle" id="srcToggle">source: mock</button>
+      <div class="health-badge">
+        <span class="health-dot" id="healthDot"></span>
+        <span id="healthText">checking…</span>
+      </div>
     </div>
   </div>
 </header>
 
-<main class="app-main">
-  <!-- Classify Tab -->
-  <div class="tab-content active" id="tab-classify">
-    <div class="hero">
-      <h1>Classify Incidents</h1>
-      <p>Paste an incident title and description — the AI will classify it by system, severity, urgency, and more.</p>
-    </div>
-    <div class="columns">
-      <div>
-        <div class="card">
-          <div class="card-title">Classify Incident</div>
-          <div class="presets" id="presets">
-            <span class="preset-chip" data-title="Checkout timeouts for 20% of users" data-desc="Users in the EU region see 504 errors when completing purchases. Payment provider reports no outage.">Checkout timeout</span>
-            <span class="preset-chip" data-title="VPN tunnel to branch office flapping" data-desc="Site-to-site VPN between HQ and Dubai office drops and reconnects every 5 minutes. Affects 50 users.">VPN flapping</span>
-            <span class="preset-chip" data-title="Expired SSL certificate on customer portal" data-desc="Users see a security warning when visiting the portal. Certificate expired 2 days ago.">SSL expired</span>
-            <span class="preset-chip" data-title="Database connection pool exhausted" data-desc="Production DB connection pool hit 100% utilization. App servers returning 503 errors intermittently.">DB pool</span>
-          </div>
-          <div id="dropZone" class="drop-zone">
-            <div class="drop-zone-content">
-              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
-              <span class="drop-zone-text">Drop a screenshot or PDF, or click to browse</span>
-              <span class="drop-zone-hint">File will be OCR'd and fields will be filled automatically</span>
-            </div>
-            <input type="file" id="fileInput" accept="image/png,image/jpeg,image/jpg,application/pdf" hidden>
-          </div>
-          <div id="ocrStatus" class="ocr-status" hidden></div>
-          <div class="form-group">
-            <label class="form-label" for="title">Incident Title</label>
-            <input class="form-input" id="title" type="text" placeholder="e.g. Checkout timeouts for 20% of users">
-          </div>
-          <div class="form-group">
-            <label class="form-label" for="description">Description</label>
-            <textarea class="form-textarea" id="description" placeholder="Describe what's happening, who's affected, and any known context…"></textarea>
-          </div>
-          <div class="form-group" id="extractedTextGroup" style="display:none">
-            <label class="form-label" for="extractedText">Extracted Text (from OCR)</label>
-            <textarea class="form-textarea" id="extractedText" placeholder="OCR text from screenshot/PDF will appear here…" style="min-height:80px"></textarea>
-          </div>
-          <div class="form-actions">
-            <button class="btn btn-primary" id="classifyBtn">
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20V10"/><path d="M18 20V4"/><path d="M6 20v-4"/></svg>
-              Classify
-            </button>
-            <button class="btn btn-secondary" id="clearBtn">Clear</button>
-          </div>
-        </div>
-        <div class="card" style="margin-top:20px">
-          <div class="card-title">Result</div>
-          <div class="result-area" id="resultArea">
-            <div class="result-empty fade-in">
-              <div class="result-empty-icon">🔍</div>
-              <div>Submit an incident to see the classification result here.</div>
-            </div>
-          </div>
-        </div>
-      </div>
-      <div>
-        <div class="card">
-          <div class="card-title" style="display:flex;justify-content:space-between;align-items:center">
-            <span>Incident History</span>
-            <button class="btn-icon" id="refreshHistory" title="Refresh history">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-9-9"/><path d="M12 3v6h6"/></svg>
-            </button>
-          </div>
-          <div id="historyArea"><div class="history-empty fade-in">No incidents classified yet.</div></div>
-        </div>
-      </div>
-    </div>
+<main>
+  <div class="headline" id="headline">Loading…</div>
+  <div class="subline" id="subline"></div>
+
+  <div class="filter-bar">
+    <input class="form-input" id="searchInput" type="text" placeholder="Search tickets or clusters…" style="width:200px">
+    <select class="form-select" id="sevFilter">
+      <option value="">All severity</option>
+      <option value="Critical">Critical</option>
+      <option value="Major">Major</option>
+      <option value="Minor">Minor</option>
+    </select>
+    <select class="form-select" id="groupFilter">
+      <option value="my">My Group (App Support)</option>
+      <option value="all">All groups</option>
+    </select>
+    <button class="btn active" id="vtGrouped">Grouped</button>
+    <button class="btn" id="vtFlat">Flat</button>
+    <button class="btn" id="refreshBtn">↻</button>
+    <span class="count" id="count"></span>
   </div>
+
+  <div id="clusterArea"></div>
+  <div id="flatArea" style="display:none"></div>
+
+  <div class="timer" id="timer"></div>
 </main>
 
-<script src="app.js"></script>
+<div class="toast" id="toast"></div>
+
+<script>
+'use strict';
+
+/* ═══════════ MOCK DATA ═══════════ */
+const TEAMS = { "App Support": ["Ahmed K.","Sara M.","Layla R."], Payments: ["Omar T.","Noura H."], Infrastructure: ["Khalid B.","Reem S.","Yusuf A."], Operations: ["Faisal A.","Mona S."] };
+const CURRENT_USER = "Ahmed K.";
+const CURRENT_GROUP = "App Support";
+
+function rng(seed){let s=seed;return()=>(s=(s*16807)%2147483647)/2147483647}
+function pick(a){return a[Math.floor(r()*a.length)]}
+
+function makeMockData(){
+  const r=rng(42); let idc=4700; const nid=()=>`INC-${idc+=Math.floor(r()*5)+1}`;
+  const C=[
+    ["OTP delivery delayed","Nusuk App","Authentication","Critical","OTP delivery: SMS codes arriving 10+ minutes late",["رمز التحقق يتأخر كثيراً","OTP arrives too late to login","رسالة الكود توصل بعد ١٥ دقيقة","Verification code expired before arrival","ما وصلني رمز التحقق نهائياً","SMS code delayed — can't book","تأخير رسائل OTP منذ الصباح","Code comes after session times out","الرمز يصل متأخر وما ينفع","OTP 10 min late, booking failed","رمز الدخول ما يوصل إلا متأخر","Delayed OTP since morning","كود التفعيل يتأخر","Login code arrives expired"]],
+    ["Payment charged, booking not confirmed","Payment Gateway","Checkout","Critical","Payment checkout: charged but booking stuck pending",["خصم المبلغ وما تأكد الحجز","Charged twice, no confirmation","الدفع نجح بس الحجز معلق","Money deducted, booking pending","اتخصم مني مرتين","Payment success but no permit issued","حجزي معلق بعد الدفع","Card charged, app shows failed","مبلغ التأشيرة انخصم وما صدر","Visa fee deducted, no visa issued"]],
+    ["Visa approval stuck for 48h","Visa Services","Permits","Critical","Visa issuance: approved permits not reflecting in system",["التأشيرة معلقة من يومين","Visa approved but not visible in app","الفيزا صدرت وما ظهرت بحسابي","Permit shows issued but gate rejects","تصريح العمرة ما يظهر بعد الدفع","Visa status stuck at processing"]],
+    ["Mina tent assignment wrong","Accommodation","Mina","Critical","Accommodation: pilgrims assigned to wrong tent blocks in Mina",["خيمة غير اللي مخصص لي","Tent assignment changed without notice","رقم الخيمة اللي عندي غير صحيح","Family split across different blocks","أسرتي مو معي في نفس الخيمة","Wrong tent zone — far from group"]],
+    ["App crashes on permit screen","Nusuk App","Permits","Major","App crash: force-close when opening permit details",["التطبيق يطلعني لما أفتح التصريح","Crash when viewing my permit","التطبيق يعلق عند شاشة التصاريح","App closes itself on permit page","ما أقدر أفتح تصريحي، يكرش","Force close on permit details"]],
+    ["Map shows wrong gate location","Maps Service","Navigation","Major","Maps: gate markers placed 200m off actual location",["الخريطة توديني مكان غلط","Gate 79 shown at wrong location","الموقع في الخريطة غير صحيح","Navigation sends us to closed gate","خريطة الحرم غلط عند باب الملك"]],
+    ["Permit QR not scanning at gates","Nusuk App","Permits","Major","Permit QR: gate scanners reject valid codes",["الباركود ما يقبل عند البوابة","QR code won't scan at King Fahd gate","رجل الأمن قال الكود غير صالح","Scanner says invalid permit but it's active","كيو أر ما يشتغل في الدخول"]],
+    ["Bus to Arafat delayed 2+ hours","Transportation","Buses","Major","Transport: Arafat shuttle buses not running on schedule",["الباص تأخر أكثر من ساعتين","Arafat bus missed — no replacement","ما في باصات من المخيم للحرم","Bus stop empty for hours","جدول الباصات غير دقيق"]],
+    ["Lost luggage at Makkah hotel","Lost & Found","Hotel Services","Major","Lost property: luggage left at hotel lobby not recovered",["شنتي ضاعت في الفندق","Suitcase missing from hotel room","الشنطة راحت مع باص غير باصنا","Bag taken by wrong bus","أغراضي ضايعة من الاستقبال"]],
+    ["Heat exhaustion cases near Jamarat","Health Services","Emergency","Major","Health: multiple pilgrims needing cooling stations near Jamarat bridge",["في حالات إعياء حراري عند الجمرات","Pilgrim collapsed near pillar 2","ناس واقعة من الحر قرب الجمرات","Need water misters at Jamarat area","حالة إغماء بسبب الحر الشديد"]],
+    ["Profile photo upload fails","Nusuk App","Profile","Minor","File upload: avatar photo rejected at 90% progress",["الصورة ما ترفع","Photo upload stuck at 90%","ما يقبل صورتي الشخصية","Avatar upload keeps failing"]],
+    ["Prayer times off by one hour","Content Service","Prayer Times","Minor","Prayer times: displayed one hour ahead since DST change",["أوقات الصلاة غلط بساعة","Prayer times wrong since DST","الفجر ظاهر الساعة ٤ و هو ٣","Maghrib shown wrong time"]],
+    ["App language resets to Arabic","Nusuk App","Settings","Minor","Settings: language preference not persisted across sessions",["اللغة ترجع عربي كل مرة","Language resets after app restart","I set English but it switches back"]],
+    ["Water station at Jamarat empty","Services","Water","Minor","Facilities: drinking water dispenser dry at peak hours",["ما في ماء عند الجمرات","Water cooler empty on level 2","موية الشرب انتهت من الصباح","No refill for 6 hours"]],
+    ["Shower water cold at Mina camp","Accommodation","Mina Facilities","Minor","Facilities: showers only running cold water",["الماء بارد في دورات المياه","No hot water in Mina tent","ما في ماء حار للاستحمام","Cold shower since morning"]],
+  ];
+  const all=[];
+  const clusters=C.map(([name,sys,svc,sev,canon,titles],ci)=>{
+    const prim=sys==="Payment Gateway"||sys==="Visa Services"?"Payments":sys==="Transportation"||sys==="Lost & Found"||sys==="Accommodation"||sys==="Health Services"||sys==="Services"?"Operations":sys==="Maps Service"?"Infrastructure":"App Support";
+    const incidents=titles.map((t,i)=>({id:nid(),title:t,lang:/[\u0600-\u06FF]/.test(t)?"ar":"en",severity:sev,assignee:prim==="App Support"&&r()<0.55?CURRENT_USER:pick(TEAMS[prim]||["Unassigned"]),assign_group:prim,team:prim,system:sys,service:svc,canonical_statement:canon,similarity_pct:Math.round((0.72+r()*0.24)*1000)/10,created_hours_ago:i===0?Math.round(r()*2):i<3?Math.round(3+r()*12):Math.round(16+r()*56),status:"active",growth:i===0&&sev!=="Minor"?`+${Math.floor(r()*6)+2} today`:null}));
+    all.push(...incidents);
+    return{cluster_id:"G-"+(100+ci),name,affected_system:sys,affected_service:svc,worst_severity:sev,count:incidents.length,summary:`${incidents.length} reports of the same underlying issue across ${sys} / ${svc}. Recommended: single root-cause fix + bulk response.`,incidents};
+  });
+  const indivNames=["Dashboard shows stale data","Password reset email not arriving","Refund request stuck for 5 days","Agent portal not loading","Booking filter by date wrong"];
+  const indivs=indivNames.map((t,i)=>({id:nid(),title:t,lang:/[\u0600-\u06FF]/.test(t)?"ar":"en",severity:"Minor",assignee:CURRENT_USER,assign_group:"App Support",team:"App Support",system:"—",service:"—",status:"active",created_hours_ago:24+i*8}));
+  all.push(...indivs);
+  return{clusters,individuals:indivs,all,totals:{tickets:all.length,problems:clusters.length,individuals:indivs.length}};
+}
+
+/* ═══════════ APP ═══════════ */
+let MODE=localStorage.getItem("dash_mode")||"mock";
+let FLAT=false;
+let DATA=makeMockData();
+const API=localStorage.getItem("dash_api")||"http://localhost:8000";
+
+const $=id=>document.getElementById(id);
+const esc=s=>{const d=document.createElement('div');d.textContent=String(s??'');return d.innerHTML};
+const isAr=s=>/[\u0600-\u06FF]/.test(s);
+const titleHtml=t=>isAr(t)?`<span lang="ar" dir="rtl">${esc(t)}</span>`:esc(t);
+const SEV_RANK={Critical:4,Major:3,Minor:2,Cosmetic:1};
+
+function toast(msg){const t=$('toast');t.textContent=msg;t.classList.add('show');clearTimeout(t._h);t._h=setTimeout(()=>t.classList.remove('show'),2600)}
+
+/* ── Data ── */
+async function loadData(){
+  $('headline').textContent='Loading…';
+  if(MODE==='live'){
+    try{
+      const [rep,incs]=await Promise.all([
+        fetch(`${API}/api/reports/daily`).then(r=>{if(!r.ok)throw new Error(r.status);return r.json()}),
+        fetch(`${API}/incidents?status=active`).then(r=>{if(!r.ok)throw new Error(r.status);return r.json()})
+      ]);
+      const clusters=(rep.clusters||[]).map(c=>({
+        cluster_id:c.cluster_id,name:c.name||c.summary?.slice(0,60)||"Cluster",
+        affected_system:c.affected_system,affected_service:c.affected_service,
+        worst_severity:c.worst_severity,count:c.count,summary:c.summary,
+        incidents:(c.incidents||[]).map(i=>{
+          const full=((Array.isArray(incs)?incs:incs.incidents||[]).find(x=>x.id===i.id))||{};
+          return{id:i.id,title:i.title,lang:isAr(i.title)?"ar":"en",severity:i.severity||"Minor",
+            assignee:full.assignee||"Unassigned",assign_group:mapTeam(full.assign_group||""),
+            team:mapTeam(full.assign_group||""),status:"active",similarity_pct:i.similarity_pct,
+            description:i.description,canonical_statement:i.canonical_statement,growth:null};
+        })
+      }));
+      const inC=new Set(clusters.flatMap(c=>c.incidents.map(i=>i.id)));
+      const list=Array.isArray(incs)?incs:incs.incidents||[];
+      const individuals=list.filter(i=>!inC.has(i.id)).map(i=>({id:i.id,title:i.title,lang:isAr(i.title)?"ar":"en",severity:safeSev(i),assignee:i.assignee||"Unassigned",assign_group:mapTeam(i.assign_group||""),team:mapTeam(i.assign_group||""),status:"active"}));
+      DATA={clusters,individuals,all:[...clusters.flatMap(c=>c.incidents),...individuals],totals:{tickets:clusters.reduce((s,c)=>s+c.count,0)+individuals.length,problems:clusters.length,individuals:individuals.length}};
+      setConn(true,"live");
+    }catch(e){
+      console.warn("live failed, fallback to mock:",e);setConn(false,"API unreachable");useMock();
+    }
+  }else{useMock();setConn(true,"mock data")}
+  render();
+}
+
+function useMock(){const m=makeMockData();DATA={clusters:m.clusters,individuals:m.individuals,all:m.all,totals:m.totals}}
+function safeSev(i){try{return JSON.parse(i.classification||i.classification_json||"{}").severity||"Minor"}catch{return"Minor"}}
+function mapTeam(g){if(!g)return"App Support";g=g.toLowerCase();if(g.includes("pay")||g.includes("bill")||g.includes("visa"))return"Payments";if(g.includes("infra")||g.includes("net")||g.includes("gate"))return"Infrastructure";if(g.includes("op")||g.includes("transport")||g.includes("accom")||g.includes("health")||g.includes("field"))return"Operations";return"App Support"}
+function setConn(ok,label){const dot=$('healthDot');dot.className='health-dot'+(ok===false?' err':ok===null?'':' ok');$('healthText').textContent=label}
+
+/* ── Filters ── */
+function activeGroup(){const v=$('groupFilter').value;return v==='my'?CURRENT_GROUP:v==='all'?null:v}
+function groupTickets(){const g=activeGroup();return g?DATA.all.filter(t=>t.assign_group===g):DATA.all}
+function groupClusters(){
+  const q=$('searchInput').value.trim().toLowerCase();
+  const sev=$('sevFilter').value;
+  const g=activeGroup();
+  return DATA.clusters.map(c=>({...c,incidents:g?c.incidents.filter(i=>i.assign_group===g):c.incidents}))
+    .filter(c=>c.incidents.length>0).filter(c=>!sev||c.worst_severity===sev)
+    .filter(c=>!q||c.name.toLowerCase().includes(q)||c.incidents.some(i=>i.title.toLowerCase().includes(q)))
+    .sort((a,b)=>(SEV_RANK[b.worst_severity]||0)-(SEV_RANK[a.worst_severity]||0)||b.incidents.length-a.incidents.length);
+}
+
+/* ── Render ── */
+function render(){
+  const all=groupTickets();
+  const clusters=groupClusters();
+  const g=activeGroup();
+  const gIndiv=g?DATA.individuals.filter(t=>t.assign_group===g):DATA.individuals;
+  const inG=clusters.reduce((s,c)=>s+c.incidents.length,0);
+  const crit=clusters.filter(c=>c.worst_severity==="Critical").length;
+  const myInG=all.filter(t=>t.assignee===CURRENT_USER).length;
+
+  $('headline').innerHTML=`<span style="font-size:12px">${esc(g||"All groups")}</span> <b>${all.length}</b> tickets · <b>${clusters.length}</b> problems · ${gIndiv.length} individual`;
+  $('subline').innerHTML=`<span class="who">${CURRENT_USER} · ${esc(g||"All groups")}</span>`+(crit?`<span class="chip crit">${crit} critical cluster${crit>1?"s":""}</span>`:"")+`<span>${inG} of ${all.length} tickets group into ${clusters.length} root causes`+(myInG&&myInG<all.length?` — ${myInG} assigned to you`:"")+`</span>`;
+  $('count').textContent=FLAT?`${all.length} tickets`:`${clusters.length} groups + ${gIndiv.length} individual`;
+
+  $('clusterArea').style.display=FLAT?'none':'';
+  $('flatArea').style.display=FLAT?'':'none';
+
+  if(FLAT){
+    const q=$('searchInput').value.trim().toLowerCase();
+    const sev=$('sevFilter').value;
+    const rows=all.filter(t=>!sev||t.severity===sev).filter(t=>!q||t.title.toLowerCase().includes(q)).sort((a,b)=>(SEV_RANK[b.severity]||0)-(SEV_RANK[a.severity]||0));
+    $('flatArea').innerHTML=`<div class="ind-table">${rows.map(ticketRow).join("")||`<div class="empty">No tickets match.</div>`}</div>`;
+    return;
+  }
+
+  $('clusterArea').innerHTML=clusters.map(c=>clusterCard(c)).join("")+(gIndiv.length?`<div class="ind-section"><div class="ind-head">Individual tickets (${gIndiv.length}) <span class="line"></span></div><div class="ind-table">${gIndiv.map(ticketRow).join("")}</div></div>`:"")||'<div class="empty">No clusters for this filter.</div>';
+  bindCards();
+}
+
+function clusterCard(c){
+  const open=c.worst_severity==="Critical"?"open":"";
+  const tags=[`<span class="tag sys">${c.count} tickets</span>`,`<span class="tag">${esc(c.affected_system)}</span>`].join("");
+  return`<div class="cluster ${open}" data-cid="${esc(c.cluster_id)}">
+    <div class="cluster-head" role="button" tabindex="0">
+      <div class="chev">▶</div>
+      <div class="c-title"><span class="c-name">${esc(c.name)}</span><span class="c-tags">${tags}</span></div>
+      <div class="c-right"><span class="sev ${esc(c.worst_severity)}">${esc(c.worst_severity)}</span></div>
+    </div>
+    <div class="c-body">
+      <div class="c-summary">${esc(c.summary)}</div>
+      <div class="c-actions">
+        <button class="btn primary" data-act="reply">✉ Reply all with template</button>
+        <button class="btn" data-act="link">🔗 Link to parent</button>
+      </div>
+      <div class="t-rows">${c.incidents.map(ticketRow).join("")}</div>
+    </div>
+  </div>`;
+}
+
+function ticketRow(t){
+  const sim=t.similarity_pct?`<span class="sim">${t.similarity_pct}%</span>`:"";
+  const x=t.similarity_pct?`<button class="x-btn" data-remove="${esc(t.id)}" title="Not the same issue">✕</button>`:"";
+  const meta=[t.assignee&&t.assignee!==CURRENT_USER?esc(t.assignee):null,t.created_hours_ago!=null?`${t.created_hours_ago}h ago`:null,t.assign_group&&t.assign_group!==CURRENT_GROUP?esc(t.assign_group):null].filter(Boolean).join(" · ");
+  return`<div class="t-row" data-tid="${esc(t.id)}">
+    <span class="t-id">${esc(t.id)}</span>
+    <div class="t-main"><div class="t-title">${titleHtml(t.title)}</div>${meta?`<div class="t-meta">${meta}</div>`:""}</div>
+    <div class="t-right">${sim}<span class="mini-sev ${esc(t.severity||"Minor")}"></span>${x}</div>
+  </div>`;
+}
+
+function bindCards(){
+  document.querySelectorAll('.cluster-head').forEach(h=>{
+    h.addEventListener('click',()=>{const c=h.closest('.cluster');c.classList.toggle('open');});
+    h.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();h.closest('.cluster').classList.toggle('open');}});
+  });
+  document.querySelectorAll('[data-act]').forEach(b=>b.addEventListener('click',e=>{
+    e.stopPropagation();const act=b.dataset.act;const cid=b.closest('.cluster').dataset.cid;
+    const msgs={reply:"Bulk reply composer — stub",link:"Link picker — stub"};
+    toast(`${act} on ${cid}: ${msgs[act]||"stub"}`);
+  }));
+  document.querySelectorAll('[data-remove]').forEach(b=>b.addEventListener('click',e=>{
+    e.stopPropagation();toast(`${b.dataset.remove} flagged for removal (stub)`);
+  }));
+}
+
+/* ── Events ── */
+$('srcToggle').addEventListener('click',()=>{MODE=MODE==='mock'?'live':'mock';localStorage.setItem('dash_mode',MODE);$('srcToggle').textContent=`source: ${MODE}`;loadData();});
+$('vtGrouped').addEventListener('click',()=>{FLAT=false;syncVT();render();});
+$('vtFlat').addEventListener('click',()=>{FLAT=true;syncVT();render();});
+function syncVT(){$('vtGrouped').classList.toggle('active',!FLAT);$('vtFlat').classList.toggle('active',FLAT)}
+$('searchInput').addEventListener('input',render);
+$('sevFilter').addEventListener('change',render);
+$('groupFilter').addEventListener('change',function(){const o=this.querySelector('option[value="my"]');if(o)o.textContent=`My Group (${CURRENT_GROUP})`;render();});
+$('refreshBtn').addEventListener('click',loadData);
+
+/* ── Boot ── */
+$('srcToggle').textContent=`source: ${MODE}`;
+const go=$('groupFilter').querySelector('option[value="my"]');
+if(go)go.textContent=`My Group (${CURRENT_GROUP})`;
+
+/* ── Simulated clustering timer ── */
+let lastRun=Date.now();
+function updateTimer(){
+  const e=Math.floor((Date.now()-lastRun)/1000);
+  const l=Math.max(0,Math.floor((30000-(Date.now()-lastRun))/1000));
+  $('timer').textContent=`🤖 clusters: ${Math.floor(e/60)}m ${e%60}s ago · next in ${Math.floor(l/60)}m ${l%60}s`;
+}
+setInterval(updateTimer,1000);
+setInterval(()=>{
+  if(MODE!=="mock")return;
+  const f=makeMockData();DATA={clusters:f.clusters,individuals:f.individuals,all:f.all,totals:f.totals};
+  lastRun=Date.now();toast(`🤖 Clustering cycle done · ${f.totals.tickets} tickets → ${f.totals.problems} groups`);render();
+},30000);
+
+loadData();
+</script>
 </body>
 </html>
