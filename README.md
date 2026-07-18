@@ -2,7 +2,7 @@
 
 <img width="2600" height="1235" alt="architecture-flow" src="https://github.com/user-attachments/assets/7a7826db-2b64-4f22-8de9-6c2108c67a12" />
 
-An **incident classification + grouping system** for customer support call centers. Bilingual Arabic/English. Feed it a support ticket, get back a structured classification, similar open incidents, and a grouped view of what's actually happening.
+An **incident classification + grouping system** for customer support call centers. Feed it a support ticket, get back a structured classification, similar open incidents, and a grouped view of what's actually happening.
 
 > **One shift lead, one dashboard, ten seconds** — see what's on fire, what's recurring, and fix one root cause instead of touching 20 tickets.
 
@@ -20,7 +20,7 @@ Ticket → LLM classifies → Embedding → Similarity search → Cluster → Da
 | API | FastAPI + Uvicorn | REST endpoints |
 | LLM | Qwen2.5:7b via Ollama (swappable via LiteLLM) | Classification + group validation |
 | Embeddings | all-MiniLM-L6-v2 / bge-m3 | Cosine similarity for duplicates |
-| Storage | SQLite (→ pgvector planned) | Incidents + vectors |
+| Storage | SQLite | Incidents + vectors |
 | Frontend | Vanilla JS (no build step) | 3-role dashboard |
 
 **Key design:** LLM does 2 things only — classify every ticket and validate proposed groups. Everything else (duplicate search, clustering) is math. No LLM calls on page refresh.
@@ -91,7 +91,7 @@ cd frontend/dashboard && python3 -m http.server 8085
 open http://localhost:8085
 ```
 
-The dashboard runs in **mock mode** by default — 150+ tickets, 16 clusters, 4 teams. Click "source: mock" in the top bar to switch to live mode (requires backend).
+The dashboard runs in **mock mode** by default — 82 tickets, 16 clusters, 4 teams. Click "source: mock" in the top bar to switch to live mode (requires backend).
 
 ---
 
