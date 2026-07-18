@@ -23,111 +23,118 @@ function makeMockData() {
 
   const C = [
     // ── Critical clusters ──
-    ["OTP delivery delayed", "Nusuk App", "Authentication", "Critical",
-     "OTP delivery: SMS codes arriving 10+ minutes late",
-     ["رمز التحقق يتأخر كثيراً", "OTP arrives too late to login",
-      "رسالة الكود توصل بعد ١٥ دقيقة", "Verification code expired before arrival",
-      "ما وصلني رمز التحقق نهائياً", "SMS code delayed — can't book",
-      "تأخير رسائل OTP منذ الصباح", "Code comes after session times out",
-      "الرمز يصل متأخر وما ينفع", "OTP 10 min late, booking failed",
-      "رمز الدخول ما يوصل إلا متأخر", "Delayed OTP since morning",
-      "كود التفعيل يتأخر", "Login code arrives expired"]],
+    ["Login authentication timeout", "Auth Service", "Authentication", "Critical",
+     "Login timeout: SMS/email codes arriving 10+ minutes late",
+     ["Login code arrives too late",
+      "Verification token expired before submission",
+      "SMS code delayed — can't complete order",
+      "Code expires after session times out",
+      "OTP 10 min late, checkout failed",
+      "Delayed verification code since morning",
+      "Login code arrives expired"]],
 
-    ["Payment charged, booking not confirmed", "Payment Gateway", "Checkout", "Critical",
-     "Payment checkout: charged but booking stuck pending",
-     ["خصم المبلغ وما تأكد الحجز", "Charged twice, no confirmation",
-      "الدفع نجح بس الحجز معلق", "Money deducted, booking pending",
-      "اتخصم مني مرتين", "Payment success but no permit issued",
-      "حجزي معلق بعد الدفع", "Card charged, app shows failed",
-      "مبلغ التأشيرة انخصم وما صدر", "Visa fee deducted, no visa issued"]],
+    ["Payment checkout failures", "Payment Gateway", "Checkout", "Critical",
+     "Payment checkout: charged but order stuck pending",
+     ["Charged twice, no confirmation",
+      "Payment successful but order pending",
+      "Money deducted, order confirmation pending",
+      "Card charged, app shows failed",
+      "Payment deducted but no receipt issued"]],
 
-    ["Visa approval stuck for 48h", "Visa Services", "Permits", "Critical",
-     "Visa issuance: approved permits not reflecting in system",
-     ["التأشيرة معلقة من يومين", "Visa approved but not visible in app",
-      "الفيزا صدرت وما ظهرت بحسابي", "Permit shows issued but gate rejects",
-      "تصريح العمرة ما يظهر بعد الدفع", "Visa status stuck at processing"]],
+    ["Account verification pending", "Account Service", "Verification", "Critical",
+     "Account verification: approved verification not reflecting in system",
+     ["Verification approved but not visible in app",
+      "Account verified but system rejects login",
+      "ID verified — not showing in profile",
+      "Verification status stuck at processing"]],
 
-    ["Mina tent assignment wrong", "Accommodation", "Mina", "Critical",
-     "Accommodation: pilgrims assigned to wrong tent blocks in Mina",
-     ["خيمة غير اللي مخصص لي", "Tent assignment changed without notice",
-      "رقم الخيمة اللي عندي غير صحيح", "Family split across different blocks",
-      "أسرتي مو معي في نفس الخيمة", "Wrong tent zone — far from group"]],
+    ["User role assignment error", "Admin Panel", "Access Control", "Critical",
+     "Access control: users assigned to wrong permission groups",
+     ["Role changed without notice",
+      "Permission group ID incorrect",
+      "Users split across different access levels",
+      "Wrong role — no access to needed features"]],
 
     // ── Major clusters ──
-    ["App crashes on permit screen", "Nusuk App", "Permits", "Major",
-     "App crash: force-close when opening permit details",
-     ["التطبيق يطلعني لما أفتح التصريح", "Crash when viewing my permit",
-      "التطبيق يعلق عند شاشة التصاريح", "App closes itself on permit page",
-      "ما أقدر أفتح تصريحي، يكرش", "Force close on permit details"]],
+    ["App crashes on settings page", "Mobile App", "Settings", "Major",
+     "App crash: force-close when opening settings",
+     ["App crashes when viewing settings page",
+      "App hangs on settings screen",
+      "Force close on opening settings"]],
 
-    ["Map shows wrong gate location", "Maps Service", "Navigation", "Major",
-     "Maps: gate markers placed 200m off actual location",
-     ["الخريطة توديني مكان غلط", "Gate 79 shown at wrong location",
-      "الموقع في الخريطة غير صحيح", "Navigation sends us to closed gate",
-      "خريطة الحرم غلط عند باب الملك"]],
+    ["Map markers misplaced", "Maps Service", "Geolocation", "Major",
+     "Maps: markers placed 200m off actual location",
+     ["Map shows wrong location",
+      "Marker at wrong position on map",
+      "Geolocation pin misaligned"]],
 
-    ["Permit QR not scanning at gates", "Nusuk App", "Permits", "Major",
-     "Permit QR: gate scanners reject valid codes",
-     ["الباركود ما يقبل عند البوابة", "QR code won't scan at King Fahd gate",
-      "رجل الأمن قال الكود غير صالح", "Scanner says invalid permit but it's active",
-      "كيو أر ما يشتغل في الدخول"]],
+    ["QR code reader not scanning", "Scanner Service", "Hardware", "Major",
+     "Scanner: hardware scanners reject valid QR codes",
+     ["QR code won't scan at entry point",
+      "Scanner says invalid code but it's active",
+      "QR not working at access point"]],
 
-    ["Bus to Arafat delayed 2+ hours", "Transportation", "Buses", "Major",
-     "Transport: Arafat shuttle buses not running on schedule",
-     ["الباص تأخر أكثر من ساعتين", "Arafat bus missed — no replacement",
-      "ما في باصات من المخيم للحرم", "Bus stop empty for hours",
-      "جدول الباصات غير دقيق"]],
+    ["Report export delayed", "Export Service", "Reports", "Major",
+     "Export: scheduled report exports not running on time",
+     ["Report export delayed over 2 hours",
+      "Export missed — no replacement triggered",
+      "Export dashboard empty for hours",
+      "Export schedule inaccurate"]],
 
-    ["Lost luggage at Makkah hotel", "Lost & Found", "Hotel Services", "Major",
-     "Lost property: luggage left at hotel lobby not recovered",
-     ["شنتي ضاعت في الفندق", "Suitcase missing from hotel room",
-      "الشنطة راحت مع باص غير باصنا", "Bag taken by wrong bus",
-      "أغراضي ضايعة من الاستقبال"]],
+    ["Data import mapping errors", "Data Pipeline", "Import", "Major",
+     "Data import: column mapping errors during batch import",
+     ["Data mapping failed in import pipeline",
+      "Column mismatch in imported file",
+      "Import mapping incomplete — data lost"]],
 
-    ["Heat exhaustion cases near Jamarat", "Health Services", "Emergency", "Major",
-     "Health: multiple pilgrims needing cooling stations near Jamarat bridge",
-     ["في حالات إعياء حراري عند الجمرات", "Pilgrim collapsed near pillar 2",
-      "ناس واقعة من الحر قرب الجمرات", "Need water misters at Jamarat area",
-      "حالة إغماء بسبب الحر الشديد"]],
+    ["Server health alerts firing", "Infrastructure", "Monitoring", "Major",
+     "Monitoring: multiple servers triggering health alerts",
+     ["Server health alert at critical threshold",
+      "High CPU alerts across cluster",
+      "Memory usage spiking — potential OOM risk"]],
 
     // ── Minor clusters ──
-    ["Profile photo upload fails", "Nusuk App", "Profile", "Minor",
+    ["Avatar upload stuck", "Account Service", "Profile", "Minor",
      "File upload: avatar photo rejected at 90% progress",
-     ["الصورة ما ترفع", "Photo upload stuck at 90%",
-      "ما يقبل صورتي الشخصية", "Avatar upload keeps failing"]],
+     ["Photo upload stuck at 90%",
+      "Avatar upload keeps failing",
+      "Profile picture upload fails"]],
 
-    ["Prayer times off by one hour", "Content Service", "Prayer Times", "Minor",
-     "Prayer times: displayed one hour ahead since DST change",
-     ["أوقات الصلاة غلط بساعة", "Prayer times wrong since DST",
-      "الفجر ظاهر الساعة ٤ و هو ٣", "Maghrib shown wrong time"]],
+    ["Timezone display incorrect", "Settings Service", "Localization", "Minor",
+     "Localization: displayed timezone off by one hour since DST change",
+     ["Timezone wrong by one hour",
+      "Clock shown incorrect since DST",
+      "Time displayed wrong in system"]],
 
-    ["App language resets to Arabic", "Nusuk App", "Settings", "Minor",
+    ["Language preference not saved", "Account Service", "Settings", "Minor",
      "Settings: language preference not persisted across sessions",
-     ["اللغة ترجع عربي كل مرة", "Language resets after app restart",
-      "I set English but it switches back"]],
+     ["Language resets after restart",
+      "I set English but it switches back",
+      "UI language not remembered"]],
 
-    ["Water station at Jamarat empty", "Services", "Water", "Minor",
-     "Facilities: drinking water dispenser dry at peak hours",
-     ["ما في ماء عند الجمرات", "Water cooler empty on level 2",
-      "موية الشرب انتهت من الصباح", "No refill for 6 hours"]],
+    ["API rate limit exceeded", "API Gateway", "Rate Limiting", "Minor",
+     "Rate limiting: API gateway rejecting requests at peak hours",
+     ["Rate limit errors at peak times",
+      "API requests blocked — too many calls",
+      "Rate limit hit, no reset for hours"]],
 
-    ["Shower water cold at Mina camp", "Accommodation", "Mina Facilities", "Minor",
-     "Facilities: showers only running cold water",
-     ["الماء بارد في دورات المياه", "No hot water in Mina tent",
-      "ما في ماء حار للاستحمام", "Cold shower since morning"]],
+    ["Database connection pool full", "Database", "Connection Pool", "Minor",
+     "Database: connection pool exhausted under load",
+     ["Database connections timeout",
+      "No connections available in pool",
+      "Connection pool full since morning"]],
   ];
 
   const all = [];
   const clusters = C.map(([name, sys, svc, sev, canon, titles], ci) => {
     // Team mapping with cross-team support
-    const primaryTeam = sys === "Payment Gateway" || sys === "Visa Services" ? "Payments"
-      : sys === "Transportation" ? "Operations"
-      : sys === "Lost & Found" || sys === "Accommodation" ? "Operations"
-      : sys === "Health Services" || sys === "Services" ? "Operations"
-      : sys === "Maps Service" ? "Infrastructure"
+    const primaryTeam = sys === "Payment Gateway" ? "Payments"
+      : sys === "Maps Service" || sys === "Scanner Service" || sys === "Export Service"
+        || sys === "Data Pipeline" || sys === "Infrastructure" || sys === "API Gateway"
+        || sys === "Database" ? "Infrastructure"
       : "App Support";
-    const sharedTeams = (name.includes("QR") || name.includes("gate")) ? ["App Support", "Infrastructure"]
-      : name.includes("Water") || name.includes("Shower") ? ["Operations", "App Support"]
+    const sharedTeams = (name.includes("QR") || name.includes("Map")) ? ["Infrastructure", "App Support"]
+      : name === "API rate limit exceeded" || name === "Database connection pool full" ? ["Infrastructure", "App Support"]
       : null;
 
     const incidents = titles.map((t, i) => {
@@ -167,34 +174,26 @@ function makeMockData() {
     };
   });
 
-  // Create one mega-cluster (25+ tickets) to test large-group rendering
+  // Create one mega-cluster (18+ tickets) to test large-group rendering
   const megaTitles = [
-    "منصة التسجيل معلقة", "Registration portal down since morning",
-    "ما أقدر أسجل في نُسك", "Can't log in to Nusuk portal",
-    "بوابة التسجيل لا تعمل", "Registration page white screen",
-    "خطأ ٥٠٠ عند الدخول للتسجيل", "500 error on registration submit",
-    "التسجيل يقفل بعد إدخال البيانات", "Portal crashes after form fill",
-    "ما في رد من الخادم", "Server timeout on register",
-    "صفحة التسجيل ما تفتح أبداً", "Registration page won't load",
-    "التقديم على عمرة معلق", "Umrah application stuck",
-    "الموقع يعلق عند الدفع للتسجيل", "Portal freezes on payment step",
-    "فشل رفع المستندات للتسجيل", "Document upload fails during reg",
-    "registration page keeps failing after DST", 
-    "رمز التحقق ما يوصل لتسجيل الدخول",
-    "ما أقدر أكمل التسجيل بعد إدخال بياناتي",
-    "التسجيل يعلق بعد خطوة تأكيد البريد",
-    "System timeout during registration",
-    "الموقع يقول خدمة غير متوفرة",
-    "Error 503 during registration step 3",
-    "Registration fails on mobile browser",
-    "ما في خيار للجنسية في القائمة",
-    "الموقع بطيء جداً في التسجيل",
-    "تأكيد الحجز ما يظهر بعد التسجيل",
-    "CAPTCHA not showing on registration",
-    "ما أقدر أختار الدولة من القائمة",
-    "صفحة التسجيل توديني على صفحة خطأ",
+    "Customer portal down since morning",
+    "Can't log in to customer portal",
+    "Login page white screen",
+    "500 error on login submit",
+    "Portal crashes after form fill",
+    "Server timeout on login",
+    "Login page won't load",
+    "Portal freezes on payment step",
+    "Document upload fails during registration",
+    "Login page keeps failing after DST",
+    "System timeout during login",
+    "Error 503 during login step 3",
+    "Login fails on mobile browser",
+    "Portal very slow during login",
+    "Confirmation not showing after registration",
+    "CAPTCHA not showing on login",
     "Registration incomplete — no confirmation email",
-    "بعد التسجيل ما يقبل الدخول",
+    "After registration, login still fails",
   ];
 
   const megaIncidents = megaTitles.map((t, i) => {
@@ -203,8 +202,8 @@ function makeMockData() {
     return {
       id: nid(), title: t, lang: isAr ? "ar" : "en",
       severity: "Critical", assignee: pick(TEAMS[team]),
-      assign_group: team, team, system: "Nusuk App", service: "Registration",
-      canonical_statement: "Registration portal: unable to submit registration forms across web and mobile — likely server-side",
+      assign_group: team, team, system: "Web Portal", service: "Login",
+      canonical_statement: "Customer portal: unable to log in or register across web and mobile — likely server-side",
       similarity_pct: Math.round((0.70 + r() * 0.24) * 1000) / 10,
       created_hours_ago: Math.round(i < 10 ? r() * 4 : 6 + r() * 42),
       status: i % 5 === 0 ? "resolved" : i % 3 === 0 ? "escalated" : i % 7 === 0 ? "pending" : i % 11 === 0 ? "third_party" : "active",
@@ -214,31 +213,26 @@ function makeMockData() {
   all.push(...megaIncidents);
 
   clusters.push({
-    cluster_id: "G-200", name: "Registration portal down",
-    affected_system: "Nusuk App", affected_service: "Registration",
+    cluster_id: "G-200", name: "Customer portal unreachable",
+    affected_system: "Web Portal", affected_service: "Login",
     worst_severity: "Critical", count: megaIncidents.length,
     shared_with_teams: ["App Support", "Infrastructure"],
-    summary: `${megaIncidents.length} tickets — widespread registration failure across web and mobile. Multiple teams affected. Probable server-side root cause.`,
+    summary: `${megaIncidents.length} tickets — widespread login/registration failure across web and mobile. Multiple teams affected. Probable server-side root cause.`,
     incidents: megaIncidents,
   });
 
   // ── Individuals (ungrouped) ──
   const indivTitles = [
-    ["App slow only on hotel wifi", "en", "Minor"],
-    ["ما أقدر أغير رقم جوالي", "ar", "Minor"],
-    ["Refund request for cancelled Mutamerr trip", "en", "Major"],
-    ["وشلون أضيف مرافق؟", "ar", "Minor"],
+    ["App slow only on office wifi", "en", "Minor"],
+    ["Refund request for cancelled subscription", "en", "Major"],
     ["App notifications too frequent", "en", "Cosmetic"],
-    ["أبي ألغي حسابي نهائياً", "ar", "Minor"],
-    ["Haramain train tickets not syncing", "en", "Major"],
-    ["العمرة ما تظهر في سجلّي", "ar", "Minor"],
+    ["Calendar not syncing with Google", "en", "Major"],
     ["Elevator at parking B not working", "en", "Major"],
-    ["مكيف المخيم ما يشتغل", "ar", "Minor"],
     ["Lost wallet found — hand to lost & found", "en", "Minor"],
-    ["WiFi password at Mina camp not working", "en", "Cosmetic"],
-    ["جوال ضايع — أحد عثر عليه", "ar", "Minor"],
-    ["Wheelchair availability at gate 15", "en", "Minor"],
-    ["Electric scooter charging station full", "en", "Cosmetic"],
+    ["WiFi password in cafeteria not working", "en", "Cosmetic"],
+    ["Wheelchair availability at entrance B", "en", "Minor"],
+    ["EV charging station full", "en", "Cosmetic"],
+    ["Cannot change phone number in profile", "en", "Minor"],
   ];
   const individuals = indivTitles.map(([t, lang, sev]) => {
     const teamsList = Object.keys(TEAMS);
@@ -248,7 +242,7 @@ function makeMockData() {
       id: nid(), title: t, lang, severity: sev,
       assignee: mine ? CURRENT_USER : pick(TEAMS[team] || ["Unassigned"]),
       assign_group: team, team, system: team === "Payments" ? "Payment Gateway"
-        : team === "Infrastructure" ? "Nusuk App" : "General",
+        : team === "Infrastructure" ? "Web Portal" : "General",
       service: "General", status: "active",
       created_hours_ago: Math.round(r() * 72),
     };
@@ -271,26 +265,26 @@ const MOCK = makeMockData();
 const MOCK_HISTORY = {
   weeks: ["W27", "W28", "W29", "W30"],
   recurring: [
-    { name: "OTP delivery delayed",        system: "Nusuk App / Auth",             counts: [14, 19, 26, 61],  weeks_hit: 4 },
-    { name: "Payment charged, no booking", system: "Gateway / Checkout",            counts: [3, 8, 21, 34],   weeks_hit: 3 },
-    { name: "Permit QR scan failures",     system: "Permits",                       counts: [0, 5, 11, 18],   weeks_hit: 3 },
-    { name: "Wrong gate map markers",      system: "Maps",                          counts: [2, 2, 3, 9],     weeks_hit: 4 },
-    { name: "Prayer times offset",         system: "Content",                       counts: [0, 0, 4, 7],     weeks_hit: 2 },
-    { name: "Registration portal hangs",   system: "Nusuk App / Registration",      counts: [0, 0, 2, 26],     weeks_hit: 2 },
-    { name: "Bus delays to holy sites",    system: "Transportation / Buses",        counts: [0, 0, 3, 11],    weeks_hit: 2 },
-    { name: "Mina tent assignment errors", system: "Accommodation / Mina",          counts: [1, 0, 4, 6],     weeks_hit: 3 },
+    { name: "Login authentication timeout",    system: "Auth Service / Auth",               counts: [14, 19, 26, 61],  weeks_hit: 4 },
+    { name: "Payment checkout failures",       system: "Gateway / Checkout",                 counts: [3, 8, 21, 34],    weeks_hit: 3 },
+    { name: "QR code reader failures",         system: "Scanner Service / Hardware",         counts: [0, 5, 11, 18],    weeks_hit: 3 },
+    { name: "Map markers misplaced",           system: "Maps Service / Geolocation",         counts: [2, 2, 3, 9],      weeks_hit: 4 },
+    { name: "Timezone display incorrect",      system: "Settings Service / Localization",    counts: [0, 0, 4, 7],      weeks_hit: 2 },
+    { name: "Customer portal unreachable",     system: "Web Portal / Login",                 counts: [0, 0, 2, 26],     weeks_hit: 2 },
+    { name: "Report export delayed",           system: "Export Service / Reports",           counts: [0, 0, 3, 11],     weeks_hit: 2 },
+    { name: "User role assignment errors",     system: "Admin Panel / Access Control",       counts: [1, 0, 4, 6],      weeks_hit: 3 },
   ],
   systems: [
-    { name: "Nusuk App",          count: 124, delta: "+38%" },
+    { name: "Auth Service",       count: 124, delta: "+38%" },
     { name: "Payment Gateway",    count: 41,  delta: "+96%" },
-    { name: "Permits Service",    count: 24,  delta: "+9%" },
+    { name: "Scanner Service",    count: 24,  delta: "+9%" },
     { name: "Maps Service",       count: 15,  delta: "-6%" },
-    { name: "Transportation",     count: 12,  delta: "+200%" },
-    { name: "Accommodation",      count: 10,  delta: "+150%" },
-    { name: "Health Services",    count: 5,   delta: "+67%" },
-    { name: "Content Service",    count: 9,   delta: "+12%" },
-    { name: "Lost & Found",       count: 5,   delta: "+25%" },
-    { name: "Haramain Rail Sync", count: 4,   delta: "0%" },
+    { name: "Export Service",     count: 12,  delta: "+200%" },
+    { name: "Account Service",    count: 10,  delta: "+150%" },
+    { name: "Infrastructure",     count: 5,   delta: "+67%" },
+    { name: "Settings Service",   count: 9,   delta: "+12%" },
+    { name: "Data Pipeline",      count: 5,   delta: "+25%" },
+    { name: "Web Portal",         count: 18,  delta: "+44%" },
   ],
   resolution: [
     { bucket: "< 4h", pct: 31 }, { bucket: "4–12h", pct: 27 },
