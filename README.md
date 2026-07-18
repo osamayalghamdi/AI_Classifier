@@ -1,5 +1,6 @@
 # AI Incident Classifier
 
+![Uploading architecture-flow.png…]()
 
 
 Structured incident classification via LLM, with live duplicate detection. Feed it a
