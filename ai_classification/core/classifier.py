@@ -374,6 +374,7 @@ def classify(title: str, description: str) -> ClassificationResult:
         urgency=Urgency.low,
         category=Category.other,
         confidence="low",
+        signature="Generic/Unknown",
         reasoning=f"Classification failed after 2 attempts. Last error: {last_error}",
         canonical_statement=f"Incident reported: {title[:120]}",
     )

@@ -79,20 +79,22 @@ def _patch_completion(monkeypatch):
 class TestClassifyHappyPath:
     def test_valid_full_output(self, _patch_completion):
         _patch_completion.append(json.dumps({
-            "affected_system": "CRM",
-            "service": "Customer Portal",
+            "affected_system": "Other",
+            "service": "General / Unspecified",
             "incident_type": "Degradation",
             "severity": "Major",
             "urgency": "High",
             "category": "Software",
             "confidence": "high",
             "reasoning": "CRM portal slow under load",
+            "signature": "test signature",
+            "failure_mode": "FM-000",
             "canonical_statement": "CRM portal responds slowly under load.",
         }))
         result = classify("CRM slow", "Portal is crawling")
         assert isinstance(result, ClassificationResult)
-        assert result.affected_system == "CRM"
-        assert result.service == "Customer Portal"
+        assert result.affected_system == "Other"
+        assert result.service == "General / Unspecified"
         assert result.incident_type == "Degradation"
         assert result.severity == "Major"
         assert result.urgency == "High"
@@ -102,13 +104,15 @@ class TestClassifyHappyPath:
 
     def test_valid_minimal_no_reasoning(self, _patch_completion):
         _patch_completion.append(json.dumps({
-            "affected_system": "Infrastructure",
-            "service": "DNS",
+            "affected_system": "Other",
+            "service": "General / Unspecified",
             "incident_type": "Outage",
             "severity": "Critical",
             "urgency": "Immediate",
             "category": "Network Issue",
             "confidence": "high",
+            "signature": "test signature",
+            "failure_mode": "FM-000",
             "canonical_statement": "All DNS queries fail.",
         }))
         result = classify("DNS down", "All DNS queries failing")
@@ -116,14 +120,15 @@ class TestClassifyHappyPath:
 
     def test_handles_fenced_json(self, _patch_completion):
         _patch_completion.append(
-            '```json\n{"affected_system": "Email", "service": "SMTP Relay",'
+            '```json\n{"affected_system": "OldSM", "service": "OldSM",'
             '"incident_type": "Unavailability", "severity": "Major",'
             '"urgency": "High", "category": "Software",'
             '"confidence": "medium", "reasoning": "SMTP relay unreachable",'
+            '"signature": "test signature", "failure_mode": "FM-000",'
             '"canonical_statement": "SMTP relay is unreachable, outgoing email fails."}\n```'
         )
         result = classify("Email down", "Cannot send emails")
-        assert result.affected_system == "Email"
+        assert result.affected_system == "OldSM"
 
 
 # ── Validation errors (strict — no silent coercion) ──────────────────
@@ -142,13 +147,16 @@ class TestClassifyValidationErrors:
 
     def test_invalid_enum_value_returns_fallback(self, _patch_completion):
         bad = json.dumps({
-            "affected_system": "CRM",
-            "service": "Customer Portal",
+            "affected_system": "Other",
+            "service": "General / Unspecified",
             "incident_type": "Degradation",
             "severity": "SuperCritical",       # not in Severity enum
             "urgency": "High",
             "category": "Software",
             "confidence": "high",
+            "signature": "test signature",
+            "failure_mode": "FM-000",
+            "canonical_statement": "Test incident.",
         })
         _patch_completion.append(bad)
         _patch_completion.append(bad)  # retry also fails
@@ -159,9 +167,10 @@ class TestClassifyValidationErrors:
 
     def test_missing_required_field_returns_fallback(self, _patch_completion):
         bad = json.dumps({
-            "affected_system": "CRM",
-            "service": "Customer Portal",
-            # missing incident_type, severity, urgency, category, confidence
+            "affected_system": "Other",
+            # missing service, incident_type, severity, urgency, category, confidence, canonical_statement
+            "signature": "test signature",
+            "failure_mode": "FM-000",
         })
         _patch_completion.append(bad)
         _patch_completion.append(bad)
@@ -171,13 +180,16 @@ class TestClassifyValidationErrors:
 
     def test_invalid_confidence_returns_fallback(self, _patch_completion):
         bad = json.dumps({
-            "affected_system": "CRM",
-            "service": "Customer Portal",
+            "affected_system": "Other",
+            "service": "General / Unspecified",
             "incident_type": "Degradation",
             "severity": "Major",
             "urgency": "High",
             "category": "Software",
             "confidence": "very high",          # not in pattern
+            "signature": "test signature",
+            "failure_mode": "FM-000",
+            "canonical_statement": "Test incident.",
         })
         _patch_completion.append(bad)
         _patch_completion.append(bad)
@@ -199,15 +211,17 @@ class TestClassifyValidationErrors:
 
 class TestEnumStrictness:
     def test_case_mismatch_returns_fallback(self, _patch_completion):
-        """Pydantic StrEnum is case-sensitive; 'crm' != 'CRM'."""
+        """Pydantic StrEnum is case-sensitive; 'nusuk masar haj' != 'Nusuk Masar Haj'."""
         bad = json.dumps({
-            "affected_system": "crm",            # lowercase — won't match
-            "service": "Customer Portal",
+            "affected_system": "nusuk masar haj",  # wrong case — won't match
+            "service": "General / Unspecified",
             "incident_type": "Degradation",
             "severity": "Major",
             "urgency": "High",
             "category": "Software",
             "confidence": "high",
+            "signature": "test signature",
+            "failure_mode": "FM-000",
         })
         _patch_completion.append(bad)
         _patch_completion.append(bad)
@@ -224,17 +238,19 @@ class TestClassifyRetry:
         """First attempt returns bad JSON, retry returns valid JSON."""
         bad = "not json at all"
         good = json.dumps({
-            "affected_system": "CRM",
-            "service": "Customer Portal",
+            "affected_system": "Other",
+            "service": "General / Unspecified",
             "incident_type": "Degradation",
             "severity": "Major",
             "urgency": "High",
             "category": "Software",
             "confidence": "high",
+            "signature": "test signature",
+            "failure_mode": "FM-000",
             "canonical_statement": "Test incident.",
         })
         _patch_completion.append(bad)
         _patch_completion.append(good)
         result = classify("test", "test")
         assert isinstance(result, ClassificationResult)
-        assert result.affected_system == "CRM"
+        assert result.affected_system == "Other"
