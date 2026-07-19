@@ -6,6 +6,7 @@ __pycache__/
 .venv/
 venv/
 *.egg
+.pytest_cache/
 
 # Environment
 .env
@@ -30,3 +31,8 @@ Thumbs.db
 *.db
 *.db-wal
 *.db-shm
+
+# Generated / cleanup scripts
+fix_tests.py
+test_incidents.json
+test_*.json

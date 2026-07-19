@@ -1,22 +1,25 @@
-"""Graph-based grouping over incident embeddings, validated by an LLM.
+"""Two-phase incident grouping: FM exact-match (Phase 1) then embedding + LLM (Phase 2).
 
-Used by the /api/reports endpoint to propose clusters from similarity.
-The math (cosine similarity + graph communities) proposes candidate groups;
-the LLM validator confirms coherence and prunes outliers — embeddings
-propose, the LLM disposes.
+Used by the /api/reports endpoint to propose clusters from active incidents.
 
-Single similarity threshold, wide enough for recall on this embedding model's
-compressed similarity range (bge-m3 tops out ~60% on this data — a "tight"
-0.65 pass finds nothing). Precision is enforced downstream by the LLM
-validator, not a second threshold. To keep that safe: any candidate group
-larger than MAX_VALIDATOR_GROUP_SIZE is dropped outright rather than sent to
-the LLM or trusted as-is — a graph component that big is almost certainly a
-false merge of several real incidents, and a validator call over that many
-tickets risks truncating mid-response.
+Phase 1 — FM exact-match: Incidents whose LLM classification shares the same
+failure_mode code (other than FM-000) form guaranteed clusters. No similarity
+threshold or LLM validation needed — the classification already determined they
+are the same root cause.
+
+Phase 2 — Embedding + LLM: The remaining FM-000 (unclassified) incidents are
+clustered by cosine similarity over bge-m3 embeddings, using a single wide
+threshold (0.50) for recall. Graph-connected components above MIN_DENSITY are
+sent to an LLM validator that confirms coherence, prunes outliers, and assigns
+a human-readable name. Any candidate group larger than MAX_VALIDATOR_GROUP_SIZE
+is dropped outright — a graph component that big is almost certainly a false
+merge of several real incidents.
 """
 
+import hashlib
 import json
 import logging
+import time
 from collections import defaultdict
 
 import networkx as nx
@@ -30,16 +33,120 @@ _log = logging.getLogger(__name__)
 
 # ── Tunable parameters ──────────────────────────────────────────────────
 
-SIMILARITY_THRESHOLD = 0.55        # intra-bucket threshold
+SIMILARITY_THRESHOLD = 0.50        # intra-bucket threshold (lowered from 0.55 — shorter signatures need wider net)
 MIN_CLUSTER_SIZE = 3               # smallest group to return
 MIN_DENSITY = 0.4                  # chain filter
 MAX_VALIDATOR_GROUP_SIZE = 15      # candidates larger than this are not validated
+
+# ── Verdict cache ──────────────────────────────────────────────────────────
+# Key = sorted, joined member IDs (fingerprint). Value = verdict dict.
+# Persists across rebuild cycles so stable groups don't get re-validated.
+_verdict_cache: dict[str, dict] = {}
+_VERDICT_CACHE_TTL = 3600 * 24  # 24 hours
+
+
+def _make_fingerprint(incidents: list[dict]) -> str:
+    """Create a stable fingerprint from sorted incident IDs."""
+    ids = sorted(inc["id"] for inc in incidents)
+    return ",".join(ids)
+
+
+def _get_cached_verdict(incidents: list[dict]) -> dict | None:
+    """Return cached verdict if fingerprint matches and TTL hasn't expired."""
+    fp = _make_fingerprint(incidents)
+    cached = _verdict_cache.get(fp)
+    if cached is None:
+        return None
+    age = time.time() - cached.get("_cached_at", 0)
+    if age > _VERDICT_CACHE_TTL:
+        del _verdict_cache[fp]
+        return None
+    _log.info("Verdict cache HIT for %d-incident group (age=%.0fs)", len(incidents), age)
+    return cached
+
+
+def _cache_verdict(incidents: list[dict], verdict: dict):
+    """Store a validated verdict in the cache."""
+    fp = _make_fingerprint(incidents)
+    verdict = dict(verdict)  # copy
+    verdict["_cached_at"] = time.time()
+    _verdict_cache[fp] = verdict
+    _log.debug("Verdict cached for %d-incident group", len(incidents))
+
+
+def invalidate_verdict_cache():
+    """Clear all cached verdicts — call when incidents are added/resolved."""
+    _verdict_cache.clear()
+    _log.info("Verdict cache cleared")
+
+
+def invalidate_cache():
+    """Clear both verdict cache and cluster snapshot — call after data mutations."""
+    _verdict_cache.clear()
+    _snapshot.clear()
+    _log.info("Full cluster cache invalidated")
+
+
+def request_rebuild():
+    """Trigger an immediate async rebuild in the background thread."""
+    import threading
+    thread = threading.Thread(target=_build_and_cache, daemon=True)
+    thread.start()
+    _log.info("Requested immediate cluster rebuild")
+
+
+# Background thread rebuilds every N seconds. Dashboard reads the latest snapshot.
+_snapshot: dict[str, dict] = {}  # period -> latest cluster result
+_last_build: float = 0           # timestamp of last build
+_BUILD_INTERVAL = 300            # rebuild every 5 minutes
+
+
+def _build_and_cache():
+    """Run the full clustering pipeline and store the snapshot."""
+    global _last_build
+    _log.info("Background cluster rebuild starting...")
+    for period in ("daily", "weekly"):
+        try:
+            result = _build_clusters(period)
+            result["last_build"] = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())
+            result["last_build_ts"] = time.time()
+            _snapshot[period] = result
+            _log.info("  %s: %d clusters from %d incidents",
+                      period,
+                      len(_snapshot[period].get("clusters", [])),
+                      _snapshot[period].get("total_incidents", 0))
+        except Exception as e:
+            _log.error("Failed to build clusters for %s: %s", period, e)
+    _last_build = time.time()
+
+
+def start_rebuild_loop():
+    """Start a daemon thread that rebuilds clusters every BUILD_INTERVAL seconds."""
+    import threading
+    def _first_build():
+        _build_and_cache()
+        # now enter periodic loop
+        while True:
+            time.sleep(_BUILD_INTERVAL)
+            _build_and_cache()
+    thread = threading.Thread(target=_first_build, daemon=True)
+    thread.start()
+    _log.info("Cluster rebuild loop started — every %ds", _BUILD_INTERVAL)
+
+
+# Public API — returns latest snapshot instantly, no LLM calls
+def build_clusters(period: str = "daily") -> dict:
+    result = _snapshot.get(period)
+    if result is not None:
+        return result
+    # First run — serve empty while background thread builds
+    return {"total_incidents": 0, "clusters": [], "subsystem_summary": [], "status": "building"}
 
 # ── Public API ──────────────────────────────────────────────────────────
 
 
 # Load active incidents, build similarity graph, return dense clusters as JSON
-def build_clusters(period: str = "daily") -> dict:
+def _build_clusters(period: str = "daily") -> dict:
     """Load active incidents, cluster by embedding similarity, return report JSON."""
     # Subsystem rollup — separate from duplicate-detection clustering below.
     # Plain GROUP BY affected_system+service over active incidents, no
@@ -69,40 +176,103 @@ def build_clusters(period: str = "daily") -> dict:
 
     n = len(incidents)
 
-    # Step 1: Pre-group by canonical prefix (text before ":")
-    # The LLM already normalizes this ("Payment checkout:", "File upload:", etc.)
-    prefix_buckets: dict[str, list[int]] = {}
+    # Phase 1: Exact-match grouping by failure_mode code
+    # Tickets sharing an FM code (not FM-000) form guaranteed clusters.
+    # This bypasses embedding similarity entirely for classified tickets.
+    fm_buckets: dict[str, list[int]] = defaultdict(list)
     for i, inc in enumerate(incidents):
-        cs = _extract_canonical_statement(inc)
-        prefix = cs.split(":")[0].strip() if ":" in cs else cs[:20]
-        prefix_buckets.setdefault(prefix, []).append(i)
+        try:
+            c = json.loads(inc.get("classification", "{}")) if isinstance(inc.get("classification"), str) else inc.get("classification", {})
+        except (json.JSONDecodeError, TypeError):
+            c = {}
+        fm = c.get("failure_mode", "FM-000") or "FM-000"
+        fm_buckets[fm].append(i)
 
-    _log.debug("Prefix buckets: %s", {k: len(v) for k, v in sorted(prefix_buckets.items())})
+    _log.debug("FM buckets: %s", {k: len(v) for k, v in sorted(fm_buckets.items()) if k != "FM-000"})
 
-    # Step 2: Cluster within each bucket
+    # Load FM descriptions
+    from ai_classification.core.failure_modes import FAILURE_MODES as _FM
+
     all_clusters: list[dict] = []
     used: set[int] = set()
 
-    for prefix, indices in prefix_buckets.items():
-        if len(indices) < MIN_CLUSTER_SIZE:
-            continue  # too few to cluster, leave as singletons
-        bucket_clusters, bucket_used = _cluster_pass(
-            incidents, sim, SIMILARITY_THRESHOLD, indices
-        )
-        all_clusters.extend(bucket_clusters)
-        used.update(bucket_used)
+    for fm, indices in fm_buckets.items():
+        if fm == "FM-000" or len(indices) < MIN_CLUSTER_SIZE:
+            continue
+        members = [incidents[i] for i in indices]
+        worst_sev = _worst_severity(members)
+        top_sys, top_svc = _dominant_labels(members)
+        cid = hashlib.md5(fm.encode()).hexdigest()[:12]
+        fm_entry = _FM.get(fm)
+        fm_name = fm_entry[0] if fm_entry else fm
+        cluster_incidents = []
+        for idx, inc in zip(indices, members):
+            # Compute similarity to cluster centroid (not self-similarity = 100%)
+            centroid_sim = 100.0
+            if len(indices) > 1:
+                member_sims = [float(sim[idx, other]) for other in indices if other != idx]
+                if member_sims:
+                    centroid_sim = round(sum(member_sims) / len(member_sims) * 100, 1)
+            di = {
+                "id": inc["id"],
+                "title": inc.get("title", ""),
+                "severity": _extract_severity(inc),
+                "canonical_statement": _extract_canonical_statement(inc)[:200],
+                "similarity_pct": centroid_sim,
+                "description": inc.get("description", "")[:200],
+                "affected_system": top_sys,
+                "service": top_svc,
+                "status": inc.get("status", "active"),
+                "created_at": inc.get("created_at", ""),
+            }
+            cluster_incidents.append(di)
+        cluster = {
+            "cluster_id": cid,
+            "name": fm,
+            "failure_mode_desc": fm_name,
+            "affected_system": top_sys,
+            "affected_service": top_svc,
+            "worst_severity": worst_sev,
+            "count": len(members),
+            "summary": f"{len(members)} tickets sharing failure mode {fm}",
+            "pruned": [],
+            "coherence": cluster_coherence(members, sim, indices),
+            "incidents": cluster_incidents,
+        }
+        all_clusters.append(cluster)
+        used.update(indices)
+        _log.info("FM cluster: %s — %d tickets, %s", fm, len(members), worst_sev)
 
-    # Step 3: Cross-bucket pass on leftovers (same root cause may span prefixes)
+    # Phase 2: Embedding-based clustering for FM-000 (unclassified) leftovers
     leftover = [i for i in range(n) if i not in used]
     if len(leftover) >= MIN_CLUSTER_SIZE:
-        cross_clusters, cross_used = _cluster_pass(
-            incidents, sim, SIMILARITY_THRESHOLD + 0.05, leftover  # tighter for cross-bucket
-        )
-        all_clusters.extend(cross_clusters)
-        used.update(cross_used)
+        prefix_buckets: dict[str, list[int]] = {}
+        for i in leftover:
+            cs = _extract_canonical_statement(incidents[i])
+            prefix = cs.split(":")[0].strip() if ":" in cs else cs[:20]
+            prefix_buckets.setdefault(prefix, []).append(i)
+        _log.debug("FM-000 prefix buckets: %s", {k: len(v) for k, v in sorted(prefix_buckets.items())})
+        for px, bx in prefix_buckets.items():
+            if len(bx) < MIN_CLUSTER_SIZE:
+                continue
+            bx_clusters, bx_used = _cluster_pass(
+                incidents, sim, SIMILARITY_THRESHOLD, bx
+            )
+            all_clusters.extend(bx_clusters)
+            used.update(bx_used)
+        # Cross-bucket pass on remaining leftovers
+        still_left = [i for i in leftover if i not in used]
+        if len(still_left) >= MIN_CLUSTER_SIZE:
+            cross_clusters, cross_used = _cluster_pass(
+                incidents, sim, SIMILARITY_THRESHOLD + 0.05, still_left
+            )
+            all_clusters.extend(cross_clusters)
+            used.update(cross_used)
 
     all_clusters.sort(key=lambda c: c["count"], reverse=True)
-    _log.info("build_clusters — %d active incidents, %d clusters found", n, len(all_clusters))
+    _log.info("build_clusters — %d active incidents, %d clusters found (phase1=%d, phase2=%s)",
+              n, len(all_clusters), sum(1 for c in all_clusters if c["name"].startswith("FM-") and c["name"] != "FM-000"),
+              "active" if len(leftover) >= MIN_CLUSTER_SIZE else "skipped")
     return {"total_incidents": n, "clusters": all_clusters, "subsystem_summary": subsystem_summary}
 
 
@@ -151,19 +321,30 @@ def _cluster_pass(
             )
             continue
 
-        # LLM validation — math proposed this group, the LLM confirms
-        # coherence and prunes outliers. Falls back to the math proposal
-        # untouched if the call fails, is malformed, or the pruning floor
-        # is exceeded (see validate_group's safeguards below).
+        _log.info("Cluster candidate — %d incidents, density=%.2f, sending to LLM validator",
+                  len(cluster_incidents), density)
+
+        # ── Verdict cache check ──
+        cached_verdict = _get_cached_verdict(cluster_incidents)
+        if cached_verdict is not None:
+            verdict = cached_verdict
+            _log.info("  Using cached verdict (name='%s')", verdict.get("name", ""))
+        else:
+            # LLM validation — math proposed this group, the LLM confirms
+            # coherence and prunes outliers. Falls back to the math proposal
+            # untouched if the call fails, is malformed, or the pruning floor
+            # is exceeded (see validate_group's safeguards below).
+            validator_input = [
+                {"id": inc["id"], "canonical_statement": _extract_canonical_statement(inc)}
+                for inc in cluster_incidents
+            ]
+            verdict = validate_group(validator_input)
+            if verdict is not None:
+                _cache_verdict(cluster_incidents, verdict)
+
         pruned: list[dict] = []
         verdict_name = None
         verdict_description = None
-
-        validator_input = [
-            {"id": inc["id"], "canonical_statement": _extract_canonical_statement(inc)}
-            for inc in cluster_incidents
-        ]
-        verdict = validate_group(validator_input)
 
         if verdict is not None and not verdict.get("is_coherent", True):
             # LLM examined this group and found no real common issue — drop it,
@@ -189,6 +370,29 @@ def _cluster_pass(
         if len(cluster_incidents) < MIN_CLUSTER_SIZE:
             continue
 
+        # ── Emission floor ── reject clusters whose internal coherence is too low
+        # Short signatures produce tighter vectors; a mean below 0.70 means the
+        # group is held together by shared filler (e.g. all starting "Error")
+        # rather than real semantic similarity.
+        member_indices_set = set(
+            i for i, inc in enumerate(incidents)
+            if inc["id"] in {c["id"] for c in cluster_incidents}
+        )
+        intra_pairs = 0
+        intra_sum = 0.0
+        mlist = sorted(member_indices_set)
+        for a in range(len(mlist)):
+            for b in range(a + 1, len(mlist)):
+                val = sim[mlist[a], mlist[b]]
+                if val >= SIMILARITY_THRESHOLD:
+                    intra_pairs += 1
+                    intra_sum += val
+        mean_intra = intra_sum / intra_pairs if intra_pairs > 0 else 0.0
+        if mean_intra < 0.70:
+            _log.info("Cluster rejected by emission floor (mean_intra=%.3f < 0.70) — %d tickets",
+                      mean_intra, len(cluster_incidents))
+            continue
+
         worst_severity = _worst_severity(cluster_incidents)
         top_system, top_service = _dominant_labels(cluster_incidents)
         cid = "".join(inc["id"][:4] for inc in cluster_incidents[:3])
@@ -212,11 +416,27 @@ def _cluster_pass(
                     "similarity_pct": round(
                         float(np.mean([sim[m, o] for o in members if o != m])) * 100, 1
                     ),
-                    "description": inc["description"][:200],
+                    "description": inc["description"][:500],
+                    "classification": _parse_classification(inc),
+                    "affected_system": _class_field(inc, "affected_system"),
+                    "service": _class_field(inc, "service"),
+                    "incident_type": _class_field(inc, "incident_type"),
+                    "urgency": _class_field(inc, "urgency"),
+                    "category": _class_field(inc, "category"),
+                    "assign_group": inc.get("assign_group", ""),
+                    "assignee": inc.get("assignee", ""),
+                    "priority": inc.get("priority", "medium"),
+                    "status": inc.get("status", "active"),
+                    "created_at": inc.get("created_at", ""),
                 }
                 for inc, m in zip(cluster_incidents, members)
             ],
         })
+        _log.info("Cluster accepted — name='%s', system=%s, count=%d, pruned=%d",
+                  verdict_name or "(unnamed)", top_system, len(cluster_incidents), len(pruned))
+        if pruned:
+            for p in pruned:
+                _log.debug("  Pruned: %s — %s", p["id"], p.get("reason", "no reason"))
 
         used.update(members)
 
@@ -268,6 +488,23 @@ def _extract_severity(inc: dict) -> str:
         return data.get("severity", "Minor")
     except (json.JSONDecodeError, TypeError):
         return "Minor"
+
+
+# Parse full classification JSON (safe)
+def _parse_classification(inc: dict) -> dict:
+    try:
+        return json.loads(inc.get("classification", "{}"))
+    except (json.JSONDecodeError, TypeError):
+        return {}
+
+
+# Extract a single field from an incident's classification JSON
+def _class_field(inc: dict, field: str) -> str:
+    try:
+        data = json.loads(inc.get("classification", "{}"))
+        return data.get(field, "")
+    except (json.JSONDecodeError, TypeError):
+        return ""
 
 
 # Parse canonical_statement from an incident's classification JSON, fall back to title
@@ -369,6 +606,7 @@ def _call_llm(messages: list[dict]) -> str:
     kwargs: dict = dict(
         model=settings.llm_model,
         temperature=0.1,
+        seed=42,
         max_tokens=1500,
         messages=messages,
     )
@@ -475,3 +713,52 @@ def _parse_json(raw: str) -> dict:
         if text.endswith("```"):
             text = text[:-3]
     return json.loads(text.strip())
+
+
+# ── Coherence metric ─────────────────────────────────────────────────────
+# Computes intra-cluster similarity and flags outliers. Used post-grouping
+# to audit cluster quality and identify prunable tickets.
+
+
+def cluster_coherence(
+    incident_dicts: list[dict], sim_matrix: np.ndarray,
+    indices: list[int],
+) -> dict:
+    """Return {mean, min, health} for a cluster, and prunable ticket IDs."""
+    if len(indices) < 2:
+        return {"mean": None, "min": None, "health": "insufficient"}
+    pairs = []
+    for a in range(len(indices)):
+        for b in range(a + 1, len(indices)):
+            pairs.append(float(sim_matrix[indices[a], indices[b]]))
+    mean_sim = float(np.mean(pairs)) if pairs else 0.0
+    min_sim = float(np.min(pairs)) if pairs else 0.0
+
+    # Centroid-based outlier detection
+    vecs = np.array([sim_matrix[idx] for idx in indices])  # use sim row as proxy
+    centroid = vecs.mean(axis=0)
+    centroid_norm = np.linalg.norm(centroid)
+    if centroid_norm > 0:
+        centroid = centroid / centroid_norm
+    prunable = []
+    for i, idx in enumerate(indices):
+        dist = float(sim_matrix[idx] @ centroid)
+        if dist < 0.60:
+            prunable.append({
+                "idx": idx,
+                "coherence": round(dist, 3),
+            })
+
+    if mean_sim >= 0.75:
+        health = "healthy"
+    elif mean_sim >= 0.60:
+        health = "review"
+    else:
+        health = "unhealthy"
+
+    return {
+        "mean": round(mean_sim, 3),
+        "min": round(min_sim, 3),
+        "health": health,
+        "prunable": prunable,
+    }
