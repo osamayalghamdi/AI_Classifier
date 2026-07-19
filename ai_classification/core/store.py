@@ -106,6 +106,11 @@ class IncidentStore:
                         "ALTER TABLE incidents ADD COLUMN IF NOT EXISTS discussion_history JSONB NOT NULL DEFAULT '[]'",
                         "ALTER TABLE incidents ADD COLUMN IF NOT EXISTS escalation_info TEXT",
                         "ALTER TABLE incidents ADD COLUMN IF NOT EXISTS completion_code TEXT",
+                        "ALTER TABLE incidents ADD COLUMN IF NOT EXISTS content_hash TEXT",
+                        "ALTER TABLE incidents ADD COLUMN IF NOT EXISTS occurrence_count INTEGER NOT NULL DEFAULT 1",
+                        "ALTER TABLE incidents ADD COLUMN IF NOT EXISTS first_seen TIMESTAMPTZ",
+                        "ALTER TABLE incidents ADD COLUMN IF NOT EXISTS last_seen TIMESTAMPTZ",
+                        "ALTER TABLE incidents ADD COLUMN IF NOT EXISTS source_ticket_ids JSONB NOT NULL DEFAULT '[]'",
                     ]:
                         try:
                             cur.execute(col_sql)
@@ -147,7 +152,9 @@ class IncidentStore:
         if self._model is None:
             return None
         vec = self._model.encode(text, normalize_embeddings=True)
-        return np.asarray(vec, dtype=np.float32)
+        result = np.asarray(vec, dtype=np.float32)
+        _log.debug("Embedding generated — input=%d chars, dim=%d", len(text), len(result))
+        return result
 
     @staticmethod
     def _build_embedding_text(
@@ -206,7 +213,10 @@ class IncidentStore:
                     except Exception:
                         continue
                     results.append(SimilarMatch(id=row_id, title=row_title, similarity=float(sim), classification=cls_result))
-                _log.debug("find_similar — %d matches above %.2f", len(results), threshold)
+                _log.info("Similarity search — query='%s', threshold=%.2f, matches=%d",
+                          text[:60], threshold, len(results))
+                for m in results:
+                    _log.debug("  Match: %s — %.1f%% — %s", m.id, m.similarity * 100, m.title[:50])
                 return results
         finally:
             self._putconn(conn)
@@ -224,13 +234,32 @@ class IncidentStore:
         discussion_history: list[dict] | None = None,
         escalation_info: str | None = None,
         completion_code: str | None = None,
+        content_hash: str | None = None,
+        source_ticket_ids: list[str] | None = None,
     ) -> None:
         if not self._ready or self._pool is None:
             return
-        # Embed the canonical statement — cleaner, normalized, language-agnostic
-        embed_text = classification.canonical_statement or self._build_embedding_text(
-            title, description, extracted_text, classification
-        )
+        # Embed the signature — use taxonomy string for exact match when FM code is known
+        # FM-000 means no taxonomy match → fall back to LLM-generated signature
+        fm_code = getattr(classification, 'failure_mode', 'FM-000') or 'FM-000'
+        if fm_code != 'FM-000':
+            try:
+                from .failure_modes import FAILURE_MODES
+                fm_name = FAILURE_MODES[fm_code][0]  # (name, system, service, severity, includes, excludes)
+                raw_cs = fm_name
+            except (KeyError, ImportError):
+                raw_cs = classification.signature or classification.canonical_statement or self._build_embedding_text(
+                    title, description, extracted_text, classification
+                )
+        else:
+            raw_cs = classification.signature or classification.canonical_statement or self._build_embedding_text(
+                title, description, extracted_text, classification
+            )
+        # Strip label prefix before embedding — "Nusuk Masar Haj/contracts: " → removed
+        if ":" in raw_cs:
+            embed_text = raw_cs.split(":", 1)[1].strip()
+        else:
+            embed_text = raw_cs
         embedding = self._embed(embed_text)
         conn = self._getconn()
         try:
@@ -240,9 +269,11 @@ class IncidentStore:
                     "INSERT INTO incidents "
                     "(id, title, description, extracted_text, embedding, classification_json, "
                     "status, created_at, documents, assign_group, assignee, priority, notes, "
-                    "discussion_history, escalation_info, completion_code) "
+                    "discussion_history, escalation_info, completion_code, "
+                    "content_hash, occurrence_count, first_seen, last_seen, source_ticket_ids) "
                     "VALUES (%s, %s, %s, %s, %s::vector, %s, 'active', %s, "
-                    "%s::jsonb, %s, %s, %s, %s, %s::jsonb, %s, %s) "
+                    "%s::jsonb, %s, %s, %s, %s, %s::jsonb, %s, %s, "
+                    "%s, 1, %s, %s, %s::jsonb) "
                     "ON CONFLICT (id) DO UPDATE SET "
                     "  title=EXCLUDED.title, description=EXCLUDED.description, "
                     "  extracted_text=EXCLUDED.extracted_text, embedding=EXCLUDED.embedding, "
@@ -251,7 +282,8 @@ class IncidentStore:
                     "  assignee=EXCLUDED.assignee, priority=EXCLUDED.priority, "
                     "  notes=EXCLUDED.notes, discussion_history=EXCLUDED.discussion_history, "
                     "  escalation_info=EXCLUDED.escalation_info, "
-                    "  completion_code=EXCLUDED.completion_code",
+                    "  completion_code=EXCLUDED.completion_code, "
+                    "  content_hash=EXCLUDED.content_hash",
                     (
                         incident_id, title, description, extracted_text,
                         embedding.tolist() if embedding is not None else None,
@@ -265,6 +297,10 @@ class IncidentStore:
                         _json.dumps(discussion_history or []),
                         escalation_info,
                         completion_code,
+                        content_hash,
+                        datetime.now(timezone.utc),
+                        datetime.now(timezone.utc),
+                        _json.dumps(source_ticket_ids or []),
                     ),
                 )
             conn.commit()
@@ -275,6 +311,49 @@ class IncidentStore:
 
     def generate_id(self) -> str:
         return uuid.uuid4().hex[:12]
+
+    def increment_occurrence(self, incident_id: str) -> None:
+        if not self._ready or self._pool is None:
+            return
+        conn = self._getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE incidents SET occurrence_count = occurrence_count + 1, "
+                    "last_seen = NOW() WHERE id = %s",
+                    (incident_id,)
+                )
+                conn.commit()
+        finally:
+            self._putconn(conn)
+
+    def get_incident_by_hash(self, content_hash: str) -> dict | None:
+        if not self._ready or self._pool is None:
+            return None
+        conn = self._getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id, occurrence_count, first_seen, last_seen, "
+                    "source_ticket_ids, classification_json "
+                    "FROM incidents WHERE content_hash = %s AND status = 'active' "
+                    "ORDER BY created_at DESC LIMIT 1",
+                    (content_hash,)
+                )
+                row = cur.fetchone()
+                if row:
+                    import json as _json
+                    return {
+                        "id": row[0],
+                        "occurrence_count": row[1],
+                        "first_seen": row[2],
+                        "last_seen": row[3],
+                        "source_ticket_ids": row[4] if isinstance(row[4], list) else (_json.loads(row[4]) if row[4] else []),
+                        "classification_json": row[5],
+                    }
+                return None
+        finally:
+            self._putconn(conn)
 
     def resolve_incident(self, incident_id: str) -> bool:
         if not self._ready or self._pool is None:
@@ -508,6 +587,9 @@ async def lifespan(app: FastAPI):
         _log.warning("Store FAILED (embeddings disabled)")
 
     start_sync_worker(store)
+
+    from ..core.grouping import start_rebuild_loop
+    start_rebuild_loop()
 
     yield
     _log.info("Shutting down store")

@@ -2,7 +2,10 @@
 
 from pydantic import BaseModel, Field, model_validator
 
-from .taxonomy import AffectedSystem, IncidentType, Severity, Urgency, Category, SERVICES_BY_SYSTEM
+from .taxonomy import AffectedSystem, IncidentType, Severity, Urgency, Category, SERVICES_BY_SYSTEM, flatten_services
+
+# Flat service list derived from the hierarchy (built once at import time)
+_FLAT_SERVICES = flatten_services()
 
 
 class ClassificationResult(BaseModel):
@@ -23,14 +26,24 @@ class ClassificationResult(BaseModel):
         "if mentioned. Never guess root cause. Write in English regardless "
         "of ticket language. Optimized for embedding similarity."
     )
+    signature: str = Field(
+        description="Short problem signature for matching: max 12 words, "
+        "format: [Who] can't do [what] in [which step] because of [what]. "
+        "No company names, no ticket IDs, no dates, no numbers, no counts. "
+        "English only. This is used for embedding/grouping, not display."
+    )
+    failure_mode: str = Field(
+        default="FM-000",
+        description="Failure mode code from the taxonomy. Pick the best match from FAILURE_MODES. If none matches, use FM-000 (unclassified / new)."
+    )
 
     @model_validator(mode="after")
     def _check_service_in_system(self) -> "ClassificationResult":
         """Auto-correct affected_system if the service belongs to a different one."""
-        allowed = SERVICES_BY_SYSTEM.get(self.affected_system, [])
+        allowed = _FLAT_SERVICES.get(self.affected_system, [])
         if self.service in allowed:
             return self
-        for system, services in SERVICES_BY_SYSTEM.items():
+        for system, services in _FLAT_SERVICES.items():
             if self.service in services:
                 self.affected_system = system
                 return self

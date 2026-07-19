@@ -7,7 +7,7 @@
    Default view for Employee = tickets in their assign_group.
 ──────────────────────────────────────────────────────────────────────── */
 
-const API = localStorage.getItem("dash_api") || "http://localhost:8000";
+const API = localStorage.getItem("dash_api") || "http://192.168.1.50:8000";
 const CLASSIFY_URL = localStorage.getItem("classify_url") || "http://localhost:8082";
 let ROLE = "employee";
 let FLAT = false;
@@ -56,7 +56,7 @@ async function loadData() {
       fetch(`${API}/incidents?status=active`).then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); }),
     ]);
     const clusters = (rep.clusters || []).map((c) => ({
-      cluster_id: c.cluster_id, name: c.name || c.summary?.slice(0, 60) || "Cluster",
+      cluster_id: c.cluster_id, name: c.failure_mode_desc || c.name || c.summary?.slice(0, 60) || "Cluster",
       affected_system: c.affected_system, affected_service: c.affected_service,
       worst_severity: c.worst_severity, count: c.count, summary: c.summary,
       incidents: (c.incidents || []).map((i) => {
@@ -487,7 +487,8 @@ function bindClusterCards(root) {
 }
 
 /* ── boot ── */
-$("#classifyLink").href = CLASSIFY_URL;
+const classifyLink = $("classifyLink");
+if (classifyLink) classifyLink.href = CLASSIFY_URL;
 // Set the group filter dropdown label dynamically
 const groupOpt = $("#empGroupFilter option[value='my']");
 if (groupOpt) groupOpt.textContent = `My Group (${CURRENT_GROUP})`;

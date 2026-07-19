@@ -128,6 +128,26 @@ python3 -m http.server 8085
 open http://localhost:8085
 ```
 
+
+---
+
+## Test Data
+
+```bash
+# Reset first
+curl -s -X POST http://127.0.0.1:8000/reset
+
+# Import batch 1
+curl -s -X POST http://127.0.0.1:8000/import/test_incidents.json
+
+# Import batch 2 (the related ones)
+curl -s -X POST http://127.0.0.1:8000/import/test_incidents_batch2.json
+
+# Check results
+curl -s http://127.0.0.1:8000/reports/daily
+```
+
+
 ---
 
 ## Status Lifecycle
@@ -151,3 +171,60 @@ Each status has its own colored section inside cluster cards. Add new statuses i
 | `ai_classification/core/grouping.py` | Graph clustering + LLM validator |
 | `ai_classification/domain/taxonomy.py` | Classification enums |
 | `NOTES.md` | Full design rationale |
+
+---
+
+## Live Logging
+
+Every pipeline step logs to stdout with timestamps. Commands to watch live:
+
+```bash
+# 1. Tail backend logs (if running with log file)
+tail -f /tmp/ai_classifier.log
+
+# 2. Directly follow the uvicorn process output
+#    Find the PID first, then strace/follow
+ps aux | grep uvicorn
+# then: journalctl _PID=<PID> --follow  (if systemd)
+
+# 3. Or restart with tee to capture + watch live
+cd ~/projects/AI_Classifier
+uv run uvicorn ai_classification.api.routes:app --host 0.0.0.0 --port 8000 2>&1 | tee /tmp/ai_classifier.log
+# In another terminal: tail -f /tmp/ai_classifier.log
+```
+
+### What each log level tells you
+
+| Level | What you see |
+|-------|-------------|
+| `INFO` | API calls, classifications, clusters found, similarity matches |
+| `WARN` | Classification failures, reset actions, oversized groups dropped |
+| `DEBUG` | Embedding generation, similarity scores per match, pruned incidents |
+
+### Step-by-step log example
+
+```
+# 1. API entry
+INFO  POST /classify — title='Login SMS code not arriving', group='App Support', priority=critical
+
+# 2. LLM classification
+INFO  Classifying — title='Login SMS code not arriving'
+LiteLLM completion() model= qwen/qwen3.6-35b-a3b; provider = openrouter
+INFO  Classification succeeded — system=Nusuk Application, severity=Critical, confidence=high
+
+# 3. Embedding + similarity search
+DEBUG Embedding generated — input=142 chars, dim=1024
+INFO  Similarity search — threshold=0.80, matches=2
+DEBUG   Match: abc123 — 85.3% — Login OTP expired before submission
+
+# 4. Save to DB
+INFO  Classify result — id=abc123, system=Nusuk Application, service=Login, severity=Critical, dupes=2
+DEBUG Canonical: Nusuk Application/Login: SMS OTP not delivered after 5 resend attempts; 2FA blocked.
+INFO  Saved incident abc123 — system=Nusuk Application, severity=Critical
+
+# 5. Clustering (on report fetch or background rebuild)
+INFO  Cluster candidate — 3 incidents, density=0.67, sending to LLM validator
+INFO  Validator result: coherent=True, keep=3, remove=0, name='Login SMS Delivery Failure'
+INFO  Cluster accepted — name='Login SMS Delivery Failure', system=Nusuk Application, count=3, pruned=0
+INFO  Reports daily: 10 incidents, 2 clusters, 5 subsystems
+```
