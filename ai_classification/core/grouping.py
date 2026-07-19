@@ -74,12 +74,6 @@ def _cache_verdict(incidents: list[dict], verdict: dict):
     _log.debug("Verdict cached for %d-incident group", len(incidents))
 
 
-def invalidate_verdict_cache():
-    """Clear all cached verdicts — call when incidents are added/resolved."""
-    _verdict_cache.clear()
-    _log.info("Verdict cache cleared")
-
-
 def invalidate_cache():
     """Clear both verdict cache and cluster snapshot — call after data mutations."""
     _verdict_cache.clear()
