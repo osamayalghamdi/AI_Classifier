@@ -1,10 +1,8 @@
-"""FastAPI application — endpoints only."""
+"""FastAPI application — endpoints only. No business logic."""
 
-import json
 import logging
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from pathlib import Path
 
 from .schemas import ClassifyRequest, ClassifyResponse, ClassifyBatchRequest, ClassifyBatchResponse, ResolveResponse
 from ..core.store import (
@@ -12,6 +10,7 @@ from ..core.store import (
 )
 from ..core.classifier import classify_and_store, classify_batch
 from ..core.grouping import build_clusters, invalidate_cache, request_rebuild
+from ..core.import_service import import_incidents_from_file
 
 _log = logging.getLogger(__name__)
 
@@ -119,45 +118,7 @@ def reports_no_prefix(period: str = "daily"):
 @app.post("/import/{filename}")
 def import_bulk(filename: str):
     _log.info("POST /import/%s", filename)
-    if not filename.endswith(".json"):
-        raise HTTPException(status_code=400, detail="Only .json files allowed")
-    filepath = Path(__file__).parent.parent.parent / filename
-    if not filepath.exists():
-        raise HTTPException(status_code=404, detail=f"File {filename} not found at {filepath}")
-    try:
-        with open(filepath) as f:
-            data = json.load(f)
-    except json.JSONDecodeError as e:
-        raise HTTPException(status_code=400, detail=f"Invalid JSON: {e}")
-
-    if not isinstance(data, list):
-        raise HTTPException(status_code=400, detail="JSON must be an array of incident objects")
-
-    incidents = []
-    for inc in data:
-        title = (
-            inc.get("title", "") or inc.get("Title", "") or
-            inc.get("DisplayLabel", "") or inc.get("display_label", "")
-        )
-        if isinstance(title, str):
-            title = title.strip()
-        if not title:
-            continue
-        desc = (
-            inc.get("description", "") or inc.get("Description", "") or
-            inc.get("desc", "") or ""
-        )
-        if isinstance(desc, str):
-            desc = desc.strip()
-        incidents.append({
-            "title": title,
-            "description": desc,
-        })
-
-    if not incidents:
-        raise HTTPException(status_code=400, detail="No incidents with a non-empty title found")
-
-    result = classify_batch(incidents)
+    result = import_incidents_from_file(filename)
     _log.info("Import %s: %d/%d classified", filename, result.total - result.failed, result.total)
     return result
 
