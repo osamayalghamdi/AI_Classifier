@@ -122,11 +122,11 @@ class IncidentStore:
 
             _log.info("PostgreSQL store ready at %s:%s/%s",
                       settings.pg_host, settings.pg_port, settings.pg_database)
+            self._ready = True
         except Exception as exc:
             _log.warning("Failed to connect to PostgreSQL: %s. Store disabled.", exc)
             self._pool = None
-
-        self._ready = True
+            self._ready = False
 
     def close(self) -> None:
         if self._pool:

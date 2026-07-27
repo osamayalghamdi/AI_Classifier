@@ -11,6 +11,9 @@ venv/
 # Environment
 .env
 
+# Local config (copy from config.example.py, gitignored to keep secrets safe)
+ai_classification/config.py
+
 # Docker
 ollama_data/
 

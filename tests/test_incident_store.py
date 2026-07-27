@@ -26,8 +26,8 @@ from .conftest import TEST_PG_DATABASE
 
 def _make_result(**overrides) -> ClassificationResult:
     defaults = dict(
-        affected_system=AffectedSystem.crm,
-        service="Customer Portal",
+        affected_system=AffectedSystem.nusuk_masar_haj,
+        service="System/Application",
         incident_type=IncidentType.degradation,
         severity=Severity.major,
         urgency=Urgency.high,
@@ -35,6 +35,7 @@ def _make_result(**overrides) -> ClassificationResult:
         confidence="high",
         reasoning="test",
         canonical_statement="Test incident.",
+        signature="Test incident signature for grouping",
     )
     defaults.update(overrides)
     return ClassificationResult(**defaults)
@@ -179,8 +180,8 @@ class TestBuildEmbeddingText:
     def test_includes_classification_fingerprint(self):
         result = _make_result()
         text = IncidentStore._build_embedding_text("T", "D", classification=result)
-        assert "CRM" in text
-        assert "Customer Portal" in text
+        assert "Nusuk Masar Haj" in text
+        assert "System/Application" in text
 
     def test_classification_without_ocr(self):
         result = _make_result()
