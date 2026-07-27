@@ -10,6 +10,25 @@ from .classifier import classify_batch
 _log = logging.getLogger(__name__)
 
 
+def import_incidents_from_body(incidents: list[dict]) -> ClassifyBatchResponse:
+    """Classify incidents from a body payload with DisplayLabel/Description fields."""
+    mapped = []
+    for inc in incidents:
+        title = (inc.get("DisplayLabel", "") or inc.get("display_label", "") or "").strip()
+        desc = (inc.get("Description", "") or inc.get("description", "") or "").strip()
+        if not title:
+            continue
+        mapped.append({"title": title, "description": desc})
+
+    if not mapped:
+        raise HTTPException(status_code=400, detail="No incidents with a non-empty DisplayLabel found")
+
+    result = classify_batch(mapped)
+    _log.info("Imported %d incidents from request body (%d/%d classified)",
+              len(mapped), result.total - result.failed, result.total)
+    return result
+
+
 def import_incidents_from_file(filename: str) -> ClassifyBatchResponse:
     """Read a JSON file of incidents and classify them in batch."""
     if not filename.endswith(".json"):

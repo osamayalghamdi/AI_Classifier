@@ -4,13 +4,13 @@ import logging
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
-from .schemas import ClassifyRequest, ClassifyResponse, ClassifyBatchRequest, ClassifyBatchResponse, ResolveResponse
+from .schemas import ClassifyRequest, ClassifyResponse, ClassifyBatchRequest, ClassifyBatchResponse, ResolveResponse, BulkImportRequest
 from ..core.store import (
     lifespan, get_health, resolve_incident, get_incident, list_incidents, delete_all_incidents,
 )
 from ..core.classifier import classify_and_store, classify_batch
 from ..core.grouping import build_clusters, invalidate_cache, request_rebuild
-from ..core.import_service import import_incidents_from_file
+from ..core.import_service import import_incidents_from_file, import_incidents_from_body
 
 _log = logging.getLogger(__name__)
 
@@ -120,6 +120,15 @@ def import_bulk(filename: str):
     _log.info("POST /import/%s", filename)
     result = import_incidents_from_file(filename)
     _log.info("Import %s: %d/%d classified", filename, result.total - result.failed, result.total)
+    return result
+
+
+# Import incidents from request body — DisplayLabel/Description format
+@app.post("/import")
+def import_bulk_from_body(req: BulkImportRequest):
+    _log.info("POST /import — %d incidents from body", len(req.incidents))
+    result = import_incidents_from_body([inc.model_dump() for inc in req.incidents])
+    _log.info("Import from body: %d/%d classified", result.total - result.failed, result.total)
     return result
 
 

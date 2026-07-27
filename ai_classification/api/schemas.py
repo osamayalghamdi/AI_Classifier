@@ -39,3 +39,12 @@ class ClassifyBatchResponse(BaseModel):
     results: list[ClassifyResponse]
     total: int
     failed: int
+
+
+class BulkImportItem(BaseModel):
+    DisplayLabel: str = Field("", description="Incident title. Maps to 'title' internally.")
+    Description: str = Field("", description="Incident description. Maps to 'description' internally.")
+
+
+class BulkImportRequest(BaseModel):
+    incidents: list[BulkImportItem] = Field(min_length=1, description="Array of incidents with DisplayLabel and Description fields")

@@ -14,8 +14,8 @@ from ai_classification.domain.taxonomy import AffectedSystem, IncidentType, Seve
 
 def _make_result(**overrides) -> ClassificationResult:
     defaults = dict(
-        affected_system=AffectedSystem.crm,
-        service="Customer Portal",
+        affected_system=AffectedSystem.nusuk_masar_haj,
+        service="System/Application",
         incident_type=IncidentType.degradation,
         severity=Severity.major,
         urgency=Urgency.high,
@@ -23,6 +23,7 @@ def _make_result(**overrides) -> ClassificationResult:
         confidence="high",
         reasoning="test",
         canonical_statement="Test incident.",
+        signature="Test incident signature for grouping",
     )
     defaults.update(overrides)
     return ClassificationResult(**defaults)
