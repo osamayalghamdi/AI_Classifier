@@ -2,6 +2,8 @@
 
 LLM-powered incident classification with failure-mode taxonomy and exact-match grouping. Built for Hajj operations (Nusuk Masar Haj).
 
+<img width="2600" height="1235" alt="623501322-7a7826db-2b64-4f22-8de9-6c2108c67a12" src="https://github.com/user-attachments/assets/86c95ca1-1b9b-49ed-ae78-5d943baec917" />
+
 ## Stack
 
 | Layer | Tech |
