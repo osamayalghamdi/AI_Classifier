@@ -48,14 +48,16 @@ def classify_incident(req: ClassifyRequest):
         discussion_history=req.discussion_history,
         escalation_info=req.escalation_info,
         completion_code=req.completion_code,
+        source_ticket_id=req.source_ticket_id,
     )
 
 
 # Classify via GET (quick testing)
 @app.get("/classify", response_model=ClassifyResponse)
-def classify_incident_get(title: str = "", description: str = "", extracted_text: str = ""):
-    _log.info("GET /classify — title='%s'", title[:60])
-    return classify_and_store(title, description, extracted_text)
+def classify_incident_get(title: str = "", description: str = "", extracted_text: str = "",
+                          source_ticket_id: str = ""):
+    _log.info("GET /classify — title='%s', ticket_id='%s'", title[:60], source_ticket_id)
+    return classify_and_store(title, description, extracted_text, source_ticket_id=source_ticket_id)
 
 
 # Classify multiple incidents at once

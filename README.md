@@ -17,7 +17,7 @@ LLM-powered incident classification with failure-mode taxonomy and exact-match g
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/classify` | Classify + find duplicates |
+| POST | `/classify` | Classify + find similar incidents |
 | GET | `/classify` | Same via query params |
 | POST | `/classify/batch` | Batch classify (max 50) |
 | POST | `/import/{file.json}` | Bulk import from JSON file |
@@ -77,7 +77,7 @@ open http://192.168.1.50:8085
 
 ## Classification Flow
 
-1. **Dedupe gate** — content hash (digit-blanked) checks DB before LLM call
+1. **ID-based dedupe** — exact match on source_ticket_id prevents double-counting; text similarity is informational only
 2. **LLM classifies** — returns system, service, severity, FM code from taxonomy
 3. **Embedding** — uses taxonomy description string (not LLM output) for FM-matched tickets
 4. **Background rebuild** — every 5 min:
