@@ -445,10 +445,7 @@ def _cluster_pass(
 def _subsystem_rollup(active_incidents: list[dict]) -> list[dict]:
     buckets: dict[tuple[str, str], list[dict]] = defaultdict(list)
     for inc in active_incidents:
-        try:
-            data = json.loads(inc.get("classification", "{}"))
-        except (json.JSONDecodeError, TypeError):
-            data = {}
+        data = inc.get("classification_dict", {})
         system = data.get("affected_system") or "Unknown"
         service = data.get("service") or "Unknown"
         buckets[(system, service)].append(inc)
@@ -509,12 +506,10 @@ def _dominant_labels(incidents: list[dict]) -> tuple[str, str]:
     systems: dict[str, int] = defaultdict(int)
     services: dict[str, int] = defaultdict(int)
     for inc in incidents:
-        try:
-            data = json.loads(inc.get("classification", "{}"))
+        data = inc.get("classification_dict", {})
+        if data:
             systems[data.get("affected_system", "Unknown")] += 1
             services[data.get("service", "Unknown")] += 1
-        except (json.JSONDecodeError, TypeError):
-            pass
     top_sys = max(systems, key=lambda k: systems[k]) if systems else "Unknown"
     top_svc = max(services, key=lambda k: services[k]) if services else "Unknown"
     return top_sys, top_svc

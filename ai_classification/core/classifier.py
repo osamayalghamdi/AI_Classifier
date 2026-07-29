@@ -400,8 +400,11 @@ def classify_and_store(
     result = classify(title, description)
 
     # ── Severity→priority mapping ──
+    # Severity wins unconditionally — the classifier's assessment overrides
+    # whatever priority the caller submitted.
     _priority_map = {"Critical": "critical", "Major": "high", "Minor": "medium", "Cosmetic": "low"}
-    priority = _priority_map.get(result.severity.value if hasattr(result.severity, 'value') else result.severity, priority)
+    sev = result.severity.value if hasattr(result.severity, "value") else result.severity
+    priority = _priority_map.get(sev, "medium")
 
     embed_text = result.canonical_statement or f"{title} {description}"
 
