@@ -27,7 +27,7 @@ from .conftest import TEST_PG_DATABASE
 def _make_result(**overrides) -> ClassificationResult:
     defaults = dict(
         affected_system=AffectedSystem.nusuk_masar_haj,
-        service="System/Application",
+        service="System/Application - Nusuk Masar Haj",
         incident_type=IncidentType.degradation,
         severity=Severity.major,
         urgency=Urgency.high,

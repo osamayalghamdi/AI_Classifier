@@ -15,7 +15,7 @@ from ai_classification.domain.taxonomy import AffectedSystem, IncidentType, Seve
 def _make_result(**overrides) -> ClassificationResult:
     defaults = dict(
         affected_system=AffectedSystem.nusuk_masar_haj,
-        service="System/Application",
+        service="System/Application - Nusuk Masar Haj",
         incident_type=IncidentType.degradation,
         severity=Severity.major,
         urgency=Urgency.high,
