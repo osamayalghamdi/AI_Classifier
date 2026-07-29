@@ -193,6 +193,9 @@ class IncidentStore:
         if not self._ready or self._pool is None or self._model is None:
             return []
         threshold = threshold if threshold is not None else settings.similarity_threshold
+        # settings.similarity_threshold (0.80) is deliberately stricter than
+        # grouping.SIMILARITY_THRESHOLD (0.50) — this is fine-grained dedupe
+        # on classify (must be near-identical), not a recall-oriented grouping pass.
         # Query and stored embeddings both use canonical_statement directly
         embed_text = text
         if extracted_text:
@@ -250,19 +253,19 @@ class IncidentStore:
         # Embed the signature — use taxonomy string for exact match when FM code is known
         # FM-000 means no taxonomy match → fall back to LLM-generated signature
         fm_code = getattr(classification, 'failure_mode', 'FM-000') or 'FM-000'
+        # Fallback used when FM lookup fails or no FM code is set
+        _fallback_cs = classification.signature or classification.canonical_statement or self._build_embedding_text(
+            title, description, extracted_text, classification
+        )
         if fm_code != 'FM-000':
             try:
                 from .failure_modes import FAILURE_MODES
                 fm_name = FAILURE_MODES[fm_code][0]  # (name, system, service, severity, includes, excludes)
                 raw_cs = fm_name
             except (KeyError, ImportError):
-                raw_cs = classification.signature or classification.canonical_statement or self._build_embedding_text(
-                    title, description, extracted_text, classification
-                )
+                raw_cs = _fallback_cs
         else:
-            raw_cs = classification.signature or classification.canonical_statement or self._build_embedding_text(
-                title, description, extracted_text, classification
-            )
+            raw_cs = _fallback_cs
         # Strip label prefix before embedding — "Nusuk Masar Haj/contracts: " → removed
         if ":" in raw_cs:
             embed_text = raw_cs.split(":", 1)[1].strip()

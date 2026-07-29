@@ -111,6 +111,7 @@ def reports(period: str = "daily"):
 # Same, without /api prefix (frontend compat)
 @app.get("/reports/{period}")
 def reports_no_prefix(period: str = "daily"):
+    """Frontend-compat alias for /api/reports/{period} — dashboard uses this path."""
     return reports(period)
 
 
