@@ -3,33 +3,34 @@
 import json
 import pytest
 
-from ai_classification.core.classifier import classify, _extract_json_str
+from ai_classification.core.classifier import classify
+from ai_classification.core.llm import strip_json_fences
 from ai_classification.domain.models import ClassificationResult
 
 
-# ── _extract_json_str (minimal fence-stripper) ────────────────────────
+# ── strip_json_fences (minimal fence-stripper) ────────────────────────
 
 
-class TestExtractJsonStr:
+class TestStripJsonFences:
     def test_plain_json_passes_through(self):
         raw = '{"affected_system": "CRM"}'
-        assert _extract_json_str(raw) == raw
+        assert strip_json_fences(raw) == raw
 
     def test_strips_triple_backtick_fences(self):
         raw = '```json\n{"affected_system": "CRM"}\n```'
-        assert _extract_json_str(raw) == '{"affected_system": "CRM"}'
+        assert strip_json_fences(raw) == '{"affected_system": "CRM"}'
 
     def test_strips_fences_without_lang_tag(self):
         raw = '```\n{"affected_system": "CRM"}\n```'
-        assert _extract_json_str(raw) == '{"affected_system": "CRM"}'
+        assert strip_json_fences(raw) == '{"affected_system": "CRM"}'
 
     def test_strips_inline_fences(self):
         raw = '```{"affected_system": "CRM"}```'
-        assert _extract_json_str(raw) == '{"affected_system": "CRM"}'
+        assert strip_json_fences(raw) == '{"affected_system": "CRM"}'
 
     def test_no_fences_strips_whitespace(self):
         """Surrounding whitespace is stripped — json.loads tolerates it."""
-        assert _extract_json_str('  {"a": 1}  ') == '{"a": 1}'
+        assert strip_json_fences('  {"a": 1}  ') == '{"a": 1}'
 
 
 # ── classify() — real integration (mocked LLM) ───────────────────────
@@ -60,7 +61,7 @@ def _patch_completion(monkeypatch):
     Supports retry: stores outputs in a list and pops from the front
     on each call, so both attempt 1 and retry can return the same data.
     """
-    import ai_classification.core.classifier as mod
+    import ai_classification.core.llm as mod_llm
 
     outputs = []
 
@@ -69,7 +70,7 @@ def _patch_completion(monkeypatch):
             return make_fake_completion(outputs.pop(0))
         return make_fake_completion("{}")
 
-    monkeypatch.setattr(mod, "completion", fake_completion)
+    monkeypatch.setattr(mod_llm, "completion", fake_completion)
     return outputs
 
 

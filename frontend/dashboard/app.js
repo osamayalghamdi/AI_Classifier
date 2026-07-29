@@ -7,11 +7,13 @@
    Default view for Employee = tickets in their assign_group.
 ──────────────────────────────────────────────────────────────────────── */
 
-const API = localStorage.getItem("dash_api") || "http://192.168.1.50:8000";
+const API = localStorage.getItem("dash_api") || "";
 const CLASSIFY_URL = localStorage.getItem("classify_url") || "http://localhost:8082";
-let ROLE = "employee";
-let FLAT = false;
-let EMP_GROUP_FILTER = "my";
+let ROLE = localStorage.getItem("dash_role") || "employee";
+let FLAT = localStorage.getItem("dash_flat") === "true";
+let EMP_GROUP_FILTER = localStorage.getItem("dash_group_filter") || "my";
+let EMP_SEV_FILTER = localStorage.getItem("dash_sev_filter") || "";
+let LEAD_TEAM_FILTER = localStorage.getItem("dash_lead_team") || "";
 
 const TEAMS = {
   "App Support":    ["Ahmed K.", "Sara M.", "Layla R."],
@@ -111,6 +113,38 @@ function setConn(ok, label) {
   $("#connText").textContent = label;
 }
 
+/* ── State persistence ── */
+function saveState() {
+  localStorage.setItem("dash_role", ROLE);
+  localStorage.setItem("dash_flat", String(FLAT));
+  localStorage.setItem("dash_group_filter", EMP_GROUP_FILTER);
+  localStorage.setItem("dash_sev_filter", EMP_SEV_FILTER);
+  localStorage.setItem("dash_lead_team", LEAD_TEAM_FILTER);
+  localStorage.setItem("dash_search", $("#empSearch")?.value || "");
+  const open = [...document.querySelectorAll(".cluster.open")].map((el) => el.dataset.cid).filter(Boolean);
+  localStorage.setItem("dash_open_clusters", JSON.stringify(open));
+}
+
+function restoreState() {
+  const roleBtn = document.querySelector(`.role-btn[data-role="${ROLE}"]`);
+  if (roleBtn) {
+    document.querySelectorAll(".role-btn").forEach((x) => x.classList.toggle("active", x === roleBtn));
+    document.querySelectorAll(".view").forEach((v) => v.classList.remove("active"));
+    const v = document.getElementById(`view-${ROLE}`);
+    if (v) v.classList.add("active");
+  }
+  document.getElementById("vtGrouped")?.classList.toggle("active", !FLAT);
+  document.getElementById("vtFlat")?.classList.toggle("active", FLAT);
+  const sevEl = document.getElementById("empSevFilter");
+  if (sevEl) sevEl.value = EMP_SEV_FILTER;
+  const groupEl = document.getElementById("empGroupFilter");
+  if (groupEl) groupEl.value = EMP_GROUP_FILTER === "my" ? "my" : EMP_GROUP_FILTER;
+  const teamEl = document.getElementById("leadTeamFilter");
+  if (teamEl) teamEl.value = LEAD_TEAM_FILTER;
+  const searchEl = document.getElementById("empSearch");
+  if (searchEl) searchEl.value = localStorage.getItem("dash_search") || "";
+}
+
 /* ── Role switching ── */
 $("#roleSwitch").addEventListener("click", (e) => {
   const b = e.target.closest(".role-btn");
@@ -119,22 +153,32 @@ $("#roleSwitch").addEventListener("click", (e) => {
   $$(".role-btn").forEach((x) => x.classList.toggle("active", x === b));
   $$(".view").forEach((v) => v.classList.remove("active"));
   $(`#view-${ROLE}`).classList.add("active");
+  saveState();
   render();
 });
 
-$("#vtGrouped").addEventListener("click", () => { FLAT = false; syncVT(); renderEmployee(); });
-$("#vtFlat").addEventListener("click", () => { FLAT = true; syncVT(); renderEmployee(); });
+$("#vtGrouped").addEventListener("click", () => { FLAT = false; syncVT(); saveState(); renderEmployee(); });
+$("#vtFlat").addEventListener("click", () => { FLAT = true; syncVT(); saveState(); renderEmployee(); });
 function syncVT() {
   $("#vtGrouped").classList.toggle("active", !FLAT);
   $("#vtFlat").classList.toggle("active", FLAT);
 }
-$("#empSearch").addEventListener("input", renderEmployee);
-$("#empSevFilter").addEventListener("change", renderEmployee);
-$("#empGroupFilter").addEventListener("change", function () {
-  EMP_GROUP_FILTER = this.value;
+$("#empSearch").addEventListener("input", () => { saveState(); renderEmployee(); });
+$("#empSevFilter").addEventListener("change", function () {
+  EMP_SEV_FILTER = this.value;
+  saveState();
   renderEmployee();
 });
-$("#leadTeamFilter").addEventListener("change", renderLead);
+$("#empGroupFilter").addEventListener("change", function () {
+  EMP_GROUP_FILTER = this.value;
+  saveState();
+  renderEmployee();
+});
+$("#leadTeamFilter").addEventListener("change", function () {
+  LEAD_TEAM_FILTER = this.value;
+  saveState();
+  renderLead();
+});
 
 /* ── Render dispatch ── */
 function render() {
@@ -161,7 +205,7 @@ function groupTickets() {
 
 function groupClusters() {
   const q = $("#empSearch").value.trim().toLowerCase();
-  const sev = $("#empSevFilter").value;
+  const sev = EMP_SEV_FILTER;
   const g = activeGroup();
   return DATA.clusters
     .map((c) => ({
@@ -226,7 +270,7 @@ function renderEmployee() {
 
 /* ═════════ SHIFT LEAD ═════════ */
 function renderLead() {
-  const teamSel = $("#leadTeamFilter").value;
+  const teamSel = LEAD_TEAM_FILTER;
   const clusters = DATA.clusters
     .filter((c) => !teamSel || c.incidents.some((i) => i.team === teamSel))
     .sort((a, b) => (SEV_RANK[b.worst_severity] || 0) - (SEV_RANK[a.worst_severity] || 0) || b.count - a.count);
@@ -446,13 +490,15 @@ function ticketRow(t) {
       ${meta ? `<div class="t-meta">${meta}</div>` : ""}
     </div>
     <div class="t-right">${sim}<span class="mini-sev ${esc(t.severity || "Minor")}"></span>${x}</div>
-  </div>`;
+  </div>
+  <div class="t-detail" data-tid="${esc(t.id)}"><div class="t-detail-loading">⏳ Loading incident details…</div></div>`;
 }
 
 function toggleCluster(el) {
   const open = el.classList.toggle("open");
   el.dataset.state = open ? "open" : "closed";
   el.querySelector(".cluster-head").setAttribute("aria-expanded", String(open));
+  saveState();
 }
 
 function bindClusterCards(root) {
@@ -484,9 +530,129 @@ function bindClusterCards(root) {
       toast(`${b.dataset.remove} flagged for removal — correction logged (stub)`);
     })
   );
+  // Ticket row click — expand/collapse detail panel
+  $$(".t-row", root).forEach((row) => {
+    row.addEventListener("click", (e) => {
+      // Don't toggle if clicking on the remove button
+      if (e.target.closest("[data-remove]")) return;
+      const tid = row.dataset.tid;
+      const detail = row.nextElementSibling;
+      if (!detail || !detail.classList.contains("t-detail")) return;
+      const wasExpanded = row.classList.contains("expanded");
+      // Collapse all others
+      row.closest(".t-rows")?.querySelectorAll(".t-row.expanded").forEach((r) => {
+        if (r !== row) r.classList.remove("expanded");
+      });
+      if (wasExpanded) {
+        row.classList.remove("expanded");
+        return;
+      }
+      row.classList.add("expanded");
+      fetchIncidentDetail(tid, detail);
+    });
+  });
+}
+
+/* ── Fetch incident detail and render ── */
+let _detailCache = {};
+async function fetchIncidentDetail(tid, detailEl) {
+  if (_detailCache[tid]) {
+    detailEl.innerHTML = _detailCache[tid];
+    return;
+  }
+  detailEl.innerHTML = '<div class="t-detail-loading">⏳ Loading incident details…</div>';
+  try {
+    const resp = await fetch(`${API}/incidents/${tid}`);
+    if (!resp.ok) throw new Error(resp.status);
+    const inc = await resp.json();
+    const html = renderIncidentDetail(inc);
+    _detailCache[tid] = html;
+    detailEl.innerHTML = html;
+  } catch (e) {
+    detailEl.innerHTML = `<div class="t-detail-loading" style="color:var(--crit)">❌ Failed to load: ${e.message}</div>`;
+  }
+}
+
+function renderIncidentDetail(inc) {
+  let cls = inc.classification || inc.classification_json || {};
+  if (typeof cls === "string") try { cls = JSON.parse(cls); } catch {}
+  const fm = cls.failure_mode || "—";
+  const conf = cls.confidence || "—";
+  const confClass = conf === "high" ? "conf-high" : conf === "medium" ? "conf-medium" : conf === "low" ? "conf-low" : "";
+  const severity = cls.severity || "—";
+  const sevBadge = `<span class="sev ${esc(severity)}" style="font-size:11px;display:inline-block">${esc(severity)}</span>`;
+  const urgency = cls.urgency || "—";
+  const category = cls.category || "—";
+  const incidentType = cls.incident_type || "—";
+  const system = cls.affected_system || inc.affected_system || "—";
+  const rawService = cls.service || "—";
+  // Split dot-path: "Service.Offering" → separate rows
+  const svcParts = rawService.split(".");
+  const serviceName = esc(svcParts[0]);
+  const offeringName = svcParts.length > 1 ? esc(svcParts.slice(1).join(".")) : null;
+  const signature = esc(cls.signature || "—");
+  const canonical = esc(cls.canonical_statement || "—");
+  const reasoning = esc(cls.reasoning || "—");
+  const desc = esc(inc.description || "—");
+  const assignee = esc(inc.assignee || "—");
+  const assignGroup = esc(inc.assign_group || "—");
+  const priority = esc(inc.priority || "—");
+  const status = inc.status || "—";
+  const createdAt = inc.created_at ? new Date(inc.created_at).toLocaleString() : "—";
+  const firstSeen = inc.first_seen ? new Date(inc.first_seen).toLocaleString() : "—";
+  const lastSeen = inc.last_seen ? new Date(inc.last_seen).toLocaleString() : "—";
+  const docCount = (inc.documents || []).length;
+  const tickets = (inc.source_ticket_ids || []).join(", ") || "—";
+  const occCount = inc.occurrence_count || 1;
+  const notes = esc(inc.notes || "—");
+  const contentHash = inc.content_hash ? `<code>${esc(inc.content_hash)}</code>` : "—";
+  const extText = esc(inc.extracted_text || "");
+  const discHist = (inc.discussion_history || []).length;
+  const escInfo = esc(inc.escalation_info || "—");
+  const compCode = esc(inc.completion_code || "—");
+
+  const offeringRow = offeringName
+    ? `<div class="dd-row"><span class="dd-label">Offering (Sub-Service)</span><span class="dd-value"><code>${offeringName}</code></span></div>`
+    : "";
+
+  const extRow = extText
+    ? `<div class="dd-row"><span class="dd-label">Extracted Text (OCR)</span><span class="dd-value" style="font-size:11px;max-height:80px;overflow-y:auto">${extText}</span></div>`
+    : "";
+
+  return `<div class="t-detail-inner">
+    <div class="dd-row"><span class="dd-label">Failure Mode</span><span class="dd-value"><span class="fm-badge">${esc(fm)}</span> ${sevBadge}</span></div>
+    <div class="dd-row"><span class="dd-label">Confidence</span><span class="dd-value"><span class="${confClass}">${esc(conf)}</span></span></div>
+    <div class="dd-row"><span class="dd-label">System</span><span class="dd-value">${esc(system)}</span></div>
+    <div class="dd-row"><span class="dd-label">Service</span><span class="dd-value">${serviceName}</span></div>
+    ${offeringRow}
+    <div class="dd-row"><span class="dd-label">Incident Type</span><span class="dd-value">${esc(incidentType)}</span></div>
+    <div class="dd-row"><span class="dd-label">Urgency</span><span class="dd-value">${esc(urgency)}</span></div>
+    <div class="dd-row"><span class="dd-label">Category (Root Cause)</span><span class="dd-value">${esc(category)}</span></div>
+    <div class="dd-row"><span class="dd-label">Signature</span><span class="dd-value">${signature}</span></div>
+    <div class="dd-row"><span class="dd-label">Canonical Statement</span><span class="dd-value">${canonical}</span></div>
+    <div class="dd-row"><span class="dd-label">Reasoning</span><span class="dd-value" style="font-size:11.5px;color:var(--text-dim)">${reasoning}</span></div>
+    <div class="dd-row"><span class="dd-label">Description</span><span class="dd-value" style="max-height:100px;overflow-y:auto;font-size:11.5px">${desc}</span></div>
+    ${extRow}
+    <div class="dd-row" style="border-top:1px solid var(--border);margin-top:4px;padding-top:6px"><span class="dd-label">Assignee</span><span class="dd-value">${assignee} <span style="color:var(--text-faint)">(${assignGroup})</span></span></div>
+    <div class="dd-row"><span class="dd-label">Priority</span><span class="dd-value">${esc(priority)}</span></div>
+    <div class="dd-row"><span class="dd-label">Status</span><span class="dd-value">${esc(status)}</span></div>
+    <div class="dd-row"><span class="dd-label">Occurrence Count</span><span class="dd-value">${occCount}×${occCount > 1 ? ` <span style="color:var(--text-faint);font-size:11px">(seen by dedupe gate)</span>` : ""}</span></div>
+    <div class="dd-row"><span class="dd-label">Created</span><span class="dd-value">${createdAt}</span></div>
+    <div class="dd-row"><span class="dd-label">First Seen</span><span class="dd-value">${firstSeen}</span></div>
+    <div class="dd-row"><span class="dd-label">Last Seen</span><span class="dd-value">${lastSeen}</span></div>
+    <div class="dd-row"><span class="dd-label">Content Hash</span><span class="dd-value">${contentHash}</span></div>
+    <div class="dd-row"><span class="dd-label">Source Ticket IDs</span><span class="dd-value"><code>${tickets}</code></span></div>
+    <div class="dd-row"><span class="dd-label">Documents</span><span class="dd-value">${docCount} file(s)</span></div>
+    <div class="dd-row"><span class="dd-label">Discussion History</span><span class="dd-value">${discHist} message(s)</span></div>
+    <div class="dd-row"><span class="dd-label">Escalation Info</span><span class="dd-value">${escInfo}</span></div>
+    <div class="dd-row"><span class="dd-label">Completion Code</span><span class="dd-value">${compCode}</span></div>
+    <div class="dd-row"><span class="dd-label">Notes</span><span class="dd-value">${notes}</span></div>
+  </div>`;
 }
 
 /* ── boot ── */
+restoreState();
+
 const classifyLink = $("classifyLink");
 if (classifyLink) classifyLink.href = CLASSIFY_URL;
 // Set the group filter dropdown label dynamically
@@ -511,6 +677,14 @@ setInterval(async () => {
 }, 30000);
 
 loadData().then(() => {
+  // Restore open clusters from saved state
+  try {
+    const savedOpen = JSON.parse(localStorage.getItem("dash_open_clusters") || "[]");
+    savedOpen.forEach((cid) => {
+      const el = document.getElementById(`cluster-${cid}`);
+      if (el && !el.classList.contains("open")) toggleCluster(el);
+    });
+  } catch {}
   // deep link: #cluster=G-102 opens that cluster and scrolls to it
   const m = location.hash.match(/cluster=([\w-]+)/);
   if (m) {

@@ -1,4 +1,5 @@
 services:
+  # ── PostgreSQL + pgvector ──────────────────────────────────────────
   postgres:
     image: pgvector/pgvector:pg17
     container_name: ai_pg
@@ -15,6 +16,82 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
+    restart: unless-stopped
+
+  # ── Local LLM runner (Ollama) ──────────────────────────────────────
+  # Only needed for local inference. When using OpenRouter or another
+  # remote API, ollama sits idle — low resource usage.
+  ollama:
+    image: ollama/ollama:latest
+    # runtime: nvidia   # uncomment for GPU
+    # environment:
+    #   - NVIDIA_VISIBLE_DEVICES=all
+    volumes:
+      - ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ── Classification API ─────────────────────────────────────────────
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - LLM_MODEL=${LLM_MODEL:-ollama/qwen2.5:7b}
+      - LLM_API_BASE=${LLM_API_BASE:-http://ollama:11434}
+      - LLM_API_KEY=${LLM_API_KEY:-}
+      - SIMILARITY_THRESHOLD=0.35
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_USER=aiuser
+      - DB_PASSWORD=aipass
+      - DB_NAME=ai_incidents
+      - USE_LLM_RERANKING=${USE_LLM_RERANKING:-1}
+    volumes:
+      - ./ai_classification:/app/ai_classification
+    depends_on:
+      postgres:
+        condition: service_healthy
+      # ollama dependency is NOT declared here because the entrypoint.sh
+      # handles the wait loop internally. When using a remote LLM
+      # (OpenRouter), ollama isn't needed at all.
+    restart: unless-stopped
+
+  # ── OCR Service (EasyOCR) ──────────────────────────────────────────
+  ocr:
+    build: ocr
+    ports:
+      - "8001:8001"
+    restart: unless-stopped
+
+  # ── Cloudflare Tunnel (public URL, no signup) ───────────────────────
+  # Exposes nginx (dashboard + API proxy) via trycloudflare.com.
+  # URL changes on restart — check logs for the trycloudflare.com link.
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    command: tunnel --url http://localhost:8082 --protocol http2
+    network_mode: host
+    restart: unless-stopped
+    depends_on:
+      - nginx
+
+  # ── Nginx — serves dashboard + proxies API ─────────────────────────
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "8082:8082"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./frontend/dashboard:/usr/share/nginx/html:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # network_mode: host # removed — use port mapping instead
+    restart: unless-stopped
 
 volumes:
   pgdata:
+  ollama_data:

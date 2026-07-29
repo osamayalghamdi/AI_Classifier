@@ -26,6 +26,14 @@ _log = logging.getLogger(__name__)
 
 VECTOR_DIM = 1024  # BAAI/bge-m3 output dim
 
+# Column names for the common incident SELECT (15 cols, 0-indexed).
+# Used by _row_to_incident to map DB rows → dicts.
+_INCIDENT_COLS: tuple[str, ...] = (
+    "id", "title", "description", "extracted_text", "classification_json",
+    "status", "created_at", "documents", "assign_group", "assignee", "priority",
+    "notes", "discussion_history", "escalation_info", "completion_code",
+)
+
 
 @dataclass
 class SimilarMatch:
@@ -264,7 +272,6 @@ class IncidentStore:
         conn = self._getconn()
         try:
             with conn.cursor() as cur:
-                import json as _json
                 cur.execute(
                     "INSERT INTO incidents "
                     "(id, title, description, extracted_text, embedding, classification_json, "
@@ -289,18 +296,18 @@ class IncidentStore:
                         embedding.tolist() if embedding is not None else None,
                         classification.model_dump_json(),
                         datetime.now(timezone.utc),
-                        _json.dumps(documents or []),
+                        json.dumps(documents or []),
                         assign_group,
                         assignee,
                         priority,
                         notes,
-                        _json.dumps(discussion_history or []),
+                        json.dumps(discussion_history or []),
                         escalation_info,
                         completion_code,
                         content_hash,
                         datetime.now(timezone.utc),
                         datetime.now(timezone.utc),
-                        _json.dumps(source_ticket_ids or []),
+                        json.dumps(source_ticket_ids or []),
                     ),
                 )
             conn.commit()
@@ -342,13 +349,12 @@ class IncidentStore:
                 )
                 row = cur.fetchone()
                 if row:
-                    import json as _json
                     return {
                         "id": row[0],
                         "occurrence_count": row[1],
                         "first_seen": row[2],
                         "last_seen": row[3],
-                        "source_ticket_ids": row[4] if isinstance(row[4], list) else (_json.loads(row[4]) if row[4] else []),
+                        "source_ticket_ids": row[4] if isinstance(row[4], list) else (json.loads(row[4]) if row[4] else []),
                         "classification_json": row[5],
                     }
                 return None
@@ -429,31 +435,15 @@ class IncidentStore:
                 cur.execute(
                     "SELECT id, title, description, extracted_text, classification_json, "
                     "status, created_at, documents, assign_group, assignee, priority, notes, "
-                    "discussion_history, escalation_info, completion_code "
+                    "discussion_history, escalation_info, completion_code, "
+                    "content_hash, occurrence_count, first_seen, last_seen, source_ticket_ids "
                     "FROM incidents WHERE id = %s",
                     (incident_id,),
                 )
                 row = cur.fetchone()
             if row is None:
                 return None
-            import json as _json
-            return {
-                "id": row[0],
-                "title": row[1],
-                "description": row[2],
-                "extracted_text": row[3],
-                "classification": row[4],
-                "status": row[5],
-                "created_at": row[6].isoformat() if row[6] else "",
-                "documents": row[7] if isinstance(row[7], list) else (_json.loads(row[7]) if row[7] else []),
-                "assign_group": row[8] or "",
-                "assignee": row[9] or "",
-                "priority": row[10] or "medium",
-                "notes": row[11],
-                "discussion_history": row[12] if isinstance(row[12], list) else (_json.loads(row[12]) if row[12] else []),
-                "escalation_info": row[13],
-                "completion_code": row[14],
-            }
+            return self._row_to_incident(row, extended=True)
         finally:
             self._putconn(conn)
 
@@ -463,40 +453,22 @@ class IncidentStore:
         conn = self._getconn()
         try:
             with conn.cursor() as cur:
-                import json as _json
                 cur.execute(
                     "SELECT id, title, description, extracted_text, classification_json, "
-                    "status, created_at, embedding::text, documents, assign_group, assignee, "
-                    "priority, notes, discussion_history, escalation_info, completion_code "
+                    "status, created_at, documents, assign_group, assignee, "
+                    "priority, notes, discussion_history, escalation_info, completion_code, "
+                    "embedding::text "
                     "FROM incidents WHERE status = 'active' "
                     "ORDER BY created_at DESC"
                 )
                 rows = cur.fetchall()
             result = []
             for r in rows:
+                emb_str = r[15]
                 emb = None
-                if r[7]:
-                    emb = np.array([float(x) for x in r[7].strip("[]").split(",")], dtype=np.float32)
-                result.append((
-                    {
-                        "id": r[0],
-                        "title": r[1],
-                        "description": r[2],
-                        "extracted_text": r[3],
-                        "classification": r[4],
-                        "status": r[5],
-                        "created_at": r[6].isoformat() if r[6] else "",
-                        "documents": r[8] if isinstance(r[8], list) else (_json.loads(r[8]) if r[8] else []),
-                        "assign_group": r[9] or "",
-                        "assignee": r[10] or "",
-                        "priority": r[11] or "medium",
-                        "notes": r[12],
-                        "discussion_history": r[13] if isinstance(r[13], list) else (_json.loads(r[13]) if r[13] else []),
-                        "escalation_info": r[14],
-                        "completion_code": r[15],
-                    },
-                    emb,
-                ))
+                if emb_str:
+                    emb = np.array([float(x) for x in emb_str.strip("[]").split(",")], dtype=np.float32)
+                result.append((self._row_to_incident(r, embedding_str=emb_str), emb))
             return result
         finally:
             self._putconn(conn)
@@ -507,7 +479,6 @@ class IncidentStore:
         conn = self._getconn()
         try:
             with conn.cursor() as cur:
-                import json as _json
                 cols = ("id, title, description, extracted_text, classification_json, "
                         "status, created_at, documents, assign_group, assignee, priority, "
                         "notes, discussion_history, escalation_info, completion_code")
@@ -521,26 +492,7 @@ class IncidentStore:
                         f"SELECT {cols} FROM incidents ORDER BY created_at DESC"
                     )
                 rows = cur.fetchall()
-            return [
-                {
-                    "id": r[0],
-                    "title": r[1],
-                    "description": r[2],
-                    "extracted_text": r[3],
-                    "classification": r[4],
-                    "status": r[5],
-                    "created_at": r[6].isoformat() if r[6] else "",
-                    "documents": r[7] if isinstance(r[7], list) else (_json.loads(r[7]) if r[7] else []),
-                    "assign_group": r[8] or "",
-                    "assignee": r[9] or "",
-                    "priority": r[10] or "medium",
-                    "notes": r[11],
-                    "discussion_history": r[12] if isinstance(r[12], list) else (_json.loads(r[12]) if r[12] else []),
-                    "escalation_info": r[13],
-                    "completion_code": r[14],
-                }
-                for r in rows
-            ]
+            return [self._row_to_incident(r) for r in rows]
         finally:
             self._putconn(conn)
 
@@ -562,6 +514,58 @@ class IncidentStore:
             self._putconn(conn)
 
     # ── Helpers ────────────────────────────────────────────────────
+
+    @staticmethod
+    def _row_to_incident(row, *, embedding_str: str | None = None,
+                         extended: bool = False) -> dict:
+        """Convert a DB row to an incident dict.
+
+        Handles three query shapes:
+          - Base (15 cols): list_incidents
+          - Extended (20 cols, extended=True): get_incident
+          - Embedding (16 cols, embedding_str set): list_incidents_with_embeddings
+
+        The 15 base columns are always at indices 0–14.
+        Extended fields are at 15–19.
+        Embedding text is passed separately (appended to SELECT as last col).
+        """
+        d = {
+            "id": row[0],
+            "title": row[1],
+            "description": row[2],
+            "extracted_text": row[3],
+            "classification": row[4],
+            "status": row[5],
+            "created_at": row[6].isoformat() if row[6] else "",
+            "documents": row[7] if isinstance(row[7], list) else (json.loads(row[7]) if row[7] else []),
+            "assign_group": row[8] or "",
+            "assignee": row[9] or "",
+            "priority": row[10] or "medium",
+            "notes": row[11],
+            "discussion_history": row[12] if isinstance(row[12], list) else (json.loads(row[12]) if row[12] else []),
+            "escalation_info": row[13],
+            "completion_code": row[14],
+        }
+        # Parse classification_json once → classification_dict
+        raw = row[4]
+        if isinstance(raw, str):
+            try:
+                d["classification_dict"] = json.loads(raw) if raw else {}
+            except (json.JSONDecodeError, TypeError):
+                d["classification_dict"] = {}
+        else:
+            d["classification_dict"] = raw or {}
+        if extended:
+            d.update({
+                "content_hash": row[15],
+                "occurrence_count": row[16] or 1,
+                "first_seen": row[17].isoformat() if row[17] else "",
+                "last_seen": row[18].isoformat() if row[18] else "",
+                "source_ticket_ids": row[19] if isinstance(row[19], list) else (json.loads(row[19]) if row[19] else []),
+            })
+        if embedding_str is not None:
+            d["_embedding_raw"] = embedding_str
+        return d
 
     @staticmethod
     def _parse_ts(ts: str) -> datetime:
