@@ -24,10 +24,10 @@ from collections import defaultdict
 
 import networkx as nx
 import numpy as np
-from litellm import completion
 
 from ..config import settings
 from .store import store
+from .llm import call_llm, strip_json_fences
 
 _log = logging.getLogger(__name__)
 
@@ -477,37 +477,25 @@ SEVERITY_NAMES = {4: "Critical", 3: "Major", 2: "Minor", 1: "Cosmetic"}
 
 # Parse severity from an incident's classification JSON
 def _extract_severity(inc: dict) -> str:
-    try:
-        data = json.loads(inc.get("classification", "{}"))
-        return data.get("severity", "Minor")
-    except (json.JSONDecodeError, TypeError):
-        return "Minor"
+    data = inc.get("classification_dict", {})
+    return data.get("severity", "Minor")
 
 
 # Parse full classification JSON (safe)
 def _parse_classification(inc: dict) -> dict:
-    try:
-        return json.loads(inc.get("classification", "{}"))
-    except (json.JSONDecodeError, TypeError):
-        return {}
+    return inc.get("classification_dict", {})
 
 
 # Extract a single field from an incident's classification JSON
 def _class_field(inc: dict, field: str) -> str:
-    try:
-        data = json.loads(inc.get("classification", "{}"))
-        return data.get(field, "")
-    except (json.JSONDecodeError, TypeError):
-        return ""
+    data = inc.get("classification_dict", {})
+    return data.get(field, "")
 
 
 # Parse canonical_statement from an incident's classification JSON, fall back to title
 def _extract_canonical_statement(inc: dict) -> str:
-    try:
-        data = json.loads(inc.get("classification", "{}"))
-        return data.get("canonical_statement") or inc.get("title", "")
-    except (json.JSONDecodeError, TypeError):
-        return inc.get("title", "")
+    data = inc.get("classification_dict", {})
+    return data.get("canonical_statement") or inc.get("title", "")
 
 
 # Return the highest severity across a list of incidents
@@ -596,30 +584,6 @@ Return format:
 
 
 # Call the LLM via LiteLLM, same provider plumbing as core/classifier.py
-def _call_llm(messages: list[dict]) -> str:
-    kwargs: dict = dict(
-        model=settings.llm_model,
-        temperature=0.1,
-        seed=42,
-        max_tokens=1500,
-        messages=messages,
-    )
-    if settings.llm_api_base:
-        kwargs["api_base"] = settings.llm_api_base
-    if settings.llm_api_key:
-        kwargs["api_key"] = settings.llm_api_key
-
-    # Qwen3 thinks by default — disable for structured JSON output
-    if "qwen3" in settings.llm_model.lower():
-        kwargs["extra_body"] = {"reasoning": {"enabled": False}}
-
-    resp = completion(**kwargs)
-    content = resp.choices[0].message.content
-    if not content or not content.strip():
-        raise ValueError("Empty LLM response")
-    return content
-
-
 def validate_group(incidents: list[dict]) -> dict | None:
     """Send a candidate group to the LLM for validation.
 
@@ -648,10 +612,10 @@ def validate_group(incidents: list[dict]) -> dict | None:
     user_msg = f"Here are {len(incidents)} tickets:\n{ticket_block}\n\nReturn JSON verdict."
 
     try:
-        content = _call_llm([
+        content = call_llm([
             {"role": "system", "content": VALIDATOR_PROMPT},
             {"role": "user", "content": user_msg},
-        ])
+        ], max_tokens=1500, temperature=0.1)
 
         # Parse JSON
         result = _parse_json(content)
@@ -698,15 +662,7 @@ def validate_group(incidents: list[dict]) -> dict | None:
 
 def _parse_json(raw: str) -> dict:
     """Extract JSON from LLM response, stripping markdown fences."""
-    text = raw.strip()
-    if text.startswith("```"):
-        if text.startswith("```json"):
-            text = text[7:]
-        else:
-            text = text[3:]
-        if text.endswith("```"):
-            text = text[:-3]
-    return json.loads(text.strip())
+    return json.loads(strip_json_fences(raw))
 
 
 # ── Coherence metric ─────────────────────────────────────────────────────

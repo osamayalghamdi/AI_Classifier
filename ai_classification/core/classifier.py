@@ -11,8 +11,6 @@ import re
 
 from datetime import datetime, timezone
 
-from litellm import completion
-
 from pydantic import TypeAdapter
 
 from ..config import settings
@@ -26,6 +24,7 @@ from ..domain.taxonomy import (
     flatten_services,
 )
 from ..api.schemas import ClassifyResponse, ClassifyBatchResponse
+from .llm import call_llm, strip_json_fences
 from .store import store
 
 _log = logging.getLogger(__name__)
@@ -235,23 +234,9 @@ def _build_user_prompt(title: str, description: str) -> str:
 # ── JSON parsing ──────────────────────────────────────────────────────
 
 
-# Strip markdown code fences from LLM response
-def _extract_json_str(raw: str) -> str:
-    """Strip optional markdown code fences that some local models add."""
-    text = raw.strip()
-    if text.startswith("```"):
-        if text.startswith("```json"):
-            text = text[7:]
-        elif text.startswith("```"):
-            text = text[3:]
-        if text.endswith("```"):
-            text = text[:-3]
-    return text.strip()
-
-
 # Parse JSON and validate against ClassificationResult schema
 def _parse_and_validate(raw: str) -> ClassificationResult:
-    return ClassificationResult.model_validate(json.loads(_extract_json_str(raw)))
+    return ClassificationResult.model_validate(json.loads(strip_json_fences(raw)))
 
 
 # ── Cached prompt (built once at import time) ─────────────────────────
@@ -291,35 +276,6 @@ def _normalize_canonical(cs: str) -> str:
     return cs
 
 
-# Call the LLM via LiteLLM, handle errors and Qwen3 reasoning
-def _call_llm(messages: list[dict]) -> str:
-    kwargs: dict = dict(
-        model=settings.llm_model,
-        temperature=0.0,
-        seed=42,
-        max_tokens=600,
-        messages=messages,
-    )
-    if settings.llm_api_base:
-        kwargs["api_base"] = settings.llm_api_base
-
-    if settings.llm_api_key:
-        kwargs["api_key"] = settings.llm_api_key
-
-    # Qwen3 thinks by default — disable for structured JSON output
-    if "qwen3" in settings.llm_model.lower():
-        kwargs["extra_body"] = {"reasoning": {"enabled": False}}
-
-    try:
-        resp = completion(**kwargs)
-    except Exception as e:
-        raise ValueError(f"LLM API call failed: {e}") from e
-    content = resp.choices[0].message.content
-    if not content or not content.strip():
-        raise ValueError("LLM returned empty response")
-    return content
-
-
 # Build retry prompt with the last error for a second attempt
 def _build_retry_prompt(user_prompt: str, last_error: str) -> str:
     return (
@@ -340,10 +296,10 @@ def classify(title: str, description: str) -> ClassificationResult:
     user_prompt = _build_user_prompt(title, description)
 
     try:
-        result = _parse_and_validate(_call_llm([
+        result = _parse_and_validate(call_llm([
             {"role": "system", "content": _SYSTEM_PROMPT},
             {"role": "user", "content": user_prompt},
-        ]))
+        ], max_tokens=600, temperature=0.0))
         result.signature = _normalize_canonical(result.signature)
         _log.info("Classification succeeded — system=%s, severity=%s, confidence=%s",
                   result.affected_system, result.severity, result.confidence)
@@ -353,10 +309,10 @@ def classify(title: str, description: str) -> ClassificationResult:
         _log.warning("First classification attempt failed: %s", last_error)
 
     try:
-        result = _parse_and_validate(_call_llm([
+        result = _parse_and_validate(call_llm([
             {"role": "system", "content": _SYSTEM_PROMPT},
             {"role": "user", "content": _build_retry_prompt(user_prompt, last_error)},
-        ]))
+        ], max_tokens=600, temperature=0.0))
         result.signature = _normalize_canonical(result.signature)
         _log.info("Classification succeeded on retry — system=%s, severity=%s",
                   result.affected_system, result.severity)
@@ -429,7 +385,16 @@ def classify_and_store(
             matches = store.find_similar(embed_text, extracted_text=extracted_text, classification=result)
             return ClassifyResponse(
                 incident_id=store.generate_id(), incident_title=title, classification=result,
-                similar_open_incidents=matches,
+                similar_open_incidents=[
+                    SimilarOpenIncident(
+                        id=m.id,
+                        title=m.title,
+                        similarity=round(m.similarity, 4),
+                        classification=m.classification,
+                        canonical_statement=m.classification.canonical_statement,
+                    )
+                    for m in matches
+                ],
             )
 
     result = classify(title, description)
