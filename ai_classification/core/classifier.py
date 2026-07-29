@@ -1,10 +1,9 @@
 """LLM-based incident classifier — provider-agnostic via LiteLLM.
 
 Plus classify-and-persist orchestration: calls the classifier, checks for
-duplicates via the store, saves the result.
+duplicates by ticket ID (not text), saves the result.
 """
 
-import hashlib
 import json
 import logging
 import re
@@ -336,13 +335,13 @@ def classify(title: str, description: str) -> ClassificationResult:
     )
 
 
-# ── Content-hash dedupe gate ──────────────────────────────────────────────
-# Runs BEFORE classification. Exact duplicates increment occurrence_count
-# instead of creating a new incident. Digit blanking catches alerts that
-# differ only by percentage/threshold value (88.4% → #, 81.9% → #).
+# ── Content hash for analytics (not used for dedupe) ─────────────────────
+# Stored on each incident for analytical queries but never gates creation.
+# Digit blanking catches alerts that differ only by percentage/threshold value.
 
 
 def content_hash(title: str, description: str) -> str:
+    import hashlib
     text = f"{title} {description}".lower()
     text = re.sub(r"<[^>]+>", " ", text)       # strip HTML
     text = re.sub(r"\d+(\.\d+)?", "#", text)    # digits → placeholder
@@ -366,25 +365,30 @@ def classify_and_store(
     discussion_history: list[dict] | None = None,
     escalation_info: str | None = None,
     completion_code: str | None = None,
+    source_ticket_id: str = "",
 ) -> ClassifyResponse:
-    _log.info("Classifying incident — title='%s', group='%s', priority=%s", title[:60], assign_group, priority)
+    _log.info("Classifying incident — title='%s', group='%s', priority=%s, ticket_id='%s'",
+              title[:60], assign_group, priority, source_ticket_id)
 
-    # ── Content-hash dedupe (DB-backed, digit-blanked) ──
-    h = content_hash(title, description)
-    existing = store.get_incident_by_hash(h)
-    if existing and existing.get("last_seen"):
-        age = (datetime.now(timezone.utc) - existing["last_seen"]).total_seconds()
-        if age < 86400 * 7:  # 7-day window
-            _log.info("Content hash match → incrementing occurrence_count for %s (seen %d×)",
-                      existing["id"][:8], existing["occurrence_count"])
-            store.increment_occurrence(existing["id"])
-            # Return the existing classification
-            cls_data = json.loads(existing["classification_json"]) if isinstance(existing["classification_json"], str) else existing["classification_json"]
+    # ── ID-based dedupe ──
+    # The ONLY deduplication mechanism: exact match on the originating
+    # ticket ID. If this ticket ID was already processed, return the
+    # existing incident unchanged (idempotent). Text similarity is
+    # surfaced as informational only (similar_open_incidents) and must
+    # never suppress creation of a new incident.
+    if source_ticket_id:
+        existing = store.get_incident_by_source_ticket_id(source_ticket_id)
+        if existing is not None:
+            _log.info("Ticket ID '%s' already processed → idempotent return of incident %s",
+                      source_ticket_id, existing["id"][:8])
+            cls_data = existing.get("classification_dict", {})
             result = TypeAdapter(ClassificationResult).validate_python(cls_data)
             embed_text = result.canonical_statement or f"{title} {description}"
             matches = store.find_similar(embed_text, extracted_text=extracted_text, classification=result)
             return ClassifyResponse(
-                incident_id=store.generate_id(), incident_title=title, classification=result,
+                incident_id=existing["id"],
+                incident_title=title,
+                classification=result,
                 similar_open_incidents=[
                     SimilarOpenIncident(
                         id=m.id,
@@ -400,8 +404,6 @@ def classify_and_store(
     result = classify(title, description)
 
     # ── Severity→priority mapping ──
-    # Severity wins unconditionally — the classifier's assessment overrides
-    # whatever priority the caller submitted.
     _priority_map = {"Critical": "critical", "Major": "high", "Minor": "medium", "Cosmetic": "low"}
     sev = result.severity.value if hasattr(result.severity, "value") else result.severity
     priority = _priority_map.get(sev, "medium")
@@ -411,14 +413,16 @@ def classify_and_store(
     matches = store.find_similar(embed_text, extracted_text=extracted_text, classification=result)
 
     incident_id = store.generate_id()
+    h = content_hash(title, description)
+
     _log.info("Classify result — id=%s, system=%s, service=%s, severity=%s, confidence=%s, dupes=%d",
               incident_id, result.affected_system, result.service,
               result.severity, result.confidence, len(matches))
     _log.debug("Canonical: %s", result.canonical_statement[:120] if result.canonical_statement else "(none)")
     if matches:
-        _log.info("Duplicates found — %d similar open incidents", len(matches))
+        _log.info("Similar open incidents found — %d related incidents", len(matches))
         for m in matches:
-            _log.debug("  Dupe: %s — %.1f%% — %s", m.id, m.similarity * 100, m.title[:60])
+            _log.debug("  Similar: %s — %.1f%% — %s", m.id, m.similarity * 100, m.title[:60])
     store.save_incident(
         incident_id, title, description, result, extracted_text,
         documents=documents or [],
@@ -430,7 +434,7 @@ def classify_and_store(
         escalation_info=escalation_info,
         completion_code=completion_code,
         content_hash=h,
-        source_ticket_ids=[incident_id],
+        source_ticket_ids=[source_ticket_id] if source_ticket_id else [incident_id],
     )
 
     _log.info("Incident %s classified — system=%s, severity=%s, confidence=%s, dupes=%d",
