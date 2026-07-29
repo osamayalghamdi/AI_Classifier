@@ -33,7 +33,9 @@ _log = logging.getLogger(__name__)
 
 # ── Tunable parameters ──────────────────────────────────────────────────
 
-SIMILARITY_THRESHOLD = 0.50        # intra-bucket threshold (lowered from 0.55 — shorter signatures need wider net)
+SIMILARITY_THRESHOLD = 0.50        # intra-bucket clustering threshold (deliberately wider than
+                                   # store.settings.similarity_threshold (0.80) — the grouping pass
+                                   # casts a wider net for recall; fine-grained dedupe is stricter).
 MIN_CLUSTER_SIZE = 3               # smallest group to return
 MIN_DENSITY = 0.4                  # chain filter
 MAX_VALIDATOR_GROUP_SIZE = 15      # candidates larger than this are not validated
@@ -175,10 +177,7 @@ def _build_clusters(period: str = "daily") -> dict:
     # This bypasses embedding similarity entirely for classified tickets.
     fm_buckets: dict[str, list[int]] = defaultdict(list)
     for i, inc in enumerate(incidents):
-        try:
-            c = json.loads(inc.get("classification", "{}")) if isinstance(inc.get("classification"), str) else inc.get("classification", {})
-        except (json.JSONDecodeError, TypeError):
-            c = {}
+        c = inc.get("classification_dict", {})
         fm = c.get("failure_mode", "FM-000") or "FM-000"
         fm_buckets[fm].append(i)
 
@@ -301,22 +300,23 @@ def _cluster_pass(
         if density < MIN_DENSITY:
             continue
 
-        members = sorted(comp)
-        cluster_incidents = [incidents[m] for m in members]
+        member_pairs = [(m, incidents[m]) for m in sorted(comp)]  # (index, dict)
 
         # A candidate this large is almost certainly several real incidents
         # merged by the wide threshold, not one big incident. Don't send it
         # to the validator (risks truncating mid-response) and don't trust
         # it unvalidated either — drop it rather than fail open.
-        if len(cluster_incidents) > MAX_VALIDATOR_GROUP_SIZE:
+        if len(member_pairs) > MAX_VALIDATOR_GROUP_SIZE:
             _log.warning(
                 "Candidate group too large to validate (%d > %d), dropping",
-                len(cluster_incidents), MAX_VALIDATOR_GROUP_SIZE,
+                len(member_pairs), MAX_VALIDATOR_GROUP_SIZE,
             )
             continue
 
         _log.info("Cluster candidate — %d incidents, density=%.2f, sending to LLM validator",
-                  len(cluster_incidents), density)
+                  len(member_pairs), density)
+
+        cluster_incidents = [inc for _, inc in member_pairs]
 
         # ── Verdict cache check ──
         cached_verdict = _get_cached_verdict(cluster_incidents)
@@ -345,48 +345,43 @@ def _cluster_pass(
             # don't surface a false pattern. Members stay unused (available to
             # a later, looser pass).
             _log.info("Cluster rejected by validator as incoherent (%d incidents)",
-                      len(cluster_incidents))
+                      len(member_pairs))
             continue
         elif verdict is not None:
             keep_ids = set(verdict.get("keep", []))
             remove_reasons = {r["id"]: r["reason"] for r in verdict.get("remove", [])}
             pruned = [
                 {"id": inc["id"], "title": inc["title"], "reason": remove_reasons[inc["id"]]}
-                for inc in cluster_incidents if inc["id"] in remove_reasons
+                for _, inc in member_pairs if inc["id"] in remove_reasons
             ]
-            cluster_incidents = [inc for inc in cluster_incidents if inc["id"] in keep_ids]
-            # Rebuild members to match the pruned cluster
-            cluster_ids = {inc["id"] for inc in cluster_incidents}
-            members = sorted([m for m in members if incidents[m]["id"] in cluster_ids])
+            # Single filter pass — keeps (index, dict) in sync
+            member_pairs = [(m, inc) for m, inc in member_pairs if inc["id"] in keep_ids]
             verdict_name = verdict.get("name") or None
             verdict_description = verdict.get("description") or None
 
-        if len(cluster_incidents) < MIN_CLUSTER_SIZE:
+        if len(member_pairs) < MIN_CLUSTER_SIZE:
             continue
 
         # ── Emission floor ── reject clusters whose internal coherence is too low
         # Short signatures produce tighter vectors; a mean below 0.70 means the
         # group is held together by shared filler (e.g. all starting "Error")
         # rather than real semantic similarity.
-        member_indices_set = set(
-            i for i, inc in enumerate(incidents)
-            if inc["id"] in {c["id"] for c in cluster_incidents}
-        )
+        member_indices = sorted(m for m, _ in member_pairs)
         intra_pairs = 0
         intra_sum = 0.0
-        mlist = sorted(member_indices_set)
-        for a in range(len(mlist)):
-            for b in range(a + 1, len(mlist)):
-                val = sim[mlist[a], mlist[b]]
+        for a in range(len(member_indices)):
+            for b in range(a + 1, len(member_indices)):
+                val = sim[member_indices[a], member_indices[b]]
                 if val >= SIMILARITY_THRESHOLD:
                     intra_pairs += 1
                     intra_sum += val
         mean_intra = intra_sum / intra_pairs if intra_pairs > 0 else 0.0
         if mean_intra < 0.70:
             _log.info("Cluster rejected by emission floor (mean_intra=%.3f < 0.70) — %d tickets",
-                      mean_intra, len(cluster_incidents))
+                      mean_intra, len(member_pairs))
             continue
 
+        cluster_incidents = [inc for _, inc in member_pairs]
         worst_severity = _worst_severity(cluster_incidents)
         top_system, top_service = _dominant_labels(cluster_incidents)
         cid = "".join(inc["id"][:4] for inc in cluster_incidents[:3])
@@ -408,7 +403,7 @@ def _cluster_pass(
                     "severity": _extract_severity(inc),
                     "canonical_statement": _extract_canonical_statement(inc),
                     "similarity_pct": round(
-                        float(np.mean([sim[m, o] for o in members if o != m])) * 100, 1
+                        float(np.mean([sim[m, o] for o in member_indices if o != m])) * 100, 1
                     ),
                     "description": inc["description"][:500],
                     "classification": _parse_classification(inc),
@@ -423,7 +418,7 @@ def _cluster_pass(
                     "status": inc.get("status", "active"),
                     "created_at": inc.get("created_at", ""),
                 }
-                for inc, m in zip(cluster_incidents, members)
+                for m, inc in member_pairs
             ],
         })
         _log.info("Cluster accepted — name='%s', system=%s, count=%d, pruned=%d",
@@ -432,7 +427,7 @@ def _cluster_pass(
             for p in pruned:
                 _log.debug("  Pruned: %s — %s", p["id"], p.get("reason", "no reason"))
 
-        used.update(members)
+        used.update(m for m, _ in member_pairs)
 
     return clusters, used
 
