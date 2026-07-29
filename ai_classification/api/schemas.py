@@ -17,6 +17,7 @@ class ClassifyRequest(BaseModel):
     discussion_history: list[dict] = Field(default_factory=list)
     escalation_info: str | None = None
     completion_code: str | None = None
+    source_ticket_id: str = Field(default="", description="Originating ticket ID. Used for exact-match deduplication.")
 
 
 class ClassifyResponse(BaseModel):

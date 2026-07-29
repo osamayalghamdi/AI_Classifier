@@ -364,6 +364,29 @@ class IncidentStore:
         finally:
             self._putconn(conn)
 
+    def get_incident_by_source_ticket_id(self, ticket_id: str) -> dict | None:
+        """Look up an incident by its originating ticket ID (source_ticket_ids JSONB)."""
+        if not self._ready or self._pool is None:
+            return None
+        conn = self._getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id, title, description, extracted_text, classification_json, "
+                    "status, created_at, documents, assign_group, assignee, priority, notes, "
+                    "discussion_history, escalation_info, completion_code, "
+                    "content_hash, occurrence_count, first_seen, last_seen, source_ticket_ids "
+                    "FROM incidents WHERE source_ticket_ids @> %s::jsonb "
+                    "ORDER BY created_at DESC LIMIT 1",
+                    (json.dumps([ticket_id]),),
+                )
+                row = cur.fetchone()
+            if row is None:
+                return None
+            return self._row_to_incident(row, extended=True)
+        finally:
+            self._putconn(conn)
+
     def resolve_incident(self, incident_id: str) -> bool:
         if not self._ready or self._pool is None:
             return False
