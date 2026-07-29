@@ -7,8 +7,8 @@
    Default view for Employee = tickets in their assign_group.
 ──────────────────────────────────────────────────────────────────────── */
 
-const API = localStorage.getItem("dash_api") || "";
-const CLASSIFY_URL = localStorage.getItem("classify_url") || "http://localhost:8082";
+const API = localStorage.getItem("dash_api") || "http://localhost:8000";
+const CLASSIFY_URL = localStorage.getItem("classify_url") || "http://localhost:8000";
 let ROLE = localStorage.getItem("dash_role") || "employee";
 let FLAT = localStorage.getItem("dash_flat") === "true";
 let EMP_GROUP_FILTER = localStorage.getItem("dash_group_filter") || "my";
