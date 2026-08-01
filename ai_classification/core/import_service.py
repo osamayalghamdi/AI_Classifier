@@ -5,17 +5,30 @@ from pathlib import Path
 
 from fastapi import HTTPException
 from ..api.schemas import ClassifyBatchResponse
+from ..config import settings
 from .classifier import classify_batch
 
 _log = logging.getLogger(__name__)
+
+
+def _first_non_empty(inc: dict, fields: list[str]) -> str:
+    """Return the first field whose value is a non-empty string after .strip();
+
+    Empty string when none of the configured keys yields one.
+    """
+    for key in fields:
+        value = inc.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
 
 
 def import_incidents_from_body(incidents: list[dict]) -> ClassifyBatchResponse:
     """Classify incidents from a body payload with DisplayLabel/Description fields."""
     mapped = []
     for inc in incidents:
-        title = (inc.get("DisplayLabel", "") or inc.get("display_label", "") or "").strip()
-        desc = (inc.get("Description", "") or inc.get("description", "") or "").strip()
+        title = _first_non_empty(inc, settings.ticket_title_fields)
+        desc = _first_non_empty(inc, settings.ticket_description_fields)
         if not title:
             continue
         mapped.append({"title": title, "description": desc})
@@ -49,20 +62,10 @@ def import_incidents_from_file(filename: str) -> ClassifyBatchResponse:
 
     incidents = []
     for inc in data:
-        title = (
-            inc.get("title", "") or inc.get("Title", "") or
-            inc.get("DisplayLabel", "") or inc.get("display_label", "")
-        )
-        if isinstance(title, str):
-            title = title.strip()
+        title = _first_non_empty(inc, settings.ticket_title_fields)
         if not title:
             continue
-        desc = (
-            inc.get("description", "") or inc.get("Description", "") or
-            inc.get("desc", "") or ""
-        )
-        if isinstance(desc, str):
-            desc = desc.strip()
+        desc = _first_non_empty(inc, settings.ticket_description_fields)
         incidents.append({"title": title, "description": desc})
 
     if not incidents:
