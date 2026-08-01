@@ -1,11 +1,31 @@
-"""Tests for classifier — Pydantic-as-gatekeeper contract."""
+"""Tests for classifier — Pydantic-as-gatekeeper contract.
+
+These tests exercise the LEGACY single-shot classifier path and therefore pin
+CASCADE_CLASSIFICATION off (see the autouse fixture below). The cascade path
+has its own suite in test_cascade.py. With the flag off, classify() must be
+byte-identical to the pre-cascade behavior — this file is the regression
+guard for that contract.
+"""
 
 import json
+import types
+
 import pytest
 
+from ai_classification.config import settings
 from ai_classification.core.classifier import classify
 from ai_classification.core.llm import strip_json_fences
 from ai_classification.domain.models import ClassificationResult
+
+
+@pytest.fixture(autouse=True)
+def _legacy_single_shot(monkeypatch):
+    """Pin the legacy single-shot path: cascade must not change these results."""
+    import ai_classification.core.classifier as mod
+
+    d = {k: v for k, v in settings.__dict__.items() if not k.startswith("_")}
+    d["cascade_classification"] = False
+    monkeypatch.setattr(mod, "settings", types.SimpleNamespace(**d))
 
 
 # ── strip_json_fences (minimal fence-stripper) ────────────────────────
