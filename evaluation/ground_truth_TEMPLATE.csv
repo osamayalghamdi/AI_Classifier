@@ -1,0 +1,14 @@
+# Ground-truth evaluation CSV — AI Incident Classifier
+# Columns (exact order): ticket_id,title,description,user_selected_system,user_selected_service,true_system,true_service
+#   - user_selected_* : what the ticketing-system user picked at intake
+#   - true_*          : HUMAN-VERIFIED ground truth — fill by hand. The harness
+#                       never invents labels; rows with empty truth are skipped.
+#   - ticket_id       : row label only (not a system identifier)
+#   - service values  : may be 'Service' or dot-path 'Service.Offering'
+#                       (e.g. 'Registration - Nusuk Masar Haj' or
+#                       'System/Application - Nusuk Masar Haj.Slowness')
+# Lines starting with '#' are ignored.
+ticket_id,title,description,user_selected_system,user_selected_service,true_system,true_service
+T-1001,Rawdah permit booking fails on date selection,Error 10036015 when saving pilgrims for Rawdah permit for 30 May.,Nusuk Masar Haj,pilgrim groups and issue permit - Nusuk Masar Haj.Issue Permits,,
+T-1002,Commercial registration number rejected,Registration form rejects CR number starting with 2 and demands one starting with 4.,Nusuk Masar Haj,Registration - Nusuk Masar Haj,,
+T-1003,Company evaluation icon missing,Evaluation icon disappeared from supervisor accounts after the Thursday rollout.,Nusuk Masar Haj,System/Application - Nusuk Masar Haj,,
