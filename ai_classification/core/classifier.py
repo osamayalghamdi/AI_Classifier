@@ -648,6 +648,41 @@ def classify_and_store(
                 ],
             )
 
+    # ── Content-hash dedupe gate ──
+    # Runs when there's NO source_ticket_id (real ticketing feed: title +
+    # description only). Exact duplicates (digit-blanked) within the recency
+    # window increment occurrence_count and return the existing incident
+    # instead of creating a new one. ID-based dedupe above takes priority
+    # when a stable ticket ID IS present.
+    h = content_hash(title, description)
+    existing = store.get_incident_by_hash(h)
+    if existing and existing.get("last_seen"):
+        age = (datetime.now(timezone.utc) - existing["last_seen"]).total_seconds()
+        if age < 86400 * 7:  # 7-day window
+            _log.info("Content hash match → incrementing occurrence_count for %s (seen %d×)",
+                      existing["id"][:8], existing["occurrence_count"])
+            store.increment_occurrence(existing["id"])
+            # Return the existing classification
+            cls_data = json.loads(existing["classification_json"]) if isinstance(existing["classification_json"], str) else existing["classification_json"]
+            result = TypeAdapter(ClassificationResult).validate_python(cls_data)
+            embed_text = result.canonical_statement or f"{title} {description}"
+            matches = store.find_similar(embed_text, extracted_text=extracted_text, classification=result)
+            return ClassifyResponse(
+                incident_id=existing["id"],
+                incident_title=title,
+                classification=result,
+                similar_open_incidents=[
+                    SimilarOpenIncident(
+                        id=m.id,
+                        title=m.title,
+                        similarity=round(m.similarity, 4),
+                        classification=m.classification,
+                        canonical_statement=m.classification.canonical_statement,
+                    )
+                    for m in matches
+                ],
+            )
+
     result = classify(title, description)
 
     # ── Severity→priority mapping ──
@@ -660,7 +695,6 @@ def classify_and_store(
     matches = store.find_similar(embed_text, extracted_text=extracted_text, classification=result)
 
     incident_id = store.generate_id()
-    h = content_hash(title, description)
 
     _log.info("Classify result — id=%s, system=%s, service=%s, severity=%s, confidence=%s, dupes=%d",
               incident_id, result.affected_system, result.service,
