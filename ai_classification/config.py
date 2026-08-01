@@ -1,11 +1,16 @@
 """Application configuration loaded from environment."""
 
 from os import getenv
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from dotenv import load_dotenv
 
 
 load_dotenv()
+
+
+def _split_csv(value: str) -> list[str]:
+    """Split a comma-separated env value; strip whitespace; drop empties."""
+    return [part.strip() for part in value.split(",") if part.strip()]
 
 
 @dataclass(frozen=True)
@@ -22,6 +27,28 @@ class Settings:
 
     embedding_model_name: str = getenv("EMBEDDING_MODEL", "BAAI/bge-m3")
     similarity_threshold: float = float(getenv("SIMILARITY_THRESHOLD", "0.80"))
+
+    # ── Classifier ───────────────────────────────────────────────────────
+    # CASCADE_CLASSIFICATION=true (default) → coarse-to-fine system→service→
+    # offering cascade; false → legacy single-shot prompt (byte-identical to
+    # the pre-cascade behavior).
+    cascade_classification: bool = getenv(
+        "CASCADE_CLASSIFICATION", "true"
+    ).lower() in ("1", "true", "yes", "on")
+
+    # ── Intake field mapping ─────────────────────────────────────────────
+    # Payload keys tried in order when mapping a raw ticket to title /
+    # description. Comma-separated env vars; whitespace stripped; empties dropped.
+    ticket_title_fields: list[str] = field(
+        default_factory=lambda: _split_csv(
+            getenv("TICKET_TITLE_FIELDS", "DisplayLabel,display_label,title,Title")
+        )
+    )
+    ticket_description_fields: list[str] = field(
+        default_factory=lambda: _split_csv(
+            getenv("TICKET_DESCRIPTION_FIELDS", "Description,description,desc")
+        )
+    )
 
     # ── Ticketing system sync ────────────────────────────────────────────
     ticketing_api_url: str = getenv("TICKETING_API_URL", "http://localhost:8002")
