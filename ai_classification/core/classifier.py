@@ -20,6 +20,7 @@ from ..domain.taxonomy import (
     Severity,
     Urgency,
     Category,
+    SERVICES_BY_SYSTEM,
     flatten_services,
 )
 from ..api.schemas import ClassifyResponse, ClassifyBatchResponse
@@ -292,6 +293,12 @@ def _build_retry_prompt(user_prompt: str, last_error: str) -> str:
 def classify(title: str, description: str) -> ClassificationResult:
     """Classify an incident. Always returns — falls back to low-confidence on LLM failure."""
     _log.info("Classifying — title='%s'", title[:60])
+
+    # CASCADE_CLASSIFICATION gate (default TRUE). The Settings field is added
+    # by the config commit; getattr keeps this worktree importable until then.
+    if getattr(settings, "cascade_classification", True):
+        return _classify_cascade(title, description)
+
     user_prompt = _build_user_prompt(title, description)
 
     try:
@@ -333,6 +340,246 @@ def classify(title: str, description: str) -> ClassificationResult:
         reasoning=f"Classification failed after 2 attempts. Last error: {last_error}",
         canonical_statement=f"Incident reported: {title[:120]}",
     )
+
+
+# ── Cascade classifier (CASCADE_CLASSIFICATION=true) ──────────────────
+# Coarse-to-fine system → service → offering. Each stage's LLM call returns
+# the FULL ClassificationResult JSON with only that stage's field constrained
+# to a short option list; the final result is the last executed stage's parsed
+# result. Never raises — every stage failure degrades to the generic fallback
+# (same shape as the legacy fallback). The flat 193-option prompt is never
+# rebuilt in this path.
+
+
+def _cascade_fallback(title: str, err: str) -> ClassificationResult:
+    """Generic low-confidence fallback — same shape as the legacy fallback."""
+    return ClassificationResult(
+        affected_system=AffectedSystem.other,
+        service="General / Unspecified",
+        incident_type=IncidentType.degradation,
+        severity=Severity.minor,
+        urgency=Urgency.low,
+        category=Category.other,
+        confidence="low",
+        signature="Generic/Unknown",
+        reasoning=f"Classification failed after 2 attempts. Last error: {err}",
+        canonical_statement=f"Incident reported: {title[:120]}",
+    )
+
+
+# Stage 1 deterministic resolution — no LLM call.
+_SYSTEM_EXACT_NAMES = {
+    AffectedSystem.nusuk_masar_haj: "nusuk masar haj",
+    AffectedSystem.nusuk_masar_umrah: "nusuk masar umrah",
+    AffectedSystem.old_sm: "oldsm",
+}
+
+_SYSTEM_ALIASES = {
+    AffectedSystem.nusuk_masar_haj: ("haj", "hajj"),
+    AffectedSystem.nusuk_masar_umrah: ("umrah",),
+    AffectedSystem.old_sm: ("old sm", "old system"),
+}
+
+
+def _resolve_system_deterministic(title: str, description: str) -> AffectedSystem | None:
+    """Resolve the affected system from ticket text without any LLM call.
+
+    Priority: (i) an exact system-name substring wins immediately; (ii) else
+    count systems with at least one alias hit — exactly one hit is
+    deterministic, zero or multiple hits is ambiguous (None → LLM stage 1).
+    """
+    text = f"{title}\n{description}".lower()
+    for system, name in _SYSTEM_EXACT_NAMES.items():
+        if name in text:
+            return system
+    hits = [
+        system
+        for system, aliases in _SYSTEM_ALIASES.items()
+        if any(alias in text for alias in aliases)
+    ]
+    if len(hits) == 1:
+        return hits[0]
+    return None
+
+
+# Stage prompt scaffolding — shared JSON contract + one short option list per stage.
+_CASCADE_JSON_SCHEMA = """\
+## JSON Schema
+{
+  "affected_system": "string — one from the list below",
+  "service": "string — see the stage rules below",
+  "incident_type": "Spike | Degradation | Unavailability | Outage — the symptom/what happened",
+  "severity": "Critical | Major | Minor | Cosmetic",
+  "urgency": "Immediate | High | Medium | Low",
+  "category": "Software | Performance | Configuration | Security | Network Issue | Integration | Data Issue | Human Error | External / Third Party | Other — the root cause type/why it happened",
+  "confidence": "low | medium | high",
+  "reasoning": "short explanation of your choices",
+  "canonical_statement": "detailed description for human reading. Include component, symptoms, scope.",
+  "signature": "short problem signature for grouping: 5-8 words, start with the failing action (not actor), ban error message as the head phrase. No names, IDs, dates, or numbers.",
+  "failure_mode": "FM-XXX — pick the best matching code from the failure-mode taxonomy below. Use FM-000 if none fits."
+}
+
+## Key Rules
+- incident_type = WHAT HAPPENED (symptom). category = WHY IT HAPPENED (root cause type). Never mix them.
+- Respond with JSON only — no markdown, no commentary.
+- If unsure, pick the closest match and set confidence "low".
+
+## Failure-Mode Taxonomy
+Pick the best-matching failure_mode code. If no code fits, use FM-000."""
+
+
+def _build_stage_system_prompt(stage_rules: str, allowed_values: str) -> str:
+    """Build a stage system prompt: full JSON contract + the stage's short option list."""
+    return (
+        "You classify IT support tickets into structured categories. Return ONLY valid JSON.\n\n"
+        f"{_CASCADE_JSON_SCHEMA}\n"
+        f"{_build_fm_taxonomy_block()}\n\n"
+        f"## Stage Rules\n{stage_rules}\n\n"
+        f"## Allowed Values\n{allowed_values}"
+    )
+
+
+def _stage_system_llm(title: str, description: str) -> ClassificationResult | None:
+    """Stage 1 LLM fallback — option list is ONLY the 4 AffectedSystem values.
+
+    Returns None on any LLM/parse failure (the caller returns the generic
+    fallback — never the flat 193-option list).
+    """
+    systems = "\n".join(f"  - {s.value}" for s in AffectedSystem)
+    rules = (
+        "This is stage 1 of 3 (system resolution).\n"
+        "- affected_system MUST be exactly one of the 4 allowed values below — pick the system the ticket is about.\n"
+        "- service: give your best provisional guess as a single string (it will be refined in stage 2); "
+        "prefer a value that belongs to the chosen system.\n"
+        "- Fill ALL other JSON fields with your best judgment."
+    )
+    allowed = f"affected_system (pick one — ONLY these {len(list(AffectedSystem))}):\n{systems}"
+    _log.debug("Cascade stage 1/3 (system) — %d options", len(list(AffectedSystem)))
+    try:
+        return _parse_and_validate(call_llm([
+            {"role": "system", "content": _build_stage_system_prompt(rules, allowed)},
+            {"role": "user", "content": _build_user_prompt(title, description)},
+        ], max_tokens=100, temperature=0.0))
+    except Exception as e:
+        _log.warning("Cascade stage 1/3 (system) failed: %s", e)
+        return None
+
+
+def _stage_service_llm(title: str, description: str, system: AffectedSystem) -> ClassificationResult | None:
+    """Stage 2 — option list is ONLY the resolved system's services.
+
+    Returns None on any LLM/parse failure.
+    """
+    services = SERVICES_BY_SYSTEM.get(system, {})
+    options = "\n".join(f"  - {s}" for s in services)
+    rules = (
+        f"affected_system is FIXED to '{system.value}' (resolved in stage 1) — do not change it.\n"
+        "- service MUST be exactly one of the service options listed below (ONLY this system's services).\n"
+        "- Fill ALL other JSON fields with your best judgment."
+    )
+    allowed = (
+        f"affected_system: {system.value} (fixed)\n"
+        f"service (pick one — ONLY these {len(services)}):\n{options}"
+    )
+    _log.debug("Cascade stage 2/3 (service) — system='%s', %d options", system.value, len(services))
+    try:
+        return _parse_and_validate(call_llm([
+            {"role": "system", "content": _build_stage_system_prompt(rules, allowed)},
+            {"role": "user", "content": _build_user_prompt(title, description)},
+        ], max_tokens=600, temperature=0.0))
+    except Exception as e:
+        _log.warning("Cascade stage 2/3 (service) failed for system '%s': %s", system.value, e)
+        return None
+
+
+def _stage_offering_llm(title: str, description: str, result: ClassificationResult) -> ClassificationResult | None:
+    """Stage 3 — option list is ONLY the chosen service's offering list.
+
+    Empty or single-offering lists SKIP the LLM call (deterministic):
+    empty → bare service name, single → "Service.Offering".
+    Returns None only on LLM/parse failure. May raise only if the service
+    cannot be resolved to an offering list (the caller degrades to fallback).
+    """
+    system = result.affected_system
+    services = SERVICES_BY_SYSTEM.get(system, {})
+    # Defensive: stage 2 may have returned a dot-path, or the validator may
+    # have auto-corrected the system — resolve the bare service key.
+    key = result.service if result.service in services else next(
+        (k for k in services if result.service.startswith(k + ".")), None
+    )
+    if key is None:
+        raise ValueError(
+            f"service '{result.service}' not found in system '{system.value}'"
+        )
+    offerings = services[key]
+
+    if not offerings:
+        _log.debug("Cascade stage 3/3 (offering) skipped — 0 offerings for '%s'", key)
+        result.service = key
+        return result
+    if len(offerings) == 1:
+        _log.debug("Cascade stage 3/3 (offering) skipped — 1 offering for '%s'", key)
+        result.service = f"{key}.{offerings[0]}"
+        return result
+
+    options = "\n".join(f"  - {o}" for o in offerings)
+    rules = (
+        f"affected_system is FIXED to '{system.value}'. service is FIXED to '{key}'.\n"
+        "- Pick the offering that best matches the ticket.\n"
+        f"- Set the service field to '{key}.<offering>' — the service name, a dot, then the chosen offering."
+    )
+    allowed = (
+        f"service (pick one — ONLY these {len(offerings)} offerings, respond as '{key}.<offering>'):\n{options}"
+    )
+    _log.debug("Cascade stage 3/3 (offering) — service='%s', %d options", key, len(offerings))
+    try:
+        return _parse_and_validate(call_llm([
+            {"role": "system", "content": _build_stage_system_prompt(rules, allowed)},
+            {"role": "user", "content": _build_user_prompt(title, description)},
+        ], max_tokens=600, temperature=0.0))
+    except Exception as e:
+        _log.warning("Cascade stage 3/3 (offering) failed for service '%s': %s", key, e)
+        return None
+
+
+def _classify_cascade(title: str, description: str) -> ClassificationResult:
+    """Coarse-to-fine cascade: system → service → offering. Never raises.
+
+    LLM calls per ticket (guaranteed by construction):
+      - deterministic system hit: 2 (service + offering), 1 when the offering
+        stage is skipped (empty/single offering list);
+      - LLM system fallback:      3 (system + service + offering), 2 when the
+        offering stage is skipped.
+    """
+    try:
+        # ── Stage 1 — system resolution (deterministic first, 0 LLM calls) ──
+        system = _resolve_system_deterministic(title, description)
+        if system is not None:
+            _log.debug("Cascade stage 1/3 (system) deterministic — %s", system.value)
+        else:
+            result = _stage_system_llm(title, description)
+            if result is None:
+                _log.warning("Cascade stage 1/3 (system) failed — generic fallback")
+                return _cascade_fallback(title, "system resolution failed")
+            system = result.affected_system
+
+        # ── Stage 2 — service selection (1 LLM call, short list) ──
+        result = _stage_service_llm(title, description, system)
+        if result is None:
+            return _cascade_fallback(title, "service selection failed")
+
+        # ── Stage 3 — offering selection (1 LLM call unless skipped) ──
+        result = _stage_offering_llm(title, description, result)
+        if result is None:
+            return _cascade_fallback(title, "offering selection failed")
+
+        result.signature = _normalize_canonical(result.signature)
+        _log.info("Cascade classification succeeded — system=%s, service=%s, severity=%s, confidence=%s",
+                  result.affected_system, result.service, result.severity, result.confidence)
+        return result
+    except Exception as e:
+        _log.error("Cascade classification failed: %s", e)
+        return _cascade_fallback(title, str(e))
 
 
 # ── Content hash for analytics (not used for dedupe) ─────────────────────

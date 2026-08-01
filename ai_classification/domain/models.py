@@ -39,7 +39,16 @@ class ClassificationResult(BaseModel):
 
     @model_validator(mode="after")
     def _check_service_in_system(self) -> "ClassificationResult":
-        """Auto-correct affected_system if the service belongs to a different one."""
+        """Auto-correct affected_system if the service belongs to a different one.
+
+        Bare-service values keep the legacy flat-list behavior byte-identical.
+        Dot-path values ("Service.Offering", cascade mode) validate only the
+        SERVICE part — the longest prefix that is a key of SERVICES_BY_SYSTEM.
+        Service names may themselves contain dots (e.g.
+        "7.1 Invoicing and Billing - Nusuk Masar Haj") while offerings never
+        do, so the value is never split on the first dot; the offering part is
+        not validated.
+        """
         allowed = _FLAT_SERVICES.get(self.affected_system, [])
         if self.service in allowed:
             return self
@@ -47,6 +56,19 @@ class ClassificationResult(BaseModel):
             if self.service in services:
                 self.affected_system = system
                 return self
+        # Dot-path form (cascade): "Service.Offering"
+        if "." in self.service:
+            own = SERVICES_BY_SYSTEM.get(self.affected_system, {})
+            for key in own:
+                if self.service == key or self.service.startswith(key + "."):
+                    return self
+            for system, services in SERVICES_BY_SYSTEM.items():
+                if system == self.affected_system:
+                    continue
+                for key in services:
+                    if self.service == key or self.service.startswith(key + "."):
+                        self.affected_system = system
+                        return self
         raise ValueError(
             f"service '{self.service}' is not valid for "
             f"affected_system '{self.affected_system}'. Allowed: {allowed}"
