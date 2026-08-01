@@ -235,6 +235,80 @@ class TestCascadeFallback:
         assert isinstance(result, ClassificationResult)
 
 
+# ── Stage-1 lenient parse (provisional service) ────────────────────────
+
+
+class TestStage1LenientParse:
+    """Stage 1 must validate affected_system ONLY.
+
+    The LLM's stage-1 'service' is provisional (refined in stage 2) and is
+    usually NOT in the taxonomy. Before the fix, the strict validator
+    rejected the whole stage -> every LLM-resolved ticket fell back to
+    Other/General/low.
+    """
+
+    PROVISIONAL = _full_result_json(
+        affected_system="Nusuk Masar Haj",
+        service="Rawdah Permit Issuance",  # not in the taxonomy
+        confidence="high",
+    )
+
+    def test_parse_stage_system_coerces_provisional_service(self):
+        result = classifier_mod._parse_stage_system(self.PROVISIONAL)
+        assert result is not None
+        assert result.affected_system == AffectedSystem.nusuk_masar_haj
+        # coerced to a REAL taxonomy service of that system, never the fallback
+        assert result.service in SERVICES_BY_SYSTEM[AffectedSystem.nusuk_masar_haj]
+        assert result.confidence == "high"  # LLM fields kept
+
+    def test_parse_stage_system_invalid_system_returns_none(self):
+        bad = _full_result_json(affected_system="Bogus System")
+        assert classifier_mod._parse_stage_system(bad) is None
+
+    def test_parse_stage_system_missing_system_returns_none(self):
+        bad = _full_result_json(affected_system=None)
+        assert classifier_mod._parse_stage_system(bad) is None
+
+    def test_parse_stage_system_recovers_from_truncated_json(self):
+        # max_tokens can cut the full JSON mid-string; affected_system is the
+        # first schema field so it stays intact — recover it via regex.
+        truncated = (
+            '{\n  "affected_system": "Nusuk Masar Haj",\n'
+            '  "service": "Rawdah Permit Issuance",\n'
+            '  "confidence": "high",\n'
+            '  "reasoning": "The ticket descri'  # cut mid-string
+        )
+        result = classifier_mod._parse_stage_system(truncated)
+        assert result is not None
+        assert result.affected_system == AffectedSystem.nusuk_masar_haj
+        assert result.confidence == "high"
+        assert result.service in SERVICES_BY_SYSTEM[AffectedSystem.nusuk_masar_haj]
+
+    def test_strict_parse_still_rejects_provisional_service(self):
+        # Leniency is stage-1 ONLY — the strict validator must keep rejecting.
+        with pytest.raises(ValueError):
+            classifier_mod._parse_and_validate(self.PROVISIONAL)
+
+    def test_classify_survives_stage1_with_provisional_service(self, fake_completion):
+        outputs, calls = fake_completion
+        # ambiguous ticket -> stage 1 LLM call returns a provisional service
+        outputs.append(self.PROVISIONAL)
+        outputs.append(_full_result_json(service="Registration - Nusuk Masar Haj"))
+        outputs.append(_full_result_json(
+            service="Registration - Nusuk Masar Haj.Create Registration Request (SPC)"
+        ))
+        result = classifier_mod.classify(
+            "Hajj and umrah permit booking error",
+            "User cannot book a permit on either the hajj or umrah portal",
+        )
+        assert len(calls) == 3  # all three stages ran — stage 1 did NOT fail
+        assert result.affected_system == AffectedSystem.nusuk_masar_haj
+        assert result.confidence == "high"  # not the low-confidence fallback
+        assert result.service == (
+            "Registration - Nusuk Masar Haj.Create Registration Request (SPC)"
+        )
+
+
 # ── Dot-path validator ─────────────────────────────────────────────────
 
 

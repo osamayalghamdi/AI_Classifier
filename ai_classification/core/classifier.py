@@ -239,6 +239,88 @@ def _parse_and_validate(raw: str) -> ClassificationResult:
     return ClassificationResult.model_validate(json.loads(strip_json_fences(raw)))
 
 
+def _parse_stage_system(raw: str) -> ClassificationResult | None:
+    """Lenient stage-1 parse — validate ONLY affected_system.
+
+    Stage 1 asks the LLM for a PROVISIONAL service guess ("refined in
+    stage 2") which is usually NOT a taxonomy value. The strict
+    _parse_and_validate would reject the whole stage via
+    ClassificationResult._check_service_in_system (ValueError), so nearly
+    every LLM-resolved ticket fell back to Other/General/low. Here the
+    provisional service is coerced to a valid value for the chosen system
+    (first service, or "General / Unspecified") and all other LLM fields are
+    kept. Returns None only when affected_system is missing/invalid or
+    pydantic still rejects (bad enum etc.). Stages 2/3 and the single-shot
+    path keep the strict validator — this leniency is stage-1 ONLY.
+
+    Truncation safety: the full stage-1 JSON occasionally exceeds max_tokens
+    and is cut mid-string (json.loads: "Unterminated string"). affected_system
+    is the first schema field, so it is always intact — extract it with a
+    regex fallback rather than failing the stage.
+    """
+    try:
+        data = json.loads(strip_json_fences(raw))
+        if not isinstance(data, dict):
+            return None
+        try:
+            system = AffectedSystem(data.get("affected_system"))
+        except (ValueError, TypeError):
+            return None
+
+        services = SERVICES_BY_SYSTEM.get(system, {})
+        service = data.get("service") or ""
+        if service not in services and not any(
+            service.startswith(k + ".") for k in services
+        ):
+            service = next(iter(services), "General / Unspecified")
+
+        data["affected_system"] = system.value
+        data["service"] = service
+        return ClassificationResult.model_validate(data)
+    except (json.JSONDecodeError, ValueError) as e:
+        # Truncated JSON (or otherwise unparseable) — recover the system.
+        _log.warning(
+            "Cascade stage 1/3 (system) JSON incomplete (%s) — recovering affected_system from partial response",
+            e,
+        )
+        return _stage_system_from_partial(raw)
+    except Exception as e:
+        _log.warning("Cascade stage 1/3 (system) lenient parse failed: %s", e)
+        return None
+
+
+def _stage_system_from_partial(raw: str) -> ClassificationResult | None:
+    """Recover affected_system from a truncated stage-1 response.
+
+    Only the system (and optionally confidence) are needed from stage 1 —
+    stage 2 replaces every other field. Never raises; returns None if the
+    system cannot be determined.
+    """
+    try:
+        m = re.search(r'"affected_system"\s*:\s*"([^"]+)"', raw)
+        if not m:
+            return None
+        system = AffectedSystem(m.group(1))
+        service = next(iter(SERVICES_BY_SYSTEM.get(system, {})), "General / Unspecified")
+        cm = re.search(r'"confidence"\s*:\s*"([^"]+)"', raw)
+        confidence = cm.group(1) if cm and cm.group(1) in ("low", "medium", "high") else "low"
+        return ClassificationResult(
+            affected_system=system,
+            service=service,
+            incident_type=IncidentType.degradation,
+            severity=Severity.minor,
+            urgency=Urgency.low,
+            category=Category.other,
+            confidence=confidence,
+            signature="Generic/Unknown",
+            reasoning="Stage-1 response truncated; affected_system recovered from partial JSON.",
+            canonical_statement=f"Incident affecting {system.value}; details recovered from partial classification.",
+        )
+    except Exception as e:
+        _log.warning("Cascade stage 1/3 (system) partial recovery failed: %s", e)
+        return None
+
+
 # ── Cached prompt (built once at import time) ─────────────────────────
 
 _SYSTEM_PROMPT = _build_system_prompt()
@@ -456,13 +538,17 @@ def _stage_system_llm(title: str, description: str) -> ClassificationResult | No
     allowed = f"affected_system (pick one — ONLY these {len(list(AffectedSystem))}):\n{systems}"
     _log.debug("Cascade stage 1/3 (system) — %d options", len(list(AffectedSystem)))
     try:
-        return _parse_and_validate(call_llm([
+        # max_tokens=600 (not 100): the stage-1 response is the FULL
+        # ClassificationResult JSON; 100 tokens truncated it mid-string, so
+        # json.loads failed with "Unterminated string" on most tickets.
+        raw = call_llm([
             {"role": "system", "content": _build_stage_system_prompt(rules, allowed)},
             {"role": "user", "content": _build_user_prompt(title, description)},
-        ], max_tokens=100, temperature=0.0))
+        ], max_tokens=600, temperature=0.0)
     except Exception as e:
-        _log.warning("Cascade stage 1/3 (system) failed: %s", e)
+        _log.warning("Cascade stage 1/3 (system) LLM call failed: %s", e)
         return None
+    return _parse_stage_system(raw)
 
 
 def _stage_service_llm(title: str, description: str, system: AffectedSystem) -> ClassificationResult | None:
