@@ -7,11 +7,15 @@
    Default view for Employee = tickets in their assign_group.
 ──────────────────────────────────────────────────────────────────────── */
 
-const API = localStorage.getItem("dash_api") || "http://localhost:8000";
-const CLASSIFY_URL = localStorage.getItem("classify_url") || "http://localhost:8000";
+// API base derives from the host that served this page — works for
+// localhost AND Tailscale/LAN access (100.x.x.x / 192.168.x.x) without
+// hardcoding. Override via localStorage "dash_api" / "classify_url".
+const API_HOST = location.hostname || "localhost";
+const API = localStorage.getItem("dash_api") || `http://${API_HOST}:8000`;
+const CLASSIFY_URL = localStorage.getItem("classify_url") || `http://${API_HOST}:8000`;
 let ROLE = localStorage.getItem("dash_role") || "employee";
 let FLAT = localStorage.getItem("dash_flat") === "true";
-let EMP_GROUP_FILTER = localStorage.getItem("dash_group_filter") || "my";
+let EMP_GROUP_FILTER = localStorage.getItem("dash_group_filter") || "all";
 let EMP_SEV_FILTER = localStorage.getItem("dash_sev_filter") || "";
 let LEAD_TEAM_FILTER = localStorage.getItem("dash_lead_team") || "";
 
