@@ -1,4 +1,5 @@
-"""Background sync thread — polls the external ticketing system for status updates."""
+"""Background sync thread — polls the external ticketing system for status updates.
+Pipeline position: 60_sync — external ticketing poller."""
 
 import json
 import logging

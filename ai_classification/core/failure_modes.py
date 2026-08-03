@@ -1,4 +1,5 @@
-"""Failure mode taxonomy — auto-mined from 199 Nusuk incidents."""
+"""Failure mode taxonomy — auto-mined from 199 Nusuk incidents.
+Pipeline position: 25_catalog — failure-mode taxonomy embedded in prompts."""
 # Format: FM-XXX: (name, affected_system, service, worst_severity, includes_keywords, excludes_keywords)
 FAILURE_MODES: dict[str, tuple[str, str, str, str, str, str]] = {
     'FM-001': ('Database server CPU exceeds threshold', 'Other', 'General / Unspecified', 'Major', 
