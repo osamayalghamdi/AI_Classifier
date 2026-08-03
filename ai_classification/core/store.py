@@ -419,37 +419,6 @@ class IncidentStore:
         finally:
             self._putconn(conn)
 
-    # ── Sync from external ticketing system ───────────────────────
-
-    def upsert_from_external(self, incident_id: str, title: str, description: str,
-                             status: str, created_at: str) -> bool:
-        if not self._ready or self._pool is None:
-            return False
-        local_status = "active" if status in ("open", "in_progress", "third_party") else "resolved"
-        text = f"{title} {description}"
-        embedding = self._embed(text)
-        conn = self._getconn()
-        try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "INSERT INTO incidents "
-                    "(id, title, description, extracted_text, embedding, classification_json, status, created_at) "
-                    "VALUES (%s, %s, %s, '', %s::vector, '{}', %s, %s) "
-                    "ON CONFLICT (id) DO UPDATE SET "
-                    "  title=EXCLUDED.title, description=EXCLUDED.description, "
-                    "  status=EXCLUDED.status",
-                    (
-                        incident_id, title, description,
-                        embedding.tolist() if embedding is not None else None,
-                        local_status, self._parse_ts(created_at),
-                    ),
-                )
-            conn.commit()
-            _log.info("Upserted external incident %s — status=%s", incident_id, status)
-            return True
-        finally:
-            self._putconn(conn)
-
     # ── Read ─────────────────────────────────────────────────────
 
     def get_incident(self, incident_id: str) -> dict | None:
@@ -592,13 +561,6 @@ class IncidentStore:
         if embedding_str is not None:
             d["_embedding_raw"] = embedding_str
         return d
-
-    @staticmethod
-    def _parse_ts(ts: str) -> datetime:
-        try:
-            return datetime.fromisoformat(ts)
-        except (ValueError, TypeError):
-            return datetime.now(timezone.utc)
 
 
 # ── Module-level singleton + app lifecycle ──────────────────────────────
