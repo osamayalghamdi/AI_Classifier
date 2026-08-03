@@ -27,14 +27,21 @@ class ProposalDecisionRequest(BaseModel):
     decision: str = Field(pattern="^(approve|reject|merge)$")
     target_sub_offering_id: str = ""
     note: str = ""
+    # W3: approve with a new_offering_name mints a NEW OFFERING (first
+    # sub-offering under that offering id) instead of the proposal's pool
+    # offering id — the OFFERING-000 path (proposal.offering_id == "OFFERING-000").
+    new_offering_name: str = ""
 
 
-def _mint_sub_offering(proposal: dict) -> dict:
-    """Approve: mint ACTIVE sub_offering + exemplars from cluster tickets."""
+def _mint_sub_offering(proposal: dict, offering_id: str | None = None) -> dict:
+    """Approve: mint ACTIVE sub_offering + exemplars from cluster tickets.
+
+    offering_id defaults to the proposal's pool offering; pass an explicit
+    offering id to mint under a NEW offering (OFFERING-000 decisions)."""
     incident_ids = proposal["member_ids"]
     incidents = {i["id"]: i for i in store.list_incidents()}
     sub = store.create_sub_offering(
-        offering_id=proposal["offering_id"],
+        offering_id=offering_id or proposal["offering_id"],
         name=proposal.get("proposed_label") or "sub-offering",
         created_from_cluster_id=proposal["id"],
         status="active",
@@ -80,7 +87,8 @@ def decide(proposal_id: str, req: ProposalDecisionRequest):
                             detail=f"Proposal already decided: {prop['status']}")
 
     if req.decision == "approve":
-        sub = _mint_sub_offering(prop)
+        # W3: approve + new_offering_name -> mint under a NEW offering
+        sub = _mint_sub_offering(prop, offering_id=req.new_offering_name or None)
         store.decide_proposal(proposal_id, "approve", target_sub_offering_id=sub["id"],
                               note=req.note)
     elif req.decision == "reject":
