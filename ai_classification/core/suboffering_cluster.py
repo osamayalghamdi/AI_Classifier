@@ -16,7 +16,7 @@ from collections import Counter
 import numpy as np
 
 from ai_classification.core.store import store
-from ai_classification.core.suboffering import embed_pure, offering_of
+from ai_classification.core.suboffering import embed_pure, offering_of, OFFERING_000
 from ai_classification.core.verifier import Verifier
 
 _log = logging.getLogger(__name__)
@@ -29,6 +29,7 @@ MIN_CLUSTER_SIZE = 3
 PURITY_MIN_SIM = 0.45
 PURITY_MAX_FM = 6
 DRIFT_CHUNK = 25
+OFFERING000_MAX_MEMBERS = 10  # W3 guard: cross-domain pool proposals cap
 
 
 class UnionFind:
@@ -145,13 +146,20 @@ def compute_member_flags(fm_codes: list[str]) -> dict:
             for mid, fm in enumerate(fm_codes)}
 
 
-def run_pool(offering_id: str, incidents: list[dict], verifier: Verifier | None = None) -> dict:
-    """Cluster ONE offering pool. Returns the run report (never mints sub-offerings)."""
+def run_pool(offering_id: str, incidents: list[dict], verifier: Verifier | None = None,
+             max_proposal_members: int | None = None) -> dict:
+    """Cluster ONE offering pool. Returns the run report (never mints sub-offerings).
+
+    max_proposal_members: W3 guard for cross-domain pools (OFFERING-000) — any
+    candidate cluster larger than this is auto-flagged NEEDS_REVIEW regardless of
+    cohesion. None = W2 behavior (no cap).
+    """
     t0 = time.perf_counter()
     verifier = verifier or Verifier()
     n = len(incidents)
-    assert all(offering_of(i.get("classification_dict", {}).get("service", "")) == offering_id
-               for i in incidents), "cross-offering incident in pool — impossible by construction"
+    assert offering_id == OFFERING_000 or all(
+        offering_of(i.get("classification_dict", {}).get("service", "")) == offering_id
+        for i in incidents), "cross-offering incident in pool — impossible by construction"
 
     embs = [embed_pure(i.get("title", ""), i.get("description", "")) for i in incidents]
     assert all(e is not None for e in embs), "embedding model unavailable"
@@ -235,11 +243,15 @@ def run_pool(offering_id: str, incidents: list[dict], verifier: Verifier | None 
                         for k, i in enumerate(c)}
         n_flagged = sum(1 for f in member_flags.values() if f["needs_review"])
         cohesion = float(np.mean([sim[a, b] for a in c for b in c if b > a]))
+        oversized = max_proposal_members is not None and len(c) > max_proposal_members
         # proposal excluded when >=1/3 of members flagged OR cluster floor trips
+        # OR the cross-domain member cap trips (auto-NEEDS_REVIEW, regardless of
+        # cohesion — W3 guard for OFFERING-000 contamination risk).
         excluded = (n_flagged >= max(1, len(c) // 3)
-                    or cohesion < PURITY_MIN_SIM or len(set(fm_codes)) > PURITY_MAX_FM)
+                    or cohesion < PURITY_MIN_SIM or len(set(fm_codes)) > PURITY_MAX_FM
+                    or oversized)
         flags = {"mean_sim": round(cohesion, 4), "n_fm_codes": len(set(fm_codes)),
-                 "needs_review": excluded, "members": member_flags}
+                 "needs_review": excluded, "oversized": oversized, "members": member_flags}
         block = {"members": c, "flags": flags,
                  "reasons": {f"{incidents[i]['id'][:6]}~{incidents[j]['id'][:6]}": r
                              for (i, j, _s, r) in yes_edges
