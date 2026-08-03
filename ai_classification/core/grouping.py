@@ -14,7 +14,8 @@ sent to an LLM validator that confirms coherence, prunes outliers, and assigns
 a human-readable name. Any candidate group larger than MAX_VALIDATOR_GROUP_SIZE
 is dropped outright — a graph component that big is almost certainly a false
 merge of several real incidents.
-"""
+
+Pipeline position: 30_cluster — FM exact-match + embedding clustering."""
 
 import hashlib
 import json
@@ -571,6 +572,54 @@ Return format:
   "name": "Short group name (max 8 words)",
   "description": "One-line description of what this incident is."
 }"""
+# ── Coherence metric ─────────────────────────────────────────────────────
+# Computes intra-cluster similarity and flags outliers. Used post-grouping
+# to audit cluster quality and identify prunable tickets.
+
+
+def cluster_coherence(
+    incident_dicts: list[dict], sim_matrix: np.ndarray,
+    indices: list[int],
+) -> dict:
+    """Return {mean, min, health} for a cluster, and prunable ticket IDs."""
+    if len(indices) < 2:
+        return {"mean": None, "min": None, "health": "insufficient"}
+    pairs = []
+    for a in range(len(indices)):
+        for b in range(a + 1, len(indices)):
+            pairs.append(float(sim_matrix[indices[a], indices[b]]))
+    mean_sim = float(np.mean(pairs)) if pairs else 0.0
+    min_sim = float(np.min(pairs)) if pairs else 0.0
+
+    # Centroid-based outlier detection
+    vecs = np.array([sim_matrix[idx] for idx in indices])  # use sim row as proxy
+    centroid = vecs.mean(axis=0)
+    centroid_norm = np.linalg.norm(centroid)
+    if centroid_norm > 0:
+        centroid = centroid / centroid_norm
+    prunable = []
+    for i, idx in enumerate(indices):
+        dist = float(sim_matrix[idx] @ centroid)
+        if dist < 0.60:
+            prunable.append({
+                "idx": idx,
+                "coherence": round(dist, 3),
+            })
+
+    if mean_sim >= 0.75:
+        health = "healthy"
+    elif mean_sim >= 0.60:
+        health = "review"
+    else:
+        health = "unhealthy"
+
+    return {
+        "mean": round(mean_sim, 3),
+        "min": round(min_sim, 3),
+        "health": health,
+        "prunable": prunable,
+    }
+
 
 
 # Call the LLM via LiteLLM, same provider plumbing as core/classifier.py
@@ -654,51 +703,3 @@ def _parse_json(raw: str) -> dict:
     """Extract JSON from LLM response, stripping markdown fences."""
     return json.loads(strip_json_fences(raw))
 
-
-# ── Coherence metric ─────────────────────────────────────────────────────
-# Computes intra-cluster similarity and flags outliers. Used post-grouping
-# to audit cluster quality and identify prunable tickets.
-
-
-def cluster_coherence(
-    incident_dicts: list[dict], sim_matrix: np.ndarray,
-    indices: list[int],
-) -> dict:
-    """Return {mean, min, health} for a cluster, and prunable ticket IDs."""
-    if len(indices) < 2:
-        return {"mean": None, "min": None, "health": "insufficient"}
-    pairs = []
-    for a in range(len(indices)):
-        for b in range(a + 1, len(indices)):
-            pairs.append(float(sim_matrix[indices[a], indices[b]]))
-    mean_sim = float(np.mean(pairs)) if pairs else 0.0
-    min_sim = float(np.min(pairs)) if pairs else 0.0
-
-    # Centroid-based outlier detection
-    vecs = np.array([sim_matrix[idx] for idx in indices])  # use sim row as proxy
-    centroid = vecs.mean(axis=0)
-    centroid_norm = np.linalg.norm(centroid)
-    if centroid_norm > 0:
-        centroid = centroid / centroid_norm
-    prunable = []
-    for i, idx in enumerate(indices):
-        dist = float(sim_matrix[idx] @ centroid)
-        if dist < 0.60:
-            prunable.append({
-                "idx": idx,
-                "coherence": round(dist, 3),
-            })
-
-    if mean_sim >= 0.75:
-        health = "healthy"
-    elif mean_sim >= 0.60:
-        health = "review"
-    else:
-        health = "unhealthy"
-
-    return {
-        "mean": round(mean_sim, 3),
-        "min": round(min_sim, 3),
-        "health": health,
-        "prunable": prunable,
-    }
