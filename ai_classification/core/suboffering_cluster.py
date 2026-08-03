@@ -11,6 +11,7 @@ disjoint, candidates are generated inside one pool only.
 import json
 import logging
 import time
+from collections import Counter
 
 import numpy as np
 
@@ -131,6 +132,19 @@ def label_proposals(verifier, incidents, proposals):
         return {}
 
 
+def compute_member_flags(fm_codes: list[str]) -> dict:
+    """Member-level purity rule: member FM not in the cluster's top-2 FM codes ->
+    member NEEDS_REVIEW. Deterministic: count DESC, code ASC. When the 2nd and 3rd
+    counts tie, both tied codes are treated as minority (conservative — catches a
+    lone wrong member whose FM happens to tie the 2nd place, e.g. the cad886 class)."""
+    fm_counts = Counter(fm_codes)
+    codes_sorted = sorted(fm_counts, key=lambda k: (-fm_counts[k], k))
+    third = fm_counts[codes_sorted[2]] if len(codes_sorted) > 2 else 0
+    top2_codes = {k for k in codes_sorted if fm_counts[k] > third}
+    return {mid: {"needs_review": fm not in top2_codes, "failure_mode": fm}
+            for mid, fm in enumerate(fm_codes)}
+
+
 def run_pool(offering_id: str, incidents: list[dict], verifier: Verifier | None = None) -> dict:
     """Cluster ONE offering pool. Returns the run report (never mints sub-offerings)."""
     t0 = time.perf_counter()
@@ -214,10 +228,18 @@ def run_pool(offering_id: str, incidents: list[dict], verifier: Verifier | None 
     for c in post_drift:
         if len(c) < MIN_CLUSTER_SIZE:
             continue
-        fm_codes = {incidents[i].get("classification_dict", {}).get("failure_mode", "?") for i in c}
+        fm_codes = [incidents[i].get("classification_dict", {}).get("failure_mode", "?") for i in c]
+        flags_by_idx = compute_member_flags(fm_codes)
+        # map member index -> incident id
+        member_flags = {incidents[i]["id"]: flags_by_idx[k]
+                        for k, i in enumerate(c)}
+        n_flagged = sum(1 for f in member_flags.values() if f["needs_review"])
         cohesion = float(np.mean([sim[a, b] for a in c for b in c if b > a]))
-        flags = {"mean_sim": round(cohesion, 4), "n_fm_codes": len(fm_codes),
-                 "needs_review": cohesion < PURITY_MIN_SIM or len(fm_codes) > PURITY_MAX_FM}
+        # proposal excluded when >=1/3 of members flagged OR cluster floor trips
+        excluded = (n_flagged >= max(1, len(c) // 3)
+                    or cohesion < PURITY_MIN_SIM or len(set(fm_codes)) > PURITY_MAX_FM)
+        flags = {"mean_sim": round(cohesion, 4), "n_fm_codes": len(set(fm_codes)),
+                 "needs_review": excluded, "members": member_flags}
         block = {"members": c, "flags": flags,
                  "reasons": {f"{incidents[i]['id'][:6]}~{incidents[j]['id'][:6]}": r
                              for (i, j, _s, r) in yes_edges
