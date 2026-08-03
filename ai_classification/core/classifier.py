@@ -2,7 +2,8 @@
 
 Plus classify-and-persist orchestration: calls the classifier, checks for
 duplicates by ticket ID (not text), saves the result.
-"""
+
+Pipeline position: 20_classify — classification + persistence orchestration."""
 
 import json
 import logging
@@ -231,6 +232,19 @@ def _build_user_prompt(title: str, description: str) -> str:
     return json.dumps({"title": title, "description": description}, ensure_ascii=False)
 
 
+
+
+def _build_stage_system_prompt(stage_rules: str, allowed_values: str) -> str:
+    """Build a stage system prompt: full JSON contract + the stage's short option list."""
+    return (
+        "You classify IT support tickets into structured categories. Return ONLY valid JSON.\n\n"
+        f"{_CASCADE_JSON_SCHEMA}\n"
+        f"{_build_fm_taxonomy_block()}\n\n"
+        f"## Stage Rules\n{stage_rules}\n\n"
+        f"## Allowed Values\n{allowed_values}"
+    )
+
+
 # ── JSON parsing ──────────────────────────────────────────────────────
 
 
@@ -289,6 +303,9 @@ def _parse_stage_system(raw: str) -> ClassificationResult | None:
         return None
 
 
+# ── Cached prompt (built once at import time) ─────────────────────────
+
+_SYSTEM_PROMPT = _build_system_prompt()
 def _stage_system_from_partial(raw: str) -> ClassificationResult | None:
     """Recover affected_system from a truncated stage-1 response.
 
@@ -321,9 +338,6 @@ def _stage_system_from_partial(raw: str) -> ClassificationResult | None:
         return None
 
 
-# ── Cached prompt (built once at import time) ─────────────────────────
-
-_SYSTEM_PROMPT = _build_system_prompt()
 
 
 # ── Canonical statement post-processing ──────────────────────────────────
@@ -424,6 +438,18 @@ def classify(title: str, description: str) -> ClassificationResult:
     )
 
 
+# Stage 1 deterministic resolution — no LLM call.
+_SYSTEM_EXACT_NAMES = {
+    AffectedSystem.nusuk_masar_haj: "nusuk masar haj",
+    AffectedSystem.nusuk_masar_umrah: "nusuk masar umrah",
+    AffectedSystem.old_sm: "oldsm",
+}
+
+_SYSTEM_ALIASES = {
+    AffectedSystem.nusuk_masar_haj: ("haj", "hajj"),
+    AffectedSystem.nusuk_masar_umrah: ("umrah",),
+    AffectedSystem.old_sm: ("old sm", "old system"),
+}
 # ── Cascade classifier (CASCADE_CLASSIFICATION=true) ──────────────────
 # Coarse-to-fine system → service → offering. Each stage's LLM call returns
 # the FULL ClassificationResult JSON with only that stage's field constrained
@@ -447,41 +473,6 @@ def _cascade_fallback(title: str, err: str) -> ClassificationResult:
         reasoning=f"Classification failed after 2 attempts. Last error: {err}",
         canonical_statement=f"Incident reported: {title[:120]}",
     )
-
-
-# Stage 1 deterministic resolution — no LLM call.
-_SYSTEM_EXACT_NAMES = {
-    AffectedSystem.nusuk_masar_haj: "nusuk masar haj",
-    AffectedSystem.nusuk_masar_umrah: "nusuk masar umrah",
-    AffectedSystem.old_sm: "oldsm",
-}
-
-_SYSTEM_ALIASES = {
-    AffectedSystem.nusuk_masar_haj: ("haj", "hajj"),
-    AffectedSystem.nusuk_masar_umrah: ("umrah",),
-    AffectedSystem.old_sm: ("old sm", "old system"),
-}
-
-
-def _resolve_system_deterministic(title: str, description: str) -> AffectedSystem | None:
-    """Resolve the affected system from ticket text without any LLM call.
-
-    Priority: (i) an exact system-name substring wins immediately; (ii) else
-    count systems with at least one alias hit — exactly one hit is
-    deterministic, zero or multiple hits is ambiguous (None → LLM stage 1).
-    """
-    text = f"{title}\n{description}".lower()
-    for system, name in _SYSTEM_EXACT_NAMES.items():
-        if name in text:
-            return system
-    hits = [
-        system
-        for system, aliases in _SYSTEM_ALIASES.items()
-        if any(alias in text for alias in aliases)
-    ]
-    if len(hits) == 1:
-        return hits[0]
-    return None
 
 
 # Stage prompt scaffolding — shared JSON contract + one short option list per stage.
@@ -510,15 +501,25 @@ _CASCADE_JSON_SCHEMA = """\
 Pick the best-matching failure_mode code. If no code fits, use FM-000."""
 
 
-def _build_stage_system_prompt(stage_rules: str, allowed_values: str) -> str:
-    """Build a stage system prompt: full JSON contract + the stage's short option list."""
-    return (
-        "You classify IT support tickets into structured categories. Return ONLY valid JSON.\n\n"
-        f"{_CASCADE_JSON_SCHEMA}\n"
-        f"{_build_fm_taxonomy_block()}\n\n"
-        f"## Stage Rules\n{stage_rules}\n\n"
-        f"## Allowed Values\n{allowed_values}"
-    )
+def _resolve_system_deterministic(title: str, description: str) -> AffectedSystem | None:
+    """Resolve the affected system from ticket text without any LLM call.
+
+    Priority: (i) an exact system-name substring wins immediately; (ii) else
+    count systems with at least one alias hit — exactly one hit is
+    deterministic, zero or multiple hits is ambiguous (None → LLM stage 1).
+    """
+    text = f"{title}\n{description}".lower()
+    for system, name in _SYSTEM_EXACT_NAMES.items():
+        if name in text:
+            return system
+    hits = [
+        system
+        for system, aliases in _SYSTEM_ALIASES.items()
+        if any(alias in text for alias in aliases)
+    ]
+    if len(hits) == 1:
+        return hits[0]
+    return None
 
 
 def _stage_system_llm(title: str, description: str) -> ClassificationResult | None:
