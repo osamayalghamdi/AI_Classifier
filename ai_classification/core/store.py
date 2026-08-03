@@ -45,6 +45,7 @@ class SimilarMatch:
 
 
 class IncidentStore:
+    """PostgreSQL-backed store with pgvector cosine similarity."""
 
     def __init__(self) -> None:
         self._model: SentenceTransformer | None = None
