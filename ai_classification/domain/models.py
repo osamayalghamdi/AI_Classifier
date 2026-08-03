@@ -1,4 +1,5 @@
-"""Internal domain models — the LLM classification contract and derived types."""
+"""Internal domain models — the LLM classification contract and derived types.
+Pipeline position: 15_models — domain types (ClassificationResult, …)."""
 
 from pydantic import BaseModel, Field, model_validator
 
