@@ -1,21 +1,25 @@
 """PAIRWISE CANARY — regression canary for the frozen A3 pairwise verifier (prompt v3).
 
-LIVE-MODEL test: re-verify the 34 frozen dev-slice pairs (22 wrong + 12 correct) in
-BATCHES OF 8 per LLM call — the SAME batching the frozen production params and the
-original 22/22 + 12/12 dev-slice measurement used. The v3 prompt's
-'SAME TASK, DIFFERENT GRANULARITY' clause operates with batch context; individual
-calls lose it and the model over-tightens recall (manager-verified: 2 correct pairs
-flipped to NO under individual calls).
+LIVE-MODEL test: re-verify the 34 frozen dev-slice pairs (22 wrong + 12 correct)
+in BATCHES OF 8 per LLM call — the same batching the frozen production params and
+the original 22/22 + 12/12 dev-slice measurement used.
 
+- THE CANARY'S REAL JOB: the 22 wrong->NO pairs are HARD assertions. Any flip to
+  YES fails loudly. The safety direction stays strict.
+- The 12 correct pairs (expected YES): 7 hard; the 5 known-flaky
+  (SAME-SERVICE/DIFFERENT-ACTION granularity class) are marked xfail (reported as
+  expected-fail, NOT skipped) per manager decision (a) — see KNOWN_FLAKY below.
 - Source fixture: tests/pairwise_canary_fixture.json (batch_size=8 metadata).
 - Prompt: STRICT_PROMPT_V3 below — frozen verbatim from the A3 run (a3_prompts.py).
-- Model guard: the test FAILS if settings.llm_model is not OpenRouter qwen3.6
-  (the load_dotenv-is-CWD-relative Ollama-fallback bug guard). Export
-  LLM_MODEL=openrouter/qwen/qwen3.6-35b-a3b + LLM_API_KEY from the repo .env
-  before running.
+- Model guard: FAILS if settings.llm_model is not OpenRouter qwen3.6 (the
+  load_dotenv-is-CWD-relative Ollama-fallback bug guard). Export
+  LLM_MODEL=openrouter/qwen/qwen3.6-35b-a3b + LLM_API_KEY from the repo .env.
 - CI safety: PAIRWISE_CANARY_SKIP=1 -> whole module skips (no model calls).
-- Missing/unparseable item in a batch -> one individual retry (production
-  semantics); still unparseable -> that pair FAILS loudly (never silently passes).
+
+CANARY MAINTENANCE PROCEDURE: if a known-flaky pair passes 3 CONSECUTIVE live
+runs, it graduates back to strict — remove it from KNOWN_FLAKY (and its xfail
+mark) and add it to the hard-assert set. If a strict pair fails once, treat as a
+regression signal: re-run once to confirm, then escalate (do not silently loosen).
 """
 import json
 import os
@@ -31,6 +35,22 @@ FIXTURE = os.path.join(os.path.dirname(__file__), "pairwise_canary_fixture.json"
 REQUIRED_MODEL_SUBSTR = ("openrouter", "qwen3.6")
 BATCH_SIZE = 8
 BATCH_MAX_TOKENS = 4000  # production batch budget; verbose reasons truncate at 800
+
+# ── Known-flaky pairs (manager decision (a): xfail, reported not skipped) ──
+# All five are the SAME-SERVICE/DIFFERENT-ACTION granularity class. Frozen dev-slice
+# (prompt v3, batched) said YES; repeated live runs (batched, same params) split them
+# NO. The model's action-granularity judgment here is unstable across runs.
+# FINDING for W2's engine design: prompt v3's granularity clause is unstable on the
+# RECALL side for same-service/different-action pairs -> the proposal queue must NOT
+# auto-approve borderline same-service proposals without human review (the planned
+# architecture already routes proposals to a human decision).
+KNOWN_FLAKY = {
+    1: "13c6f0~fda002 transport approvals: model splits 'approval delay' vs 'inability to issue approval due to data error' (same service, different granularity)",
+    3: "1096a3~fa70c2 reports page: model splits 'report status update' vs 'cannot view reports page'",
+    9: "1096a3~f70184 reports page: model splits 'report status sync' vs 'missing reply field'",
+    19: "0433ea~33c04b reports page: model splits 'reports page broken' vs 'close a specific report' (flaps across runs)",
+    24: "13c6f0~cad886 transport approvals: model splits 'pending travel request approval' vs 'issuing permit approval'",
+}
 
 STRICT_PROMPT_V3 = """You verify whether two incident tickets describe the SAME underlying problem.
 
@@ -71,7 +91,7 @@ def _batch_prompt(pairs):
 
 
 def _call_batch(pairs):
-    """One batched LLM call. Returns {1-indexed-position: decision}."""
+    """One batched LLM call. Returns {1-indexed-position: (decision, reason)}."""
     kwargs: dict[str, Any] = dict(
         model=settings.llm_model,
         temperature=0.0,
@@ -94,7 +114,8 @@ def _call_batch(pairs):
 
 def _parse_batch(content):
     """Robust parse: fences, preamble, truncation recovery, single-object wrap,
-    and concatenated objects (`{...}{...}`)."""
+    and newline-separated concatenated objects (`{...}\n{...}` — the model's
+    actual batch format)."""
     text = content.strip()
     if text.startswith("```"):
         text = text.strip("`").strip()
@@ -152,27 +173,44 @@ def _verify_one(pair, max_tokens=300):
     if "qwen3" in settings.llm_model.lower():
         kwargs["extra_body"] = {"reasoning": {"enabled": False}}
     resp = completion(**kwargs)
-    parsed = _parse_batch(resp.choices[0].message.content)
-    return parsed.get(1)  # single-pair response -> position 1
-
-
-# ── Known-flaky pairs (documented, NOT skipped — assertions stay strict) ──
-# All five are the SAME-SERVICE/DIFFERENT-ACTION granularity class: frozen dev-slice
-# (prompt v3, batched) said YES; repeated live runs (batched, same params) say NO.
-# The model's action-granularity judgment on these is unstable across runs.
-# FLAGGED for manager decision — do NOT loosen the assertions silently.
-#   pair[1]  13c6f0~fda002  transport approvals      (approval delay vs issuance failure)
-#   pair[3]  1096a3~fa70c2  reports page             (status update vs view)
-#   pair[9]  1096a3~f70184  reports page             (status sync vs missing reply field)
-#   pair[19] 0433ea~33c04b  reports page             (page broken vs close specific report)
-#   pair[24] 13c6f0~cad886  transport approvals      (approval vs permit issuance)
-KNOWN_FLAKY_IDX = {1, 3, 9, 19, 24}
+    return _parse_batch(resp.choices[0].message.content).get(1)
 
 
 # ── module-level skip gate ────────────────────────────────────────────
 pytestmark = []
 if os.environ.get("PAIRWISE_CANARY_SKIP") == "1":
     pytestmark = [pytest.mark.skip(reason="PAIRWISE_CANARY_SKIP=1 — canary disabled for CI")]
+
+
+@pytest.fixture(scope="module")
+def canary_verdicts():
+    """ONE batched verification pass over all 34 pairs (production fidelity).
+    Model guard runs here too — fail fast before any LLM call."""
+    model = settings.llm_model
+    assert all(s in model.lower() for s in REQUIRED_MODEL_SUBSTR), (
+        f"Ollama-fallback guard: settings.llm_model={model!r} — export "
+        f"LLM_MODEL=openrouter/qwen/qwen3.6-35b-a3b + LLM_API_KEY from the repo .env "
+        f"(load_dotenv is CWD-relative; silent ollama fallback is a known bug)"
+    )
+    fx = _load_fixture()
+    pairs = fx["pairs"]
+    decisions: dict[int, str] = {}
+    reasons: dict[int, str] = {}
+
+    for start in range(0, len(pairs), BATCH_SIZE):
+        chunk = pairs[start:start + BATCH_SIZE]
+        by_pos = _call_batch(chunk)
+        for pos, p in enumerate(chunk, 1):
+            idx = start + pos - 1
+            if pos in by_pos:
+                decisions[idx], reasons[idx] = by_pos[pos]
+            else:
+                retry = _verify_one(p)
+                if retry is None:
+                    decisions[idx], reasons[idx] = "UNPARSEABLE", "individual retry unparseable"
+                else:
+                    decisions[idx], reasons[idx] = retry
+    return {"pairs": pairs, "decisions": decisions, "reasons": reasons}
 
 
 def test_model_guard():
@@ -195,44 +233,43 @@ def test_fixture_shape():
     assert len(fx["pairs"]) == 34
 
 
-def test_pair_verdicts_batched():
-    """Live-model re-verification in batches of 8 (production batching).
-
-    wrong pairs must be NO, correct pairs must be YES. All failures reported in
-    one assertion message (idx, verdict, reason)."""
-    fx = _load_fixture()
-    pairs = fx["pairs"]
-    decisions: dict[int, str] = {}
-    reasons: dict[int, str] = {}
-
-    for start in range(0, len(pairs), BATCH_SIZE):
-        chunk = pairs[start:start + BATCH_SIZE]
-        by_pos = _call_batch(chunk)
-        for pos, p in enumerate(chunk, 1):
-            idx = start + pos - 1
-            if pos in by_pos:
-                decisions[idx], reasons[idx] = by_pos[pos]
-            else:
-                # production fallback: one individual retry; then fail loudly
-                retry = _verify_one(p)
-                if retry is None:
-                    decisions[idx], reasons[idx] = "UNPARSEABLE", "individual retry unparseable"
-                else:
-                    decisions[idx], reasons[idx] = retry
-
-    mismatches = []
-    for idx in range(len(pairs)):
-        p = pairs[idx]
+def test_wrong_pairs_strict(canary_verdicts):
+    """THE CANARY'S REAL JOB — the 22 wrong->NO pairs are HARD assertions.
+    Any flip to YES fails loudly with the LLM reason. Never loosened."""
+    fx = canary_verdicts
+    pairs, decisions, reasons = fx["pairs"], fx["decisions"], fx["reasons"]
+    failures = []
+    for idx, p in enumerate(pairs):
+        if p["judgment"] != "wrong":
+            continue
         got = decisions.get(idx)
-        if got != p["expected"]:
-            mismatches.append(
-                f"pair[{idx}] {p['id_a'][:6]}~{p['id_b'][:6]} [{p['judgment']}]: "
-                f"expected {p['expected']}, got {got} — LLM: {reasons.get(idx, '')}"
+        if got != "NO":
+            failures.append(
+                f"pair[{idx}] {p['id_a'][:6]}~{p['id_b'][:6]}: expected NO, got {got} "
+                f"— LLM: {reasons.get(idx, '')}"
             )
+    assert not failures, (
+        f"STRICT VIOLATION: {len(failures)}/22 wrong pairs flipped from NO:\n"
+        + "\n".join(failures)
+    )
 
-    passed = len(pairs) - len(mismatches)
-    print(f"\nCANARY: {passed}/{len(pairs)} pass (batch_size={BATCH_SIZE}, "
-          f"model={settings.llm_model})")
-    for m in mismatches:
-        print(f"  FAIL {m}")
-    assert not mismatches, f"{len(mismatches)}/{len(pairs)} pairs failed:\n" + "\n".join(mismatches)
+
+_CORRECT_IDX = [i for i in range(34) if _load_fixture()["pairs"][i]["judgment"] == "correct"]
+
+
+@pytest.mark.parametrize("idx", [
+    pytest.param(i, marks=pytest.mark.xfail(
+        reason=f"KNOWN-FLAKY (manager decision a): {KNOWN_FLAKY[i]}", strict=False))
+    if i in KNOWN_FLAKY else i
+    for i in _CORRECT_IDX
+])
+def test_correct_pair_strict(idx, canary_verdicts):
+    """Correct pairs expect YES. 7 hard; the 5 KNOWN_FLAKY are xfail
+    (reported as expected-fail when NO, XPASS when YES — never silent)."""
+    fx = canary_verdicts
+    p = fx["pairs"][idx]
+    got = fx["decisions"].get(idx)
+    assert got == "YES", (
+        f"pair[{idx}] {p['id_a'][:6]}~{p['id_b'][:6]} [correct]: expected YES, "
+        f"got {got} — LLM: {fx['reasons'].get(idx, '')}"
+    )
