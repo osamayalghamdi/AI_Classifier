@@ -12,10 +12,14 @@ from ..core.store import (
 from ..core.classifier import classify_and_store, classify_batch
 from ..core.grouping import build_clusters, invalidate_cache, request_rebuild
 from ..core.import_service import import_incidents_from_file, import_incidents_from_body
+from .proposal_routes import router as proposal_router
 
 _log = logging.getLogger(__name__)
 
 app = FastAPI(title="AI Incident Classification", version="0.2.0", lifespan=lifespan)
+
+# Proposal review API (sub-offering engine, Phase 2)
+app.include_router(proposal_router)
 
 # CORS — allow dashboard at any origin
 app.add_middleware(
