@@ -1,102 +1,81 @@
-# W2_B1_AUDIT.md — B1 claim correction (manager review 2026-08-02)
+# W2_B1_AUDIT — honest correction of the B1 claim
 
-## Claim as committed (e681afb): "zero wrong merges (146 YES edges audited)"
-## Corrected claim: 146 YES edges audited → **144 correct attaches, 2 wrong attaches**.
-## B1 as measured is NOT "zero wrong merges".
+Date: 2026-08-02 (manager review pass). Author: W2.
+Status: AUDIT — the B1 "zero wrong merges" claim in commit `e681afb` was WRONG.
+This doc corrects it. No pipeline re-run was used for the finding (ticket texts
+were read directly from the DB); the member-level purity rule WAS then verified
+by a cache-backed re-run of proposal construction.
 
-The wrong attaches are both in the pilgrim-groups proposal (`b6189b1544cd`, natural
-run — 20 members, mean_sim 0.5794, FM-018×18 + FM-012×1 + FM-009×1). Both are
-cross-FM members whose verifier reasons FABRICATE Rawdah content that their ticket
-texts do not contain.
+## The discrepancy (manager's counterexample — CONFIRMED)
 
----
+Proposal `b6189b1544cd` (pilgrim groups, 20 members) contained:
 
-## Re-audit of the two cross-FM members (edge → reason → ticket texts → judgment)
+| member | FM | ticket text (verbatim) | verifier reason on its edges | judgment |
+|---|---|---|---|---|
+| cad886ca | FM-012 | "فضلا اصدار الاعتماد / تم دخول وقت صدور الاعتماد فضلا اصداره 135230" — *please issue the approval #135230; the approval time has arrived* | "Both describe failure to issue Rawdah permits on the Masar/Nusuk platform." | **WRONG ATTACH** — transport-approval request; the text says NOTHING about Rawdah (الروضة). The verifier generalized "issue permit/approval" to "Rawdah permits" without the ticket supporting the surface. |
+| 390a7900 | FM-009 | "…على طلب استخراج تصريح حجاج الخارج… ليتيح لنا استخراج التصريح" — *regarding the request to extract a permit for external pilgrims (حجاج الخارج)* | "Both describe failing to book/issue Rawdah permits on the same portal." (edges to 1049c8, 372f52, 78aebd, ecbbb1) | **WRONG ATTACH** — external-pilgrim permit extraction; no Rawdah mention. Same family (permit issuance) but the claimed surface ("Rawdah portal") is not supported by the text. |
 
-### 1) cad886ca1505 (FM-012) — WRONG ATTACH (definitive)
+Edge count: 5 YES edges involving these two members (cad886: 1, 390a79: 4), all
+claiming a surface the ticket text does not support.
 
-| | |
-|---|---|
-| Edge | `cad886~ecbbb1` (sim 0.4343 — the ONLY edge connecting cad886; max sim to any pool member is 0.55, so no auto-accept) |
-| Verifier reason | "Both describe failure to issue Rawdah permits on the Masar/Nusuk platform." |
-| cad886 text | TITLE "فضلا اصدار الاعتماد" / DESC "تم دخول وقت صدور الاعتماد فضلا اصداره 135230" — "approval time has arrived, please issue it 135230". An EXPEDITE request. No Rawdah, no failure, no portal named. |
-| ecbbb1 text | "Rawdah Permits Error" (FM-018) — the Rawdah content in the reason is ecbbb1's, NOT cad886's. |
-| Judgment | **WRONG ATTACH.** Prompt v3 requires SAME FAILING ACTION: "request/expedite an approval" ≠ "booking/issuing Rawdah permit fails with technical error". The reason over-claims. This is the exact instability class the canary pinned: cad886 appears in known-flaky pairs 14 (a6b2df~cad886), 24 (13c6f0~cad886), 32 (cad886~fe732b) — the transport-approval family — and the engine merged it into the Rawdah cluster. |
+## Corrected B1 numbers
 
-### 2) 390a79005b17 (FM-009) — WRONG ATTACH (reason fabricated; surface unproven)
+- 146 YES edges in proposals (natural run); **5 wrong (3.4%)**, 141 defensible.
+- **2 wrong attaches across 8 proposals** (25% of proposals carried a wrong member).
+- The other 6 proposals audited clean (tax, transport, CRM, evaluation, hotel,
+  reports, appeal — all member texts match their edges' claimed surface).
+- The suggestion proposal (FM-022×4 + FM-021×1) is DEFENSIBLE (appeal family,
+  defended in the A3 audit) — cross-FM but same problem; not a wrong attach.
 
-| | |
-|---|---|
-| Edges | `390a79~ecbbb1`, `390a79~1049c8`, `390a79~372f52`, `390a79~78aebd` (all sim 0.55–0.62, all LLM-verified) |
-| Verifier reasons | All of the form "Both describe failure to issue Rawdah permits on the same portal." |
-| 390a79 text | TITLE "ملاحظة مرفقة لكم" / DESC "الحاقا للشكوى السابقة رقم 11405845 على طلب استخراج تصريح حجاج الخارج . نفيدكم لازالت الملاحظة مستمرة والوقت يداهمنا فلذا نرجوا حل هذه الاشكالية عاجلا . ليتيح لنا استخراج التصريح." — a follow-up on a complaint about extracting an EXTERNAL-PILGRIM permit (تصريح حجاج الخارج). Never mentions Rawdah/الروضة. |
-| Judgment | **WRONG ATTACH (strict standard).** Same offering (Issue Permits) and same class (permit issuance blocked), which is why the candidate sims are 0.55–0.62 — but prompt v3 demands the same SERVICE SURFACE, and the text names no portal; the permit type (external-pilgrim entry permit) is plausibly distinct from Rawdah visit permits. The Rawdah-specific reasons are fabricated relative to the text. Human gate should review merge-worthiness (same-offering class) rather than auto-accept. |
+## Why the gate missed it (purity floor gap)
 
-### All other 144 edges — re-verified correct
-Every remaining edge in every proposal names the same failing action + same
-service, and the member texts match (Rawdah↔Rawdah, evaluation-icon↔evaluation-
-icon, appeal↔appeal, arrival-confirm↔arrival-confirm, tax-form↔tax-form,
-approval-pending↔approval-pending, report-status↔report-status, CRM↔CRM).
+- Cluster FM mix: FM-018×18, FM-012×1, FM-009×1 → 3 distinct codes < 6 →
+  cluster-level floor did NOT trip.
+- mean_sim 0.58 > 0.45 → cohesion floor did NOT trip.
+- The gap: the floor counts DISTINCT codes, so a 1-of-20 minority member never
+  trips it. cad886 was exactly the canary's most-flaky ticket (known-flaky pairs
+  14/24/32, all transport-approval family) — the engine merged the instability
+  class the canary had pinned.
 
----
+## Fix (manager decision, implemented)
 
-## Purity floor assessment — did it catch this? NO, and why that is a gap
+1. **Member-level purity rule** (suboffering_cluster.py): member FM ∉ cluster
+   top-2 FM codes → member `needs_review` flag in `purity_flags.members`.
+   Deterministic (count DESC, code ASC); when the 2nd/3rd counts tie, both tied
+   codes are minority (conservative — catches the cad886 1-of-20 class).
+   Proposal itself excluded only when flagged ≥ 1/3 of members OR the cluster
+   floor trips (2/20 < 1/3 → proposal stays, members flagged — per spec).
+2. **Member texts in proposal payload** (store.py): list_proposals/get_proposal
+   now return `members: [{id, title, description, failure_mode}]` so the reviewer
+   sees cad886's real text next to the verifier's Rawdah claim — the gate that
+   makes the queue honest.
 
-Proposal flags: `{"mean_sim": 0.5794, "n_fm_codes": 3, "needs_review": False}`.
-The floor (mean_sim < 0.45 OR >6 FM codes → NEEDS_REVIEW) is a **cluster-level**
-filter designed to catch heterogeneous grab-bags. A single minority-FM member
-(1 of 20) in a majority-FM cluster does not move n_fm_codes past 6 — the floor
-cannot catch minority-member contamination by construction. This is a **real
-floor gap** for the "minority member" failure mode. Candidate fix (design change,
-NOT applied here): member-level rule — a member whose FM code is not in the
-cluster's top-2 codes → NEEDS_REVIEW (or exclude). Flagged for the manager.
+## Verification (real output)
 
-## What the human gate will do with these (rejection procedure)
+- Unit tests (21 pass incl. `test_cad886_class_flagged`: FM-018×18 + FM-012 +
+  FM-009 → both minorities flagged) and API member-texts test.
+- Cache-backed re-run of proposal construction, proposal `39d968d9013b`
+  (pilgrim groups, 20 members): `purity_flags.members` shows
+  `cad886 [FM-012] needs_review=True` and `390a79 [FM-009] needs_review=True`;
+  cluster `needs_review=False` (2/20 < 1/3 — proposal NOT excluded, per spec).
+- Full suite: 91 passed + 15 canary-skipped.
 
-The proposal queue is human-decided by design (STATUS.md: never auto-approve).
-For `b6189b1544cd` (or its shuffle equivalent `3a9874589f87`, which still carries
-390a79): the reviewer must NOT approve as-is. Options, in order of preference:
-1. **Approve with exclusion** — not yet supported by the API (member-level
-   approval is an open item; today it is approve-everything or reject-all).
-2. **Reject** → members return to the pool with 24h cooldown (the API's reject
-   path). cad886/390a79 re-enter the pool and can re-cluster; the verifier cache
-   keeps the same YES, so repeated clustering would re-propose them — the
-   cooldown is the short-term breaker; a verifier-cache negative override
-   (forced NO for a known-bad pair) is the proper long-term fix (open item).
-3. **Merge** into a transport-approval / permit-class sub-offering if one exists.
+## What the human gate does with these
 
-For 390a79 specifically, the human may reasonably decide same-offering permit
-class is acceptable (it IS an Issue Permits ticket) — the point is the decision
-is HUMAN, not auto-minted.
+Reviewer sees (proposal payload): member title "فضلا اصدار الاعتماد" + description
+"…135230" + FM-012, next to verifier reason "Both describe failure to issue Rawdah
+permits…" — the mismatch is immediately visible. Reviewer actions: reject the
+proposal (members stay in pool with 24h cooldown), or merge to a transport-related
+sub-offering if one exists. The member-level flag now also surfaces in the payload
+so the mismatch is highlighted before the reviewer reads the text.
 
-## API gate surfacing — CONFIRMED GAP (this is what the gate is for, and it is incomplete)
+## Residual
 
-Pasted GET /proposals response (live DB, proposal `3a9874589f87`):
-```json
-{
- "id": "3a9874589f87",
- "offering_id": "pilgrim groups and issue permit - Nusuk Masar Haj",
- "member_ids": ["27da49c32b22", "4061fd68da1a", "390a79005b17", ...],
- "mean_sim": 0.6037,
- "verifier_reasons": {"1049c8~372f52": "Both describe errors while booking or issuing Rawdah permits...", ...},
- "purity_flags": {"mean_sim": 0.6037, "n_fm_codes": 3, "needs_review": false},
- "proposed_label": "Rawdah Permit Selection Issue",
- "status": "pending"
-}
-```
-**What a reviewer CAN see:** verifier_reasons (yes — every edge's reason is
-surfaced), mean_sim, purity_flags, label, offering.
-**What a reviewer CANNOT see:** member TITLES/DESCRIPTIONS. Member `390a79005b17`
-is an opaque id; nothing in this response reveals its text is about external-
-pilgrim permit extraction. **The gate as-built cannot catch the cad886/390a79
-class of wrong attach without a second query (GET /incidents).** Recommended fix
-(open item): include `member_titles` (and optionally truncated descriptions) in
-the proposal response. This is the single highest-value gate improvement.
-
-## Numbers that stand after correction
-- 8 proposals, 146 YES edges, 144 correct + 2 wrong attaches (this proposal).
-- cad886: no auto-accept (max sim 0.55) — joined on ONE fabricated-reason edge.
-- The same instability class the canary pinned (transport-approval family,
-  cad886 in known-flaky 14/24/32) is exactly what leaked into the cluster.
-- B3 order-robustness (5/8) is unaffected by this correction.
-- B2 coverage (53/92) is unaffected; if cad886+390a79 were excluded, it is 51/92.
+- 390a79 escaped the literal "top-2" rule only under the tie-break; the
+  conservative tie handling flags it (2nd/3rd counts tie at 1 → both minority).
+  Any cluster with a single dominant code + 2 singleton minorities now flags
+  BOTH — documented behavior, matches the cad886-class intent.
+- Verifier over-generalization on "issue permit/approval" action across different
+  surfaces (transport vs Rawdah vs external-pilgrim) remains an open prompt-v3
+  limitation — the member-level rule + human gate are the mitigation, not a
+  prompt fix (per the canary finding: never patch the prompt to chase recall).

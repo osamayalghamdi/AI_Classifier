@@ -794,6 +794,36 @@ class IncidentStore:
         finally:
             self._putconn(conn)
 
+    def _enrich_proposal_members(self, proposals: list[dict]) -> list[dict]:
+        """Attach member ticket texts (id, title, description, failure_mode) so a
+        human reviewer can check each member's real text against the verifier
+        reasons — the gate that makes the proposal queue honest."""
+        if not proposals or not self._ready or self._pool is None:
+            return proposals
+        member_ids = sorted({mid for p in proposals for mid in p["member_ids"]})
+        if not member_ids:
+            return proposals
+        conn = self._getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id, title, description, classification_json "
+                    "FROM incidents WHERE id = ANY(%s)", (member_ids,))
+                rows = cur.fetchall()
+        finally:
+            self._putconn(conn)
+        by_id = {}
+        for rid, title, desc, cj in rows:
+            try:
+                fm = json.loads(cj).get("failure_mode", "")
+            except Exception:
+                fm = ""
+            by_id[rid] = {"id": rid, "title": title, "description": desc,
+                          "failure_mode": fm}
+        for p in proposals:
+            p["members"] = [by_id[mid] for mid in p["member_ids"] if mid in by_id]
+        return proposals
+
     def list_proposals(self, status: str | None = None,
                        offering_id: str | None = None) -> list[dict]:
         if not self._ready or self._pool is None:
@@ -816,7 +846,8 @@ class IncidentStore:
                     sql += " WHERE " + " AND ".join(where)
                 sql += " ORDER BY created_at DESC"
                 cur.execute(sql, args)
-                return [self._row_to_proposal(r) for r in cur.fetchall()]
+                return self._enrich_proposal_members(
+                    [self._row_to_proposal(r) for r in cur.fetchall()])
         finally:
             self._putconn(conn)
 
@@ -832,7 +863,9 @@ class IncidentStore:
                     "target_sub_offering_id, decision_note, created_at, decided_at "
                     "FROM cluster_proposals WHERE id = %s", (proposal_id,))
                 row = cur.fetchone()
-            return self._row_to_proposal(row) if row else None
+            if row is None:
+                return None
+            return self._enrich_proposal_members([self._row_to_proposal(row)])[0]
         finally:
             self._putconn(conn)
 
