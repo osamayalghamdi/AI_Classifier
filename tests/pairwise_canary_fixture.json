@@ -380,5 +380,6 @@
       "expected": "NO",
       "dev_verdict": "NO"
     }
-  ]
+  ],
+  "batch_size": 8
 }
