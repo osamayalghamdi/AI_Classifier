@@ -48,8 +48,10 @@ KNOWN_FLAKY = {
     1: "13c6f0~fda002 transport approvals: model splits 'approval delay' vs 'inability to issue approval due to data error' (same service, different granularity)",
     3: "1096a3~fa70c2 reports page: model splits 'report status update' vs 'cannot view reports page'",
     9: "1096a3~f70184 reports page: model splits 'report status sync' vs 'missing reply field'",
+    14: "a6b2df~cad886 transport approvals: model splits 'transport requests awaiting approval' vs 'please issue approval' (same service, different granularity; caught by manager re-run after 3 stable local runs)",
     19: "0433ea~33c04b reports page: model splits 'reports page broken' vs 'close a specific report' (flaps across runs)",
     24: "13c6f0~cad886 transport approvals: model splits 'pending travel request approval' vs 'issuing permit approval'",
+    32: "cad886~fe732b transport approvals: model splits 'please issue approval' vs 'approve pending transport requests' (same service, different granularity; caught on 4th verification run after 3 clean runs)",
 }
 
 STRICT_PROMPT_V3 = """You verify whether two incident tickets describe the SAME underlying problem.
