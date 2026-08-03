@@ -3,7 +3,8 @@
 Used by classifier.py (classification) and grouping.py (cluster validation).
 Both had near-identical copies of _call_llm and their own fence-stripping
 parsers; this module consolidates them.
-"""
+
+Pipeline position: 05_llm — shared LLM call wrapper (classify, grouping)."""
 
 import json
 import logging

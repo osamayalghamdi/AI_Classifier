@@ -1,4 +1,5 @@
-"""Pydantic request/response models for the HTTP API."""
+"""Pydantic request/response models for the HTTP API.
+Pipeline position: 50_api — request/response schemas."""
 
 from pydantic import BaseModel, Field
 

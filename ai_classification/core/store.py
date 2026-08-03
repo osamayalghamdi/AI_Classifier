@@ -2,7 +2,8 @@
 service calls.
 
 Uses pgvector for indexed cosine similarity. Thread-safe via a connection pool.
-"""
+
+Pipeline position: 40_store — Postgres/pgvector persistence."""
 
 import json
 import logging
@@ -145,15 +146,6 @@ class IncidentStore:
     def ready(self) -> bool:
         return self._ready
 
-    def _getconn(self):
-        if self._pool is None:
-            raise RuntimeError("Store not connected")
-        return self._pool.getconn()
-
-    def _putconn(self, conn):
-        if self._pool:
-            self._pool.putconn(conn)
-
     # ── Embedding ──────────────────────────────────────────────────
 
     def _embed(self, text: str) -> np.ndarray | None:
@@ -180,57 +172,6 @@ class IncidentStore:
                 f"{classification.category}"
             )
         return text
-
-    # ── Similarity search (pgvector ANN) ──────────────────────────
-
-    def find_similar(
-        self, text: str, *,
-        extracted_text: str = "",
-        threshold: float | None = None,
-        top_k: int = 5,
-        classification: ClassificationResult | None = None,
-    ) -> list[SimilarMatch]:
-        if not self._ready or self._pool is None or self._model is None:
-            return []
-        threshold = threshold if threshold is not None else settings.similarity_threshold
-        # settings.similarity_threshold (0.80) is deliberately stricter than
-        # grouping.SIMILARITY_THRESHOLD (0.50) — this is fine-grained dedupe
-        # on classify (must be near-identical), not a recall-oriented grouping pass.
-        # Query and stored embeddings both use canonical_statement directly
-        embed_text = text
-        if extracted_text:
-            embed_text = f"{extracted_text} | {text}"
-        query_vec = self._embed(embed_text)
-        if query_vec is None:
-            return []
-
-        conn = self._getconn()
-        try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT id, title, classification_json, "
-                    "  (1 - (embedding <=> %s::vector)) AS similarity "
-                    "FROM incidents "
-                    "WHERE status = 'active' AND embedding IS NOT NULL "
-                    "  AND (1 - (embedding <=> %s::vector)) >= %s "
-                    "ORDER BY embedding <=> %s::vector "
-                    "LIMIT %s",
-                    (query_vec.tolist(), query_vec.tolist(), threshold, query_vec.tolist(), top_k),
-                )
-                results = []
-                for row_id, row_title, class_json, sim in cur.fetchall():
-                    try:
-                        cls_result = ClassificationResult.model_validate(json.loads(class_json))
-                    except Exception:
-                        continue
-                    results.append(SimilarMatch(id=row_id, title=row_title, similarity=float(sim), classification=cls_result))
-                _log.info("Similarity search — query='%s', threshold=%.2f, matches=%d",
-                          text[:60], threshold, len(results))
-                for m in results:
-                    _log.debug("  Match: %s — %.1f%% — %s", m.id, m.similarity * 100, m.title[:50])
-                return results
-        finally:
-            self._putconn(conn)
 
     # ── Persist ────────────────────────────────────────────────────
 
@@ -319,9 +260,6 @@ class IncidentStore:
         finally:
             self._putconn(conn)
 
-    def generate_id(self) -> str:
-        return uuid.uuid4().hex[:12]
-
     def increment_occurrence(self, incident_id: str) -> None:
         if not self._ready or self._pool is None:
             return
@@ -334,6 +272,106 @@ class IncidentStore:
                     (incident_id,)
                 )
                 conn.commit()
+        finally:
+            self._putconn(conn)
+
+    def set_status(self, incident_id: str, new_status: str) -> bool:
+        """Update incident status. Maps external statuses to internal active/resolved."""
+        if not self._ready or self._pool is None:
+            return False
+        local_status = "active" if new_status in ("open", "in_progress", "third_party") else "resolved"
+        conn = self._getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE incidents SET status = %s WHERE id = %s",
+                    (local_status, incident_id),
+                )
+            conn.commit()
+            return cur.rowcount > 0
+        finally:
+            self._putconn(conn)
+
+    def resolve_incident(self, incident_id: str) -> bool:
+        if not self._ready or self._pool is None:
+            return False
+        conn = self._getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE incidents SET status = 'resolved' WHERE id = %s",
+                    (incident_id,),
+                )
+            conn.commit()
+            return cur.rowcount > 0
+        finally:
+            self._putconn(conn)
+
+    # ── Admin / Reset ──────────────────────────────────────────────
+
+    def delete_all(self) -> int:
+        """Delete all incidents. Returns count deleted."""
+        if not self._ready or self._pool is None:
+            return 0
+        conn = self._getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM incidents")
+                count = cur.rowcount
+            conn.commit()
+            _log.warning("Deleted all incidents — count=%d", count)
+            return count
+        finally:
+            self._putconn(conn)
+
+    # ── Similarity search (pgvector ANN) ──────────────────────────
+
+    def find_similar(
+        self, text: str, *,
+        extracted_text: str = "",
+        threshold: float | None = None,
+        top_k: int = 5,
+        classification: ClassificationResult | None = None,
+    ) -> list[SimilarMatch]:
+        if not self._ready or self._pool is None or self._model is None:
+            return []
+        threshold = threshold if threshold is not None else settings.similarity_threshold
+        # settings.similarity_threshold (0.80) is deliberately stricter than
+        # grouping.SIMILARITY_THRESHOLD (0.50) — this is fine-grained dedupe
+        # on classify (must be near-identical), not a recall-oriented grouping pass.
+        # Query and stored embeddings both use canonical_statement directly
+        embed_text = text
+        if extracted_text:
+            embed_text = f"{extracted_text} | {text}"
+        query_vec = self._embed(embed_text)
+        if query_vec is None:
+            return []
+
+        conn = self._getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id, title, classification_json, "
+                    "  (1 - (embedding <=> %s::vector)) AS similarity "
+                    "FROM incidents "
+                    "WHERE status = 'active' AND embedding IS NOT NULL "
+                    "  AND (1 - (embedding <=> %s::vector)) >= %s "
+                    "ORDER BY embedding <=> %s::vector "
+                    "LIMIT %s",
+                    (query_vec.tolist(), query_vec.tolist(), threshold, query_vec.tolist(), top_k),
+                )
+                results = []
+                for row_id, row_title, class_json, sim in cur.fetchall():
+                    try:
+                        cls_result = ClassificationResult.model_validate(json.loads(class_json))
+                    except Exception:
+                        continue
+                    results.append(SimilarMatch(id=row_id, title=row_title, similarity=float(sim), classification=cls_result))
+                _log.info("Similarity search — query='%s', threshold=%.2f, matches=%d",
+                          text[:60], threshold, len(results))
+                for m in results:
+                    _log.debug("  Match: %s — %.1f%% — %s", m.id, m.similarity * 100, m.title[:50])
+                return results
         finally:
             self._putconn(conn)
 
@@ -387,69 +425,6 @@ class IncidentStore:
         finally:
             self._putconn(conn)
 
-    def resolve_incident(self, incident_id: str) -> bool:
-        if not self._ready or self._pool is None:
-            return False
-        conn = self._getconn()
-        try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "UPDATE incidents SET status = 'resolved' WHERE id = %s",
-                    (incident_id,),
-                )
-            conn.commit()
-            return cur.rowcount > 0
-        finally:
-            self._putconn(conn)
-
-    def set_status(self, incident_id: str, new_status: str) -> bool:
-        """Update incident status. Maps external statuses to internal active/resolved."""
-        if not self._ready or self._pool is None:
-            return False
-        local_status = "active" if new_status in ("open", "in_progress", "third_party") else "resolved"
-        conn = self._getconn()
-        try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "UPDATE incidents SET status = %s WHERE id = %s",
-                    (local_status, incident_id),
-                )
-            conn.commit()
-            return cur.rowcount > 0
-        finally:
-            self._putconn(conn)
-
-    # ── Sync from external ticketing system ───────────────────────
-
-    def upsert_from_external(self, incident_id: str, title: str, description: str,
-                             status: str, created_at: str) -> bool:
-        if not self._ready or self._pool is None:
-            return False
-        local_status = "active" if status in ("open", "in_progress", "third_party") else "resolved"
-        text = f"{title} {description}"
-        embedding = self._embed(text)
-        conn = self._getconn()
-        try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "INSERT INTO incidents "
-                    "(id, title, description, extracted_text, embedding, classification_json, status, created_at) "
-                    "VALUES (%s, %s, %s, '', %s::vector, '{}', %s, %s) "
-                    "ON CONFLICT (id) DO UPDATE SET "
-                    "  title=EXCLUDED.title, description=EXCLUDED.description, "
-                    "  status=EXCLUDED.status",
-                    (
-                        incident_id, title, description,
-                        embedding.tolist() if embedding is not None else None,
-                        local_status, self._parse_ts(created_at),
-                    ),
-                )
-            conn.commit()
-            _log.info("Upserted external incident %s — status=%s", incident_id, status)
-            return True
-        finally:
-            self._putconn(conn)
-
     # ── Read ─────────────────────────────────────────────────────
 
     def get_incident(self, incident_id: str) -> dict | None:
@@ -470,6 +445,29 @@ class IncidentStore:
             if row is None:
                 return None
             return self._row_to_incident(row, extended=True)
+        finally:
+            self._putconn(conn)
+
+    def list_incidents(self, status: str | None = None) -> list[dict]:
+        if not self._ready or self._pool is None:
+            return []
+        conn = self._getconn()
+        try:
+            with conn.cursor() as cur:
+                cols = ("id, title, description, extracted_text, classification_json, "
+                        "status, created_at, documents, assign_group, assignee, priority, "
+                        "notes, discussion_history, escalation_info, completion_code")
+                if status:
+                    cur.execute(
+                        f"SELECT {cols} FROM incidents WHERE status = %s ORDER BY created_at DESC",
+                        (status,),
+                    )
+                else:
+                    cur.execute(
+                        f"SELECT {cols} FROM incidents ORDER BY created_at DESC"
+                    )
+                rows = cur.fetchall()
+            return [self._row_to_incident(r) for r in rows]
         finally:
             self._putconn(conn)
 
@@ -499,45 +497,8 @@ class IncidentStore:
         finally:
             self._putconn(conn)
 
-    def list_incidents(self, status: str | None = None) -> list[dict]:
-        if not self._ready or self._pool is None:
-            return []
-        conn = self._getconn()
-        try:
-            with conn.cursor() as cur:
-                cols = ("id, title, description, extracted_text, classification_json, "
-                        "status, created_at, documents, assign_group, assignee, priority, "
-                        "notes, discussion_history, escalation_info, completion_code")
-                if status:
-                    cur.execute(
-                        f"SELECT {cols} FROM incidents WHERE status = %s ORDER BY created_at DESC",
-                        (status,),
-                    )
-                else:
-                    cur.execute(
-                        f"SELECT {cols} FROM incidents ORDER BY created_at DESC"
-                    )
-                rows = cur.fetchall()
-            return [self._row_to_incident(r) for r in rows]
-        finally:
-            self._putconn(conn)
-
-    # ── Admin / Reset ──────────────────────────────────────────────
-
-    def delete_all(self) -> int:
-        """Delete all incidents. Returns count deleted."""
-        if not self._ready or self._pool is None:
-            return 0
-        conn = self._getconn()
-        try:
-            with conn.cursor() as cur:
-                cur.execute("DELETE FROM incidents")
-                count = cur.rowcount
-            conn.commit()
-            _log.warning("Deleted all incidents — count=%d", count)
-            return count
-        finally:
-            self._putconn(conn)
+    def generate_id(self) -> str:
+        return uuid.uuid4().hex[:12]
 
     # ── Helpers ────────────────────────────────────────────────────
 
@@ -592,13 +553,15 @@ class IncidentStore:
         if embedding_str is not None:
             d["_embedding_raw"] = embedding_str
         return d
+    def _getconn(self):
+        if self._pool is None:
+            raise RuntimeError("Store not connected")
+        return self._pool.getconn()
 
-    @staticmethod
-    def _parse_ts(ts: str) -> datetime:
-        try:
-            return datetime.fromisoformat(ts)
-        except (ValueError, TypeError):
-            return datetime.now(timezone.utc)
+    def _putconn(self, conn):
+        if self._pool:
+            self._pool.putconn(conn)
+
 
 
 # ── Module-level singleton + app lifecycle ──────────────────────────────

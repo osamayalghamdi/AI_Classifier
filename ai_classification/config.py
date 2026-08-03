@@ -1,4 +1,5 @@
-"""Application configuration loaded from environment."""
+"""Application configuration loaded from environment.
+Pipeline position: 00_config — settings/env, read by every stage."""
 
 from os import getenv
 from dataclasses import dataclass, field

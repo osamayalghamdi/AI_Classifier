@@ -1,4 +1,5 @@
-"""FastAPI application — endpoints only. No business logic."""
+"""FastAPI application — endpoints only. No business logic.
+Pipeline position: 50_api — FastAPI endpoints."""
 
 import logging
 from fastapi import FastAPI, HTTPException, Query

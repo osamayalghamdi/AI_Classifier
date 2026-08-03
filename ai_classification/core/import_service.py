@@ -1,4 +1,5 @@
-"""Bulk import service — file validation, JSON parsing, field remapping."""
+"""Bulk import service — file validation, JSON parsing, field remapping.
+Pipeline position: 10_intake — bulk import → classify_batch."""
 import json
 import logging
 from pathlib import Path

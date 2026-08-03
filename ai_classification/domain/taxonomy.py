@@ -10,7 +10,8 @@ SERVICES_BY_SYSTEM is a 3-level hierarchy:
 A flat view (dict[AffectedSystem, list[str]]) is generated automatically
 for LLM prompting and validation via flatten_services(). Sub-services
 are exposed as dot-path strings: "Service.SubService".
-"""
+
+Pipeline position: 15_models — system/service/offering hierarchy."""
 
 from enum import StrEnum
 
