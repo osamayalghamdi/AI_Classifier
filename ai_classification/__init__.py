@@ -1,4 +1,5 @@
-"""AI Classification — structured incident ticket classification via LLM."""
+"""AI Classification — structured incident ticket classification via LLM.
+Pipeline position: package root — pipeline assembly."""
 
 import logging
 
