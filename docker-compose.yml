@@ -2,7 +2,8 @@ services:
   # ── PostgreSQL + pgvector ──────────────────────────────────────────
   postgres:
     image: pgvector/pgvector:pg17
-    container_name: ai_pg
+    # No container_name — lets compose scope names per project, so this
+    # stack can coexist with other AI_Classifier instances on one host.
     environment:
       POSTGRES_USER: aiuser
       POSTGRES_PASSWORD: aipass
