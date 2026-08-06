@@ -18,11 +18,12 @@ services:
       retries: 5
     restart: unless-stopped
 
-  # ── Local LLM runner (Ollama) ──────────────────────────────────────
-  # Only needed for local inference. When using OpenRouter or another
-  # remote API, ollama sits idle — low resource usage.
+  # ── Local LLM runner (Ollama) — OPTIONAL ───────────────────────────
+  # Only starts when explicitly requested:  docker compose --profile local-llm up
+  # Server deploys use OpenRouter (api service defaults) — this stays down.
   ollama:
     image: ollama/ollama:latest
+    profiles: ["local-llm"]
     # runtime: nvidia   # uncomment for GPU
     # environment:
     #   - NVIDIA_VISIBLE_DEVICES=all
@@ -41,24 +42,31 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - LLM_MODEL=${LLM_MODEL:-ollama/qwen2.5:7b}
-      - LLM_API_BASE=${LLM_API_BASE:-http://ollama:11434}
+      # OpenRouter by default (no Ollama dependency). LLM_API_KEY comes
+      # from .env (required for OpenRouter — the app fails on first LLM
+      # call if unset).
+      - LLM_MODEL=${LLM_MODEL:-openrouter/qwen/qwen3.6-35b-a3b}
+      - LLM_API_BASE=${LLM_API_BASE:-}
       - LLM_API_KEY=${LLM_API_KEY:-}
       - SIMILARITY_THRESHOLD=0.35
-      - DB_HOST=postgres
-      - DB_PORT=5432
-      - DB_USER=aiuser
-      - DB_PASSWORD=aipass
-      - DB_NAME=ai_incidents
+      # config.py reads PG_* (config.py:59-63), NOT DB_*
+      - PG_HOST=postgres
+      - PG_PORT=5432
+      - PG_USER=aiuser
+      - PG_PASSWORD=aipass
+      - PG_DATABASE=ai_incidents
       - USE_LLM_RERANKING=${USE_LLM_RERANKING:-1}
     volumes:
       - ./ai_classification:/app/ai_classification
     depends_on:
       postgres:
         condition: service_healthy
-      # ollama dependency is NOT declared here because the entrypoint.sh
-      # handles the wait loop internally. When using a remote LLM
-      # (OpenRouter), ollama isn't needed at all.
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
     restart: unless-stopped
 
   # ── OCR Service (EasyOCR) ──────────────────────────────────────────
@@ -68,11 +76,13 @@ services:
       - "8001:8001"
     restart: unless-stopped
 
-  # ── Cloudflare Tunnel (public URL, no signup) ───────────────────────
+  # ── Cloudflare Tunnel (public URL) — OPTIONAL ──────────────────────
+  # Only starts when explicitly requested:  docker compose --profile public-tunnel up
   # Exposes nginx (dashboard + API proxy) via trycloudflare.com.
   # URL changes on restart — check logs for the trycloudflare.com link.
   cloudflared:
     image: cloudflare/cloudflared:latest
+    profiles: ["public-tunnel"]
     command: tunnel --url http://localhost:8082 --protocol http2
     network_mode: host
     restart: unless-stopped
@@ -87,9 +97,6 @@ services:
     volumes:
       - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
       - ./frontend/dashboard:/usr/share/nginx/html:ro
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    # network_mode: host # removed — use port mapping instead
     restart: unless-stopped
 
 volumes:
