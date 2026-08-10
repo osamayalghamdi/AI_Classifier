@@ -265,7 +265,7 @@ def _build_clusters(period: str = "daily") -> dict:
 
     all_clusters.sort(key=lambda c: c["count"], reverse=True)
     _log.info("build_clusters — %d active incidents, %d clusters found (phase1=%d, phase2=%s)",
-              n, len(all_clusters), sum(1 for c in all_clusters if c["name"].startswith("FM-") and c["name"] != "FM-000"),
+              n, len(all_clusters), sum(1 for c in all_clusters if (c["name"] or "").startswith("FM-") and c["name"] != "FM-000"),
               "active" if len(leftover) >= MIN_CLUSTER_SIZE else "skipped")
     return {"total_incidents": n, "clusters": all_clusters, "subsystem_summary": subsystem_summary}
 
