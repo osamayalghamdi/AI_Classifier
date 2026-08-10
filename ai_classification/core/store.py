@@ -243,6 +243,7 @@ class IncidentStore:
         assign_group: str = "",
         assignee: str = "",
         priority: str = "medium",
+        status: str = "active",
         notes: str | None = None,
         discussion_history: list[dict] | None = None,
         escalation_info: str | None = None,
@@ -252,27 +253,13 @@ class IncidentStore:
     ) -> None:
         if not self._ready or self._pool is None:
             return
-        # Embed the signature — use taxonomy string for exact match when FM code is known
-        # FM-000 means no taxonomy match → fall back to LLM-generated signature
-        fm_code = getattr(classification, 'failure_mode', 'FM-000') or 'FM-000'
-        # Fallback used when FM lookup fails or no FM code is set
-        _fallback_cs = classification.signature or classification.canonical_statement or self._build_embedding_text(
-            title, description, extracted_text, classification
-        )
-        if fm_code != 'FM-000':
-            try:
-                from .failure_modes import FAILURE_MODES
-                fm_name = FAILURE_MODES[fm_code][0]  # (name, system, service, severity, includes, excludes)
-                raw_cs = fm_name
-            except (KeyError, ImportError):
-                raw_cs = _fallback_cs
-        else:
-            raw_cs = _fallback_cs
-        # Strip label prefix before embedding — "Nusuk Masar Haj/contracts: " → removed
-        if ":" in raw_cs:
-            embed_text = raw_cs.split(":", 1)[1].strip()
-        else:
-            embed_text = raw_cs
+        # Embed the TICKET'S OWN TEXT (title + description), never the FM
+        # name or classification output. Earlier versions embedded the FM
+        # display name / canonical statement — every ticket in the same FM
+        # bucket got an IDENTICAL vector, so clustering similarity always
+        # read 100%. Real text only: proven by the pairwise experiments
+        # (pure title+"\n"+description is the only valid similarity signal).
+        embed_text = self._build_embedding_text(title, description, extracted_text)
         embedding = self._embed(embed_text)
         conn = self._getconn()
         try:
@@ -283,13 +270,14 @@ class IncidentStore:
                     "status, created_at, documents, assign_group, assignee, priority, notes, "
                     "discussion_history, escalation_info, completion_code, "
                     "content_hash, occurrence_count, first_seen, last_seen, source_ticket_ids) "
-                    "VALUES (%s, %s, %s, %s, %s::vector, %s, 'active', %s, "
+                    "VALUES (%s, %s, %s, %s, %s::vector, %s, %s, %s, "
                     "%s::jsonb, %s, %s, %s, %s, %s::jsonb, %s, %s, "
                     "%s, 1, %s, %s, %s::jsonb) "
                     "ON CONFLICT (id) DO UPDATE SET "
                     "  title=EXCLUDED.title, description=EXCLUDED.description, "
                     "  extracted_text=EXCLUDED.extracted_text, embedding=EXCLUDED.embedding, "
                     "  classification_json=EXCLUDED.classification_json, "
+                    "  status=EXCLUDED.status, "
                     "  documents=EXCLUDED.documents, assign_group=EXCLUDED.assign_group, "
                     "  assignee=EXCLUDED.assignee, priority=EXCLUDED.priority, "
                     "  notes=EXCLUDED.notes, discussion_history=EXCLUDED.discussion_history, "
@@ -300,6 +288,7 @@ class IncidentStore:
                         incident_id, title, description, extracted_text,
                         embedding.tolist() if embedding is not None else None,
                         classification.model_dump_json(),
+                        status,
                         datetime.now(timezone.utc),
                         json.dumps(documents or []),
                         assign_group,
