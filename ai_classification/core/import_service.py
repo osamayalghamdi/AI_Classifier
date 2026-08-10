@@ -12,27 +12,49 @@ from .classifier import classify_batch
 _log = logging.getLogger(__name__)
 
 
-def _first_non_empty(inc: dict, fields: list[str]) -> str:
+def _first_non_empty(inc: dict, fields: list[str], default: str = "") -> str:
     """Return the first field whose value is a non-empty string after .strip();
 
-    Empty string when none of the configured keys yields one.
+    `default` when none of the configured keys yields one.
     """
     for key in fields:
         value = inc.get(key)
         if isinstance(value, str) and value.strip():
             return value.strip()
-    return ""
+    return default
+
+
+def _map_incident(inc: dict) -> dict | None:
+    """Map one imported incident dict → classify_batch input.
+
+    DisplayLabel/Description (or the configured aliases) become the ticket
+    text; optional metadata (status/assignee/assign_group/priority/notes)
+    is passed through so imported tickets carry demo/ops fields through the
+    API. Accepts both capitalized (Status) and snake_case (status) keys.
+    """
+    title = _first_non_empty(inc, settings.ticket_title_fields)
+    desc = _first_non_empty(inc, settings.ticket_description_fields)
+    if not title:
+        return None
+    return {
+        "title": title,
+        "description": desc,
+        "status": _first_non_empty(inc, ["Status", "status"], default="active"),
+        "assignee": _first_non_empty(inc, ["Assignee", "assignee"], default=""),
+        "assign_group": _first_non_empty(inc, ["AssignGroup", "assign_group"], default=""),
+        "priority": _first_non_empty(inc, ["Priority", "priority"], default="medium"),
+        "notes": _first_non_empty(inc, ["Notes", "notes"], default=""),
+    }
 
 
 def import_incidents_from_body(incidents: list[dict]) -> ClassifyBatchResponse:
     """Classify incidents from a body payload with DisplayLabel/Description fields."""
     mapped = []
     for inc in incidents:
-        title = _first_non_empty(inc, settings.ticket_title_fields)
-        desc = _first_non_empty(inc, settings.ticket_description_fields)
-        if not title:
+        item = _map_incident(inc)
+        if item is None:
             continue
-        mapped.append({"title": title, "description": desc})
+        mapped.append(item)
 
     if not mapped:
         raise HTTPException(status_code=400, detail="No incidents with a non-empty DisplayLabel found")
@@ -63,11 +85,10 @@ def import_incidents_from_file(filename: str) -> ClassifyBatchResponse:
 
     incidents = []
     for inc in data:
-        title = _first_non_empty(inc, settings.ticket_title_fields)
-        if not title:
+        item = _map_incident(inc)
+        if item is None:
             continue
-        desc = _first_non_empty(inc, settings.ticket_description_fields)
-        incidents.append({"title": title, "description": desc})
+        incidents.append(item)
 
     if not incidents:
         raise HTTPException(status_code=400, detail="No incidents with a non-empty title found")

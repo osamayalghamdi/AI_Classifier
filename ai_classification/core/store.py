@@ -532,7 +532,7 @@ class IncidentStore:
                     "status, created_at, documents, assign_group, assignee, "
                     "priority, notes, discussion_history, escalation_info, completion_code, "
                     "embedding::text "
-                    "FROM incidents WHERE status = 'active' "
+                    "FROM incidents "
                     "ORDER BY created_at DESC"
                 )
                 rows = cur.fetchall()

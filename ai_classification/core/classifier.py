@@ -694,7 +694,8 @@ def classify_and_store(
     documents: list[str] | None = None,
     assign_group: str = "",
     assignee: str = "",
-    priority: str = "medium",
+    priority: str | None = None,
+    status: str = "active",
     notes: str | None = None,
     discussion_history: list[dict] | None = None,
     escalation_info: str | None = None,
@@ -772,10 +773,11 @@ def classify_and_store(
 
     result = classify(title, description)
 
-    # ── Severity→priority mapping ──
+    # ── Severity→priority mapping (only when the caller did not supply one) ──
     _priority_map = {"Critical": "critical", "Major": "high", "Minor": "medium", "Cosmetic": "low"}
-    sev = result.severity.value if hasattr(result.severity, "value") else result.severity
-    priority = _priority_map.get(sev, "medium")
+    if not priority:
+        sev = result.severity.value if hasattr(result.severity, "value") else result.severity
+        priority = _priority_map.get(sev, "medium")
 
     embed_text = result.canonical_statement or f"{title} {description}"
 
@@ -797,6 +799,7 @@ def classify_and_store(
         assign_group=assign_group,
         assignee=assignee,
         priority=priority,
+        status=status,
         notes=notes,
         discussion_history=discussion_history or [],
         escalation_info=escalation_info,
@@ -838,7 +841,8 @@ def classify_batch(incidents: list[dict]) -> ClassifyBatchResponse:
                 documents=inc.get("documents"),
                 assign_group=inc.get("assign_group", ""),
                 assignee=inc.get("assignee", ""),
-                priority=inc.get("priority", "medium"),
+                priority=inc.get("priority"),
+                status=inc.get("status", "active"),
                 notes=inc.get("notes"),
                 discussion_history=inc.get("discussion_history"),
                 escalation_info=inc.get("escalation_info"),
