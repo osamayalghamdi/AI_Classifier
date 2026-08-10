@@ -210,6 +210,7 @@ button { font-family: inherit; cursor: pointer; }
       <button class="role-btn" data-role="manager">Manager</button>
     </div>
     <div class="topbar-right">
+      <a class="app-link" href="write-incident.html">+ New Incident</a>
       <span id="lastRunTimer" style="font-size:11.5px;color:var(--text-faint)"></span>
       <span id="connStatus"><span class="live-dot" id="connDot"></span> <span id="connText">offline</span></span>
     </div>
@@ -227,7 +228,7 @@ button { font-family: inherit; cursor: pointer; }
         <button class="vt-btn active" id="vtGrouped">Grouped</button>
         <button class="vt-btn" id="vtFlat">Flat list</button>
       </div>
-      <div class="search"><input id="empSearch" placeholder="Search tickets…"></div>
+      <div class="search"><input id="empSearch" placeholder="Search tickets or incident ID…"></div>
       <select class="filter-select" id="empSevFilter">
         <option value="">All severities</option><option>Critical</option><option>Major</option><option>Minor</option><option>Cosmetic</option>
       </select>

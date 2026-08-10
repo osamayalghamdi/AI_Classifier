@@ -1,7 +1,7 @@
 /* ── App logic ─────────────────────────────────────────────────────────
    Reads from the backend API only:
      GET {API}/api/reports/daily   → { clusters, subsystem_summary }
-     GET {API}/incidents?status=active
+     GET {API}/incidents
 
    Schema: system → subsystem → assign_group → assignee
    Default view for Employee = tickets in their assign_group.
@@ -59,7 +59,7 @@ async function loadData() {
   try {
     const [rep, incs] = await Promise.all([
       fetch(`${API}/api/reports/daily`).then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); }),
-      fetch(`${API}/incidents?status=active`).then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); }),
+      fetch(`${API}/incidents`).then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); }),
     ]);
     const clusters = (rep.clusters || []).map((c) => ({
       cluster_id: c.cluster_id, name: c.failure_mode_desc || c.name || c.summary?.slice(0, 60) || "Cluster",
@@ -202,7 +202,12 @@ function syncVT() {
   $("#vtGrouped").classList.toggle("active", !FLAT);
   $("#vtFlat").classList.toggle("active", FLAT);
 }
-$("#empSearch").addEventListener("input", () => { saveState(); renderEmployee(); });
+const _searchEl = $("#empSearch");
+_searchEl.addEventListener("input", () => { saveState(); renderEmployee(); searchByIdDebounced(); });
+_searchEl.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") { clearTimeout(_idSearchTimer); searchIncidentById(); }
+  else if (e.key === "Escape") { _searchEl.value = ""; saveState(); renderEmployee(); searchIncidentById(); }
+});
 $("#empSevFilter").addEventListener("change", function () {
   EMP_SEV_FILTER = this.value;
   saveState();
@@ -253,7 +258,9 @@ function groupClusters() {
     }))
     .filter((c) => c.incidents.length > 0)
     .filter((c) => !sev || c.worst_severity === sev)
-    .filter((c) => !q || c.name.toLowerCase().includes(q) || c.incidents.some((i) => i.title.toLowerCase().includes(q)))
+    .filter((c) => !q || c.name.toLowerCase().includes(q) || c.incidents.some((i) =>
+      (i.title || "").toLowerCase().includes(q) || (i.id || "").toLowerCase().includes(q)
+      || (i.description || "").toLowerCase().includes(q)))
     .sort((a, b) => (SEV_RANK[b.worst_severity] || 0) - (SEV_RANK[a.worst_severity] || 0) || b.incidents.length - a.incidents.length);
 }
 
@@ -288,7 +295,9 @@ function renderEmployee() {
     const sev = $("#empSevFilter").value;
     const rows = all
       .filter((t) => !sev || t.severity === sev)
-      .filter((t) => !q || t.title.toLowerCase().includes(q))
+      .filter((t) => !q || (t.title || "").toLowerCase().includes(q)
+        || (t.id || "").toLowerCase().includes(q)
+        || (t.description || "").toLowerCase().includes(q))
       .sort((a, b) => (SEV_RANK[b.severity] || 0) - (SEV_RANK[a.severity] || 0));
     $("#empFlat").innerHTML = `<div class="flat-table">${rows.map(ticketRow).join("") || `<div class="empty">No tickets match.</div>`}</div>`;
     return;
@@ -520,6 +529,8 @@ function clusterCard(c, opts = {}) {
 function ticketRow(t) {
   const sim = t.similarity_pct ? `<span class="sim">${t.similarity_pct}%</span>` : "";
   const x = t.similarity_pct ? `<button class="x-btn" data-remove="${esc(t.id)}" title="Not the same issue — remove from group">✕</button>` : "";
+  const st = statusLookup(t.status || "active");
+  const statusBadge = `<span class="mini-status" style="color:${st.border};border:1px solid ${st.border};background:${st.bg};border-radius:10px;padding:1px 7px;font-size:10px;white-space:nowrap">${st.emoji} ${esc(t.status || "active")}</span>`;
   const meta = [t.assignee && t.assignee !== CURRENT_USER ? esc(t.assignee) : null, t.created_hours_ago != null ? `${t.created_hours_ago}h ago` : null, t.assign_group && t.assign_group !== CURRENT_GROUP ? esc(t.assign_group) : null].filter(Boolean).join(" · ");
   return `
   <div class="t-row" data-tid="${esc(t.id)}">
@@ -528,7 +539,7 @@ function ticketRow(t) {
       <div class="t-title">${titleHtml(t.title)}</div>
       ${meta ? `<div class="t-meta">${meta}</div>` : ""}
     </div>
-    <div class="t-right">${sim}<span class="mini-sev ${esc(t.severity || "Minor")}"></span>${x}</div>
+    <div class="t-right">${statusBadge}${sim}<span class="mini-sev ${esc(t.severity || "Minor")}"></span>${x}</div>
   </div>
   <div class="t-detail" data-tid="${esc(t.id)}"><div class="t-detail-loading">⏳ Loading incident details…</div></div>`;
 }
@@ -611,6 +622,86 @@ async function fetchIncidentDetail(tid, detailEl) {
     detailEl.innerHTML = html;
   } catch (e) {
     detailEl.innerHTML = `<div class="t-detail-loading" style="color:var(--crit)">❌ Failed to load: ${e.message}</div>`;
+  }
+}
+
+/* ── Search UX: incident-ID lookup + feedback ──────────────────────
+   - exact 12-hex ID  -> server-side GET /incidents/{id}, full detail panel
+   - 6-11 hex prefix  -> live hint + client-side match count (IDs are 12 chars)
+   - Enter            -> run the lookup immediately, scroll to the result
+   - Esc              -> clear the search
+   - close × on the panel clears the search too                            */
+let _idSearchTimer = null;
+let _lastIdQuery = "";
+function searchByIdDebounced() {
+  clearTimeout(_idSearchTimer);
+  _idSearchTimer = setTimeout(searchIncidentById, 250);
+}
+function ensureIdResultBox() {
+  let box = document.getElementById("idSearchResult");
+  if (box) return box;
+  box = document.createElement("div");
+  box.id = "idSearchResult";
+  box.style.cssText = "background:var(--surface);border:1px solid var(--accent);border-radius:var(--radius);margin:14px 0;display:none";
+  const view = document.querySelector(".wrap .view") || document.querySelector(".wrap");
+  view.parentNode.insertBefore(box, view);
+  return box;
+}
+function idResultHead(labelHtml) {
+  return '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 16px;border-bottom:1px solid var(--border);font-size:12px;font-weight:700;color:var(--accent)">' + labelHtml +
+    '<button id="idSearchClose" title="Clear search" style="background:transparent;border:none;color:var(--text-faint);font-size:16px;line-height:1;padding:2px 6px;cursor:pointer">×</button></div>';
+}
+function hookIdSearchClose(box) {
+  const btn = box.querySelector("#idSearchClose");
+  if (btn) btn.addEventListener("click", () => {
+    const s = document.getElementById("empSearch");
+    if (s) s.value = "";
+    box.style.display = "none";
+    _lastIdQuery = "";
+    saveState();
+    renderEmployee();
+    if (s) s.focus();
+  });
+}
+async function searchIncidentById() {
+  const q = ($("#empSearch").value || "").trim().toLowerCase();
+  const box = ensureIdResultBox();
+  const exact = /^[0-9a-f]{12}$/.test(q);
+  const prefix = /^[0-9a-f]{6,11}$/.test(q);
+  if (!exact && !prefix) { box.style.display = "none"; _lastIdQuery = ""; return; }
+  if (q === _lastIdQuery) return;
+  _lastIdQuery = q;
+  box.style.display = "block";
+  if (prefix && !exact) {
+    const ids = (DATA.all || []).map((t) => (t.id || "").toLowerCase());
+    const n = ids.filter((i) => i.startsWith(q)).length;
+    box.innerHTML = idResultHead("Incident ID lookup") +
+      '<div style="padding:12px 16px;font-size:13px;color:var(--text-dim)">' +
+      (n ? "<b>" + n + "</b> ticket" + (n > 1 ? "s" : "") + " start with <code>" + esc(q) + "</code> — keep typing, IDs are 12 characters."
+         : "No tickets start with <code>" + esc(q) + "</code> — IDs are 12 characters.") +
+      "</div>";
+    hookIdSearchClose(box);
+    return;
+  }
+  box.innerHTML = idResultHead("Incident <code>" + esc(q) + "</code>") +
+    '<div class="t-detail-loading" style="padding:12px 16px">⏳ Looking up…</div>';
+  try {
+    const resp = await fetch(`${API}/incidents/${encodeURIComponent(q)}`);
+    if (!resp.ok) {
+      box.innerHTML = idResultHead("Incident <code>" + esc(q) + "</code>") +
+        '<div style="padding:12px 16px;font-size:13px;color:var(--text-dim)">No incident found with this ID — check the ID shown after filing, or use the list below.</div>';
+      hookIdSearchClose(box);
+      return;
+    }
+    const inc = await resp.json();
+    box.innerHTML = idResultHead("Incident <code>" + esc(q) + "</code>") +
+      '<div style="padding:6px 16px 12px">' + renderIncidentDetail(inc) + "</div>";
+    hookIdSearchClose(box);
+    box.scrollIntoView({ behavior: "smooth", block: "start" });
+  } catch (e) {
+    box.innerHTML = idResultHead("Incident <code>" + esc(q) + "</code>") +
+      '<div style="padding:12px 16px;font-size:13px;color:var(--crit)">❌ Lookup failed: ' + esc(e.message || e) + "</div>";
+    hookIdSearchClose(box);
   }
 }
 
@@ -736,5 +827,11 @@ loadData().then(() => {
       if (!el.classList.contains("open")) toggleCluster(el);
       el.scrollIntoView({ behavior: "smooth", block: "center" });
     }
+  }
+  // deep link: #incident=61e416f9dea6 runs the ID search for that incident
+  const im = location.hash.match(/incident=([0-9a-f]{12})/);
+  if (im) {
+    const s = document.getElementById("empSearch");
+    if (s) { s.value = im[1]; searchIncidentById(); }
   }
 });
