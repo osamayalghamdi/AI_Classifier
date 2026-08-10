@@ -93,7 +93,42 @@ async function loadData() {
     console.warn("API fetch failed:", e);
     setConn(false, "API unreachable");
   }
+  const fp = fingerprint(DATA);
+  if (fp === _lastFp) return; // nothing changed — keep the user's current view intact
+  _lastFp = fp;
   render();
+  restoreOpenView();
+}
+
+/* Data fingerprint — skip re-render when nothing changed so open
+   incident/cluster views survive background polling. */
+let _lastFp = "";
+function fingerprint(d) {
+  const c = (d.clusters || []).map((x) => `${x.cluster_id}:${x.count}:${x.worst_severity}`).sort().join("|");
+  return `${d.totals ? d.totals.tickets : 0}|${d.totals ? d.totals.problems : 0}|${c}`;
+}
+
+/* Re-apply user view state after a data-driven re-render: open clusters,
+   expanded ticket row, and cached detail content. */
+let _expandedTid = null;
+function restoreOpenView() {
+  try {
+    const savedOpen = JSON.parse(localStorage.getItem("dash_open_clusters") || "[]");
+    savedOpen.forEach((cid) => {
+      const el = document.getElementById(`cluster-${cid}`);
+      if (el && !el.classList.contains("open")) toggleCluster(el);
+    });
+  } catch {}
+  if (_expandedTid) {
+    const row = document.querySelector(`.t-row[data-tid="${_expandedTid}"]`);
+    if (row) {
+      row.classList.add("expanded");
+      const detail = row.nextElementSibling;
+      if (detail && detail.classList.contains("t-detail")) {
+        detail.innerHTML = _detailCache[_expandedTid] || '<div class="t-detail-loading">⏳ Loading incident details…</div>';
+      }
+    }
+  }
 }
 
 function safeSev(i) {
@@ -549,9 +584,11 @@ function bindClusterCards(root) {
       });
       if (wasExpanded) {
         row.classList.remove("expanded");
+        if (_expandedTid === tid) _expandedTid = null;
         return;
       }
       row.classList.add("expanded");
+      _expandedTid = tid;
       fetchIncidentDetail(tid, detail);
     });
   });
@@ -663,7 +700,8 @@ if (classifyLink) classifyLink.href = CLASSIFY_URL;
 const groupOpt = $("#empGroupFilter option[value='my']");
 if (groupOpt) groupOpt.textContent = `My Group (${CURRENT_GROUP})`;
 
-// Poll the API every 30 seconds
+// Poll the API — re-render only when the data fingerprint actually changed,
+// so open incident/cluster views are never wiped by background refreshes.
 let lastRun = Date.now();
 
 function updateTimer() {
@@ -676,9 +714,10 @@ setInterval(updateTimer, 1000);
 
 setInterval(async () => {
   lastRun = Date.now();
+  const before = _lastFp;
   await loadData();
-  toast("🔄 Clustering cycle refreshed");
-}, 30000);
+  if (_lastFp && _lastFp !== before) toast("🔄 Clustering cycle refreshed");
+}, 60000);
 
 loadData().then(() => {
   // Restore open clusters from saved state
