@@ -530,7 +530,7 @@ function ticketRow(t) {
   const sim = t.similarity_pct ? `<span class="sim">${t.similarity_pct}%</span>` : "";
   const x = t.similarity_pct ? `<button class="x-btn" data-remove="${esc(t.id)}" title="Not the same issue — remove from group">✕</button>` : "";
   const st = statusLookup(t.status || "active");
-  const statusBadge = `<span class="mini-status" style="color:${st.border};border:1px solid ${st.border};background:${st.bg};border-radius:10px;padding:1px 7px;font-size:10px;white-space:nowrap">${st.emoji} ${esc(t.status || "active")}</span>`;
+  const statusBadge = `<span class="mini-status" style="color:${st.border};border:1px solid ${st.border};background:${st.bg};border-radius:10px;padding:2px 8px;font-size:11.5px;white-space:nowrap">${st.emoji} ${esc(t.status || "active")}</span>`;
   const meta = [t.assignee && t.assignee !== CURRENT_USER ? esc(t.assignee) : null, t.created_hours_ago != null ? `${t.created_hours_ago}h ago` : null, t.assign_group && t.assign_group !== CURRENT_GROUP ? esc(t.assign_group) : null].filter(Boolean).join(" · ");
   return `
   <div class="t-row" data-tid="${esc(t.id)}">
