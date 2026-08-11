@@ -14,12 +14,13 @@
   --bg: #0A0C10; --surface: #0F1218; --surface2: #151923; --surface-hover: #151923;
   --border: #1E232C; --border-input: #2A3040; --bg-input: #12151C;
   --text: #F2F4F8; --text-dim: #A7AEBD; --text-faint: #6B7280;
-  --accent: #4C8DFF; --accent-dim: rgba(76,141,255,.12);
+  --accent: #1E6FD9; --accent-dim: rgba(30,111,217,.14);
   --crit: #F0526B; --crit-bg: rgba(240,82,107,.14);
-  --major: #E8A23D; --major-bg: rgba(232,162,61,.14);
+  --major: #F26B21; --major-bg: rgba(242,107,33,.14);
   --minor: #33D17A; --minor-bg: rgba(51,209,122,.12);
   --cosm: #8B949E; --cosm-bg: rgba(139,148,158,.12);
   --gold: #d4a72c;
+  --navy: #0c1d46; --elm-blue: #0070c7; --elm-orange: #f16845;
   --pill-bg: #1A1F29; --pill-text: #C3C9D6;
   --radius: 8px;
 }
@@ -31,7 +32,9 @@ button { font-family: inherit; cursor: pointer; }
 /* ── Header ── */
 .topbar { position: sticky; top: 0; z-index: 50; background: rgba(10,12,16,.92); backdrop-filter: blur(8px); border-bottom: 1px solid var(--border); }
 .topbar-inner { max-width: 1240px; margin: 0 auto; padding: 0 20px; height: 52px; display: flex; align-items: center; gap: 16px; }
-.logo { display: flex; align-items: center; gap: 9px; font-weight: 700; font-size: 15px; }
+.logo { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 15px; }
+.logo-img { height: 26px; width: auto; display: block; }
+.logo-name { color: var(--text); white-space: nowrap; }
 .logo-mark { width: 26px; height: 26px; border-radius: 7px; background: linear-gradient(135deg,#4C8DFF,#7C6CF0); display: grid; place-items: center; font-size: 13px; }
 .role-switch { display: flex; background: var(--surface); border: 1px solid var(--border); border-radius: 7px; padding: 3px; gap: 2px; }
 .role-btn { background: transparent; border: none; color: var(--text-dim); padding: 5px 13px; border-radius: 5px; font-size: 12.5px; font-weight: 600; transition: all .15s; }
@@ -208,7 +211,7 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
 <div class="topbar">
   <div class="topbar-inner">
-    <div class="logo"><div class="logo-mark">◈</div> Service Ops</div>
+    <div class="logo"><img src="elm-logo-white.svg" alt="ELM" class="logo-img"> <span class="logo-name">Service Ops</span></div>
     <div class="role-switch" id="roleSwitch">
       <button class="role-btn active" data-role="employee">My Queue</button>
       <button class="role-btn" data-role="lead">Shift Lead</button>
