@@ -141,7 +141,7 @@ function restoreOpenView() {
       row.classList.add("expanded");
       const detail = row.nextElementSibling;
       if (detail && detail.classList.contains("t-detail")) {
-        detail.innerHTML = _detailCache[_expandedTid] || '<div class="t-detail-loading">⏳ Loading incident details…</div>';
+        detail.innerHTML = _detailCache[_expandedTid] || '<div class="t-detail-loading">Loading incident details…</div>';
       }
     }
   }
@@ -360,7 +360,7 @@ function renderLead() {
     <div class="review-row">
       <div class="q"><div class="nm">${esc(r.q)}</div><div class="rs">${esc(r.rs)}</div></div>
       <button class="btn sm" data-review="${esc(r.act)}">${esc(r.act)}</button>
-    </div>`).join("") || `<div class="empty">Nothing needs review. 🎉</div>`;
+    </div>`).join("") || `<div class="empty">Nothing needs review.</div>`;
   $$("#reviewList .btn").forEach((b) => b.addEventListener("click", () => toast(`${b.dataset.review} queued — stub action`)));
 
   // team load
@@ -467,16 +467,16 @@ function renderManager() {
 
 // Dynamic status color mapping — extend as new statuses appear
 const STATUS_COLORS = {
-  active:      { border: "var(--crit)",  bg: "var(--crit-bg)",  emoji: "🔴" },
-  escalated:   { border: "var(--major)", bg: "var(--major-bg)", emoji: "🟡" },
-  resolved:    { border: "var(--minor)", bg: "var(--minor-bg)", emoji: "🟢" },
-  pending:     { border: "#4f9cf9",      bg: "rgba(79,156,249,.13)", emoji: "🔵" },
-  third_party: { border: "#7c5cfc",      bg: "rgba(124,92,252,.13)", emoji: "🟣" },
-  verify:      { border: "#39c5cf",      bg: "rgba(57,197,207,.13)", emoji: "⏳" },
-  failed:      { border: "#f85149",      bg: "rgba(248,81,73,.13)",  emoji: "❌" },
-  cancelled:   { border: "#8b949e",      bg: "rgba(139,148,158,.12)", emoji: "⏹" },
+  active:      { border: "var(--crit)",  bg: "var(--crit-bg)" },
+  escalated:   { border: "var(--major)", bg: "var(--major-bg)" },
+  resolved:    { border: "var(--minor)", bg: "var(--minor-bg)" },
+  pending:     { border: "#4f9cf9",      bg: "rgba(79,156,249,.13)" },
+  third_party: { border: "#7c5cfc",      bg: "rgba(124,92,252,.13)" },
+  verify:      { border: "#39c5cf",      bg: "rgba(57,197,207,.13)" },
+  failed:      { border: "#f85149",      bg: "rgba(248,81,73,.13)" },
+  cancelled:   { border: "#8b949e",      bg: "rgba(139,148,158,.12)" },
 };
-const STATUS_DEFAULT = { border: "#8b949e", bg: "rgba(139,148,158,.12)", emoji: "◈" };
+const STATUS_DEFAULT = { border: "#8b949e", bg: "rgba(139,148,158,.12)" };
 
 function statusLookup(s) {
   return STATUS_COLORS[s] || STATUS_DEFAULT;
@@ -485,7 +485,7 @@ function statusLookup(s) {
 function statusSection(status, tickets, opts) {
   if (!tickets.length) return "";
   const c = statusLookup(status);
-  const label = `${c.emoji} ${status.charAt(0).toUpperCase() + status.slice(1)}`;
+  const label = `${status.charAt(0).toUpperCase() + status.slice(1)}`;
   return `<div style="border-left:3px solid ${c.border};margin:0 0 0 13px;padding-left:3px">
     <div class="panel-title" style="margin-bottom:0;padding:6px 16px 2px;background:${c.bg};border-top:1px solid var(--border);border-radius:0">${esc(label)} · ${tickets.length}</div>
     <div class="t-rows" style="border-top:none">${tickets.map((t) => ticketRow(t, opts)).join("")}</div>
@@ -517,8 +517,8 @@ function clusterCard(c, opts = {}) {
   ].join("");
 
   const actions = opts.mine
-    ? `<button class="btn primary" data-act="reply">✉ Reply to all ${shown.length} with template</button>
-       <button class="btn" data-act="link">🔗 Link to parent incident</button>`
+    ? `<button class="btn primary" data-act="reply">Reply to all ${shown.length} with template</button>
+       <button class="btn" data-act="link">Link to parent incident</button>`
     : `<button class="btn primary" data-act="assign">Reassign cluster</button>
        <button class="btn" data-act="merge">Merge with…</button>
        <button class="btn" data-act="split">Split</button>
@@ -546,7 +546,7 @@ function ticketRow(t) {
   const sim = t.similarity_pct ? `<span class="sim">${t.similarity_pct}%</span>` : "";
   const x = t.similarity_pct ? `<button class="x-btn" data-remove="${esc(t.id)}" title="Not the same issue — remove from group">✕</button>` : "";
   const st = statusLookup(t.status || "active");
-  const statusBadge = `<span class="mini-status" style="color:${st.border};border:1px solid ${st.border};background:${st.bg};border-radius:10px;padding:2px 8px;font-size:11.5px;white-space:nowrap">${st.emoji} ${esc(t.status || "active")}</span>`;
+  const statusBadge = `<span class="mini-status" style="color:${st.border};border:1px solid ${st.border};background:${st.bg};border-radius:10px;padding:2px 8px;font-size:11.5px;white-space:nowrap">${esc(t.status || "active")}</span>`;
   const meta = [t.assignee && t.assignee !== CURRENT_USER ? esc(t.assignee) : null, t.created_hours_ago != null ? `${t.created_hours_ago}h ago` : null, t.assign_group && t.assign_group !== CURRENT_GROUP ? esc(t.assign_group) : null].filter(Boolean).join(" · ");
   return `
   <div class="t-row" data-tid="${esc(t.id)}">
@@ -557,7 +557,7 @@ function ticketRow(t) {
     </div>
     <div class="t-right">${statusBadge}${sim}<span class="mini-sev ${esc(t.severity || "Minor")}"></span>${x}</div>
   </div>
-  <div class="t-detail" data-tid="${esc(t.id)}"><div class="t-detail-loading">⏳ Loading incident details…</div></div>`;
+  <div class="t-detail" data-tid="${esc(t.id)}"><div class="t-detail-loading">Loading incident details…</div></div>`;
 }
 
 function toggleCluster(el) {
@@ -628,7 +628,7 @@ async function fetchIncidentDetail(tid, detailEl) {
     detailEl.innerHTML = _detailCache[tid];
     return;
   }
-  detailEl.innerHTML = '<div class="t-detail-loading">⏳ Loading incident details…</div>';
+  detailEl.innerHTML = '<div class="t-detail-loading">Loading incident details…</div>';
   try {
     const resp = await fetch(`${API}/incidents/${tid}`);
     if (!resp.ok) throw new Error(resp.status);
@@ -637,7 +637,7 @@ async function fetchIncidentDetail(tid, detailEl) {
     _detailCache[tid] = html;
     detailEl.innerHTML = html;
   } catch (e) {
-    detailEl.innerHTML = `<div class="t-detail-loading" style="color:var(--crit)">❌ Failed to load: ${e.message}</div>`;
+    detailEl.innerHTML = `<div class="t-detail-loading" style="color:var(--crit)">Failed to load: ${e.message}</div>`;
   }
 }
 
@@ -700,7 +700,7 @@ async function searchIncidentById() {
     return;
   }
   box.innerHTML = idResultHead("Incident <code>" + esc(q) + "</code>") +
-    '<div class="t-detail-loading" style="padding:12px 16px">⏳ Looking up…</div>';
+    '<div class="t-detail-loading" style="padding:12px 16px">Looking up…</div>';
   try {
     const resp = await fetch(`${API}/incidents/${encodeURIComponent(q)}`);
     if (!resp.ok) {
@@ -716,7 +716,7 @@ async function searchIncidentById() {
     box.scrollIntoView({ behavior: "smooth", block: "start" });
   } catch (e) {
     box.innerHTML = idResultHead("Incident <code>" + esc(q) + "</code>") +
-      '<div style="padding:12px 16px;font-size:13px;color:var(--crit)">❌ Lookup failed: ' + esc(e.message || e) + "</div>";
+      '<div style="padding:12px 16px;font-size:13px;color:var(--crit)">Lookup failed: ' + esc(e.message || e) + "</div>";
     hookIdSearchClose(box);
   }
 }
@@ -814,7 +814,7 @@ let lastRun = Date.now();
 function updateTimer() {
   const elapsed = Math.floor((Date.now() - lastRun) / 1000);
   const fmt = (s) => `${Math.floor(s / 60)}m ${s % 60}s`;
-  $("#lastRunTimer").textContent = `🤖 clustering: ${fmt(elapsed)} ago`;
+  $("#lastRunTimer").textContent = `clustering: ${fmt(elapsed)} ago`;
 }
 
 setInterval(updateTimer, 1000);
@@ -823,7 +823,7 @@ setInterval(async () => {
   lastRun = Date.now();
   const before = _lastFp;
   await loadData();
-  if (_lastFp && _lastFp !== before) toast("🔄 Clustering cycle refreshed");
+  if (_lastFp && _lastFp !== before) toast("Clustering cycle refreshed");
 }, 60000);
 
 loadData().then(() => {
