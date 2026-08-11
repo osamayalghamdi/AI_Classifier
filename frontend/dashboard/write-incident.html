@@ -11,21 +11,38 @@
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=IBM+Plex+Sans+Arabic:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
 :root {
-  --bg: #0A0C10; --surface: #0F1218; --surface2: #151923; --surface-hover: #151923;
-  --border: #1E232C; --border-input: #2A3040; --bg-input: #12151C;
-  --text: #F2F4F8; --text-dim: #A7AEBD; --text-faint: #6B7280;
-  --accent: #1E6FD9; --accent-dim: rgba(30,111,217,.14);
-  --crit: #F0526B; --crit-bg: rgba(240,82,107,.14);
-  --major: #F26B21; --major-bg: rgba(242,107,33,.14);
-  --minor: #33D17A; --minor-bg: rgba(51,209,122,.12);
-  --cosm: #8B949E; --cosm-bg: rgba(139,148,158,.12);
-  --gold: #d4a72c;
-  --navy: #0c1d46; --elm-blue: #0070c7; --elm-orange: #f16845;
-  --pill-bg: #1A1F29; --pill-text: #C3C9D6;
-  --radius: 8px;
+  --ink: #14294F; --navy: #0E2A5A; --navy-2: #13315F;
+  --muted: #5E6E8C; --faint: #93A0B8;
+  --line: #E1E8F3; --panel: #FFFFFF;
+  --bg-1: #EDF2FA; --bg-2: #F6F9FD;
+  --blue: #1E6FD9; --blue-deep: #1559B4;
+  --orange: #F26B21; --orange-deep: #DB5A12;
+  --violet: #6D4AFF; --violet-deep: #5A38E6; --violet-soft: #F0ECFF;
+  --amber: #F2900B; --amber-deep: #DD7C00; --amber-soft: #FFF3E1;
+  --teal: #0FA593; --teal-deep: #0B8A7B; --teal-soft: #E5F7F3;
+  --slate-ink: #5A6480; --slate-soft: #EEF1F8; --rail: #CBD6E8;
+  --bg: #EDF2FA; --surface: #FFFFFF; --surface2: #EEF1F8; --surface-hover: #F1F5FC;
+  --border: #E1E8F3; --border-input: #CBD6E8; --bg-input: #FFFFFF;
+  --text: #14294F; --text-dim: #5E6E8C; --text-faint: #93A0B8;
+  --accent: #1E6FD9; --accent-dim: rgba(30,111,217,.10);
+  --crit: #BD2F3B; --crit-bg: #FDEBED;
+  --major: #A85A00; --major-bg: #FFF3E1;
+  --minor: #07705F; --minor-bg: #E5F7F3;
+  --cosm: #4E5870; --cosm-bg: #EEF1F8;
+  --gold: #F2900B;
+  --elm-blue: #0070c7; --elm-orange: #f16845;
+  --pill-bg: #EEF1F8; --pill-text: #13315F;
+  --radius: 12px;
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
-body { background: var(--bg); color: var(--text); font-family: 'Inter','IBM Plex Sans Arabic',system-ui,sans-serif; font-size: 14px; line-height: 1.45; }
+body {
+  background:
+    radial-gradient(1000px 520px at 84% -8%, rgba(30,111,217,.10) 0%, transparent 60%),
+    radial-gradient(820px 460px at 8% 112%, rgba(242,107,33,.09) 0%, transparent 60%),
+    linear-gradient(165deg, var(--bg-1), var(--bg-2));
+  background-attachment: fixed;
+  color: var(--text); font-family: 'Tajawal','Inter','IBM Plex Sans Arabic',system-ui,sans-serif; font-size: 14px; line-height: 1.45;
+}
 [lang-ar] { font-family: 'IBM Plex Sans Arabic','Inter',sans-serif; direction: rtl; display: inline-block; }
 button { font-family: inherit; cursor: pointer; }
 input, textarea, select { font-family: inherit; font-size: 14px; color: var(--text); background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 9px 12px; width: 100%; outline: none; }
