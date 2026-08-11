@@ -8,11 +8,27 @@
 ──────────────────────────────────────────────────────────────────────── */
 
 // API base derives from the host that served this page — works for
-// localhost AND Tailscale/LAN access (100.x.x.x / 192.168.x.x) without
-// hardcoding. Override via localStorage "dash_api" / "classify_url".
+// localhost AND Tailscale/LAN access (100.x.x.x / 192.168.x.x) AND
+// tunneled access (trycloudflare.com / named tunnels) without hardcoding.
+// When the page came over http(s) from a remote host, the API is served
+// same-origin by nginx/cloudflared (which proxy /api /incidents /health)
+// — no :8000 port exists on a tunnel domain. Override via localStorage
+// "dash_api" / "classify_url".
 const API_HOST = location.hostname || "localhost";
-const API = localStorage.getItem("dash_api") || `http://${API_HOST}:8000`;
-const CLASSIFY_URL = localStorage.getItem("classify_url") || `http://${API_HOST}:8000`;
+const API_OVERRIDE = localStorage.getItem("dash_api");
+let API, CLASSIFY_URL;
+if (API_OVERRIDE) {
+  API = API_OVERRIDE;
+  CLASSIFY_URL = localStorage.getItem("classify_url") || API_OVERRIDE;
+} else if (location.protocol === "http:" || location.protocol === "https:") {
+  // Same-origin: nginx/cloudflared proxy the API paths. localhost stays
+  // :8000 for the dev-server case (python http.server on 8085 does NOT proxy).
+  API = location.port === "8085" ? `http://${API_HOST}:8000` : location.origin;
+  CLASSIFY_URL = API;
+} else {
+  API = `http://${API_HOST}:8000`;
+  CLASSIFY_URL = API;
+}
 let ROLE = localStorage.getItem("dash_role") || "employee";
 let FLAT = localStorage.getItem("dash_flat") === "true";
 let EMP_GROUP_FILTER = localStorage.getItem("dash_group_filter") || "all";
