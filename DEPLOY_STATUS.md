@@ -35,3 +35,14 @@ Worktree isolation: one worker per worktree, branch `feat/deploy-integration-rea
 | W1 | D6 health 200 + counts match baseline | pending | |
 | W2 | S1-S6 (adapter containment, result object, idempotency, provenance) | pending | |
 | W3 | E1-E9 (async ingest, readiness, auth, dry-run, guide) | pending | |
+
+## W1 — DONE (merged 3f4bca9, verified by manager)
+
+- D0: reseed reproducible — scripts/reseed.sh, 100 tickets → 91 stored (9 dedup), 492s re-embedding. Baseline: 91/91/0/0 reproducible (96/96/1/8 included 5 manual + prior experiment rows).
+- D1: single command — `docker compose up -d --build` after `down -v` (all stacks torn down, orphaned removed).
+- D2: startup log: "model=openrouter/qwen/qwen3.6-35b-a3b, api_base=(provider default), db=postgres:5432/ai_incidents, embedding_model=BAAI/bge-m3" (manager-verified).
+- D3: fail-loud — RuntimeError on missing LLM_MODEL and on openrouter-without-key (manager re-ran both).
+- D4: company endpoint NXDOMAIN from dev box → canary on OpenRouter qwen3.6: 8p+6x+1xp (22/22 wrong→NO held). DEVIATION (env, not code).
+- D5: full suite 104p+5x+2x on rebuilt stack.
+- D6: health 200, 91/91 reseeded on fresh volume. sub_offerings/proposals = 0 (clustering disabled per brief).
+- NOTE: W1 hit port conflict from resurrected old stack (external agent) — diagnosed, resolved; run agent stood down by manager.
