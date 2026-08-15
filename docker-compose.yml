@@ -57,6 +57,10 @@ services:
       - PG_PASSWORD=aipass
       - PG_DATABASE=ai_incidents
       - USE_LLM_RERANKING=${USE_LLM_RERANKING:-1}
+      # Model is baked into the image (/app/hf_cache) — never reach the hub
+      # at runtime (no DNS dependency, no startup retry loop).
+      - HF_HUB_OFFLINE=1
+      - TRANSFORMERS_OFFLINE=1
     volumes:
       - ./ai_classification:/app/ai_classification
     depends_on:

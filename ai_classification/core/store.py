@@ -7,6 +7,7 @@ Pipeline position: 40_store — Postgres/pgvector persistence."""
 
 import json
 import logging
+import os
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -979,7 +980,31 @@ store = IncidentStore()
 # Start/stop app: init store, begin background sync
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    _log.info("Starting app — model=%s, host=%s:%s", settings.llm_model, settings.host, settings.port)
+    # D2: resolved LLM/DB/embedding config as the FIRST log line — explicit,
+    # no implicit defaults. (load_dotenv is CWD-relative: env must be set
+    # deliberately by the caller — compose .env, systemd, or export.)
+    _log.info(
+        "Starting app — model=%s, api_base=%s, db=%s:%s/%s, embedding_model=%s",
+        settings.llm_model,
+        settings.llm_api_base or "(provider default)",
+        settings.pg_host,
+        settings.pg_port,
+        settings.pg_database,
+        settings.embedding_model_name,
+    )
+    # D3: fail loud on missing/invalid LLM config — never a silent fallback
+    # to the ollama default in config.py.
+    if not os.environ.get("LLM_MODEL"):
+        raise RuntimeError(
+            "LLM_MODEL is not set. Export LLM_MODEL explicitly (e.g. "
+            "LLM_MODEL=openrouter/qwen/qwen3.6-35b-a3b) — refusing to start "
+            "with an implicit default model."
+        )
+    if settings.llm_model.startswith("openrouter/") and not (settings.llm_api_key or "").strip():
+        raise RuntimeError(
+            "LLM_API_KEY is required when LLM_MODEL starts with 'openrouter/' — "
+            "export LLM_API_KEY. Refusing to start with an unauthenticated LLM config."
+        )
     store.setup()
     if store.ready:
         _log.info("Store ready")
