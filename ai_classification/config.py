@@ -14,6 +14,11 @@ def _split_csv(value: str) -> list[str]:
     return [part.strip() for part in value.split(",") if part.strip()]
 
 
+def _is_truthy(value: str) -> bool:
+    """True for 1/true/yes/on (case-insensitive), else False."""
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 @dataclass(frozen=True)
 class Settings:
     # ── LLM ───────────────────────────────────────────────────────────────
@@ -54,6 +59,12 @@ class Settings:
     # ── Ticketing system sync ────────────────────────────────────────────
     ticketing_api_url: str = getenv("TICKETING_API_URL", "http://localhost:8002")
     sync_interval_seconds: int = int(getenv("SYNC_INTERVAL", "60"))
+    # SEAMS: which ticket source the pipeline talks to — "real" (default,
+    # raises not-configured until TICKETING_API_TOKEN exists) or "local"
+    # (fake source backed by the incident store; tests + offline runs).
+    ticketing_source: str = getenv("TICKETING_SOURCE", "real")
+    ticketing_api_token: str = getenv("TICKETING_API_TOKEN", "")
+    ticketing_dry_run: bool = _is_truthy(getenv("TICKETING_DRY_RUN", "false"))
 
     # ── PostgreSQL ───────────────────────────────────────────────────────
     pg_host: str = getenv("PG_HOST", "localhost")
