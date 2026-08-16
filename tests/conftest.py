@@ -7,6 +7,15 @@ psycopg2 was considered and rejected: it's fragile and misses real
 integration bugs (SQL errors, pgvector behavior, connection pooling).
 """
 
+import os
+
+# MUST be set before ai_classification.config is imported: Settings is a
+# module-level singleton evaluated at import time. Integration API tests
+# auth with this token; make the suite green without manual env exports
+# (documented convention: INTEGRATION_TOKEN=test-token).
+os.environ.setdefault("INTEGRATION_TOKEN", "test-token")
+os.environ.setdefault("INTEGRATION_WORKER_ENABLED", "0")
+
 import psycopg2
 import pytest
 
