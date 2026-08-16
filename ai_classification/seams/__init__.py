@@ -18,7 +18,7 @@ from .port import (
     PipelineResult,
     TicketSource,
 )
-from .real_source import RealTicketingSource
+from .smax.real_source import RealTicketingSource
 
 
 def get_ticket_source() -> TicketSource:
