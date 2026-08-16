@@ -74,3 +74,31 @@ Deviation 4: LLM-failure handling changed from aborting the poll iteration to pe
 
 ## ORCHESTRATION LESSON (for W3 dispatch)
 The run agent was stood down mid-W1 for acting on stale demo-era assumptions ("never down -v") that contradicted the current spec. W3's dispatch must state plainly: the 92 incidents are disposable and scripts/reseed.sh exists — no worker re-derives caution from history.
+
+## W3 — DONE (merged 3f3c433, verified by manager)
+
+- E1: POST /api/v1/incidents → 202 + reference in 1.0s (manager timed it live); processing async via worker thread
+- E2: GET /api/v1/incidents/{ref} → structured result or pending/retryable/flagged
+- E3: POST /api/v1/backfill → 202 + references (manager verified live)
+- E4: /health liveness + /ready → {db, embedding, llm} each reported independently (manager verified: all "ok")
+- E5: LLM-unreachable → retryable → FLAGGED after max attempts, real NXDOMAIN endpoint (llms.elm.sa), no mock. Test passed (manager re-ran: 1 passed, asserts real DNS-failure signature in error)
+- E6: auth (Bearer token) on every non-health endpoint; unauthenticated → 401 structured UNAUTHORIZED (manager verified live)
+- E7: dry-run persists nothing, writes nothing back — manager verified live: jobs list unchanged after DRY-1
+- E8: docs/INTEGRATION_GUIDE.md (251 lines, curl example per endpoint)
+- E9: full suite 131p+5x+2x (manager re-ran); sub-offering clustering confirmed still disabled
+- Write-back default: SAFEST — suggestions to separate channel, applied=false (verified in live job result)
+
+## FINAL STATE — all three workstreams merged on feat/deploy-integration-ready
+
+### W1: DONE — infra rebuilt from source; reseed reproducible (91/91, 492s); fail-loud config; canary no-regression on OpenRouter. D4 DEFERRED: company-model canary is the hard precondition before live traffic on llms.elm.sa.
+### W2: DONE — SMAX contained under seams/smax/ (client/models/real_source per user spec); single pipeline entry; result object; idempotent; provenance; original 104 tests unchanged. One intentional deviation registered (LLM-failure → per-ticket error capture).
+### W3: DONE — integration-ready API + guide; E1-E9 verified by manager (live smoke + re-run tests).
+
+### MODEL CUTOVER FINDING
+Company-hosted model (llms.elm.sa) NOT testable from dev box (NXDOMAIN). Canary on OpenRouter qwen3.6 shows no regression from rebuild. The D4 precondition stands: run the 34-pair canary against llms.elm.sa BEFORE any live traffic on the server; if it deviates, STOP — no prompt tuning.
+
+### OPEN ITEMS / RISKS
+1. D4 canary vs company model — first thing on the server after deploy.
+2. W2 deviation 4 (LLM-failure per-ticket capture) — intentional, verified better, registered.
+3. SMAX client endpoints (/tickets, changed_since, suggestions) are best-guess REST shapes — must be reconciled with SMAX's actual API before live integration.
+4. Integration worker starts in API lifespan (INTEGRATION_WORKER_ENABLED default?) — confirm default is safe for prod.
