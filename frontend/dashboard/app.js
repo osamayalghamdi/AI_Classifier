@@ -16,6 +16,11 @@
 // "dash_api" / "classify_url".
 const API_HOST = location.hostname || "localhost";
 const API_OVERRIDE = localStorage.getItem("dash_api");
+// W3 integration auth: every non-health endpoint requires the bearer token
+// (INTEGRATION_API_TOKEN). Set once via the header input or console:
+// localStorage.setItem("dash_token", "<token>")
+const DASH_TOKEN = localStorage.getItem("dash_token") || "";
+const apiHeaders = () => (DASH_TOKEN ? { "Authorization": `Bearer ${DASH_TOKEN}` } : {});
 let API, CLASSIFY_URL;
 if (API_OVERRIDE) {
   API = API_OVERRIDE;
@@ -74,8 +79,8 @@ async function loadData() {
   setConn(null, "loading");
   try {
     const [rep, incs] = await Promise.all([
-      fetch(`${API}/api/reports/daily`).then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); }),
-      fetch(`${API}/incidents`).then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); }),
+      fetch(`${API}/api/reports/daily`, { headers: apiHeaders() }).then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); }),
+      fetch(`${API}/incidents`, { headers: apiHeaders() }).then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); }),
     ]);
     const clusters = (rep.clusters || []).map((c) => ({
       cluster_id: c.cluster_id, name: c.failure_mode_desc || c.name || c.summary?.slice(0, 60) || "Cluster",
@@ -188,6 +193,8 @@ function restoreState() {
     const v = document.getElementById(`view-${ROLE}`);
     if (v) v.classList.add("active");
   }
+  const tokEl = document.getElementById("dashTokenInput");
+  if (tokEl) tokEl.value = DASH_TOKEN;
   document.getElementById("vtGrouped")?.classList.toggle("active", !FLAT);
   document.getElementById("vtFlat")?.classList.toggle("active", FLAT);
   const sevEl = document.getElementById("empSevFilter");
@@ -210,6 +217,11 @@ $("#roleSwitch").addEventListener("click", (e) => {
   $(`#view-${ROLE}`).classList.add("active");
   saveState();
   render();
+});
+
+$("#dashTokenInput")?.addEventListener("change", function () {
+  localStorage.setItem("dash_token", this.value.trim());
+  location.reload();
 });
 
 $("#vtGrouped").addEventListener("click", () => { FLAT = false; syncVT(); saveState(); renderEmployee(); });
@@ -630,7 +642,7 @@ async function fetchIncidentDetail(tid, detailEl) {
   }
   detailEl.innerHTML = '<div class="t-detail-loading">Loading incident details…</div>';
   try {
-    const resp = await fetch(`${API}/incidents/${tid}`);
+    const resp = await fetch(`${API}/incidents/${tid}`, { headers: apiHeaders() });
     if (!resp.ok) throw new Error(resp.status);
     const inc = await resp.json();
     const html = renderIncidentDetail(inc);
@@ -702,7 +714,7 @@ async function searchIncidentById() {
   box.innerHTML = idResultHead("Incident <code>" + esc(q) + "</code>") +
     '<div class="t-detail-loading" style="padding:12px 16px">Looking up…</div>';
   try {
-    const resp = await fetch(`${API}/incidents/${encodeURIComponent(q)}`);
+    const resp = await fetch(`${API}/incidents/${encodeURIComponent(q)}`, { headers: apiHeaders() });
     if (!resp.ok) {
       box.innerHTML = idResultHead("Incident <code>" + esc(q) + "</code>") +
         '<div style="padding:12px 16px;font-size:13px;color:var(--text-dim)">No incident found with this ID — check the ID shown after filing, or use the list below.</div>';

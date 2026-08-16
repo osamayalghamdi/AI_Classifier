@@ -4,16 +4,18 @@ services:
     image: pgvector/pgvector:pg17
     # No container_name — lets compose scope names per project, so this
     # stack can coexist with other AI_Classifier instances on one host.
+    # Credentials come ONLY from the environment (see .env.example) —
+    # never hardcode secrets in compose files.
     environment:
-      POSTGRES_USER: aiuser
-      POSTGRES_PASSWORD: aipass
-      POSTGRES_DB: ai_incidents
+      POSTGRES_USER: ${POSTGRES_USER:-aiuser}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required — copy .env.example to .env and set it}
+      POSTGRES_DB: ${POSTGRES_DB:-ai_incidents}
     ports:
-      - "5432:5432"
+      - "${PG_PORT:-5432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U aiuser -d ai_incidents"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-aiuser} -d ${POSTGRES_DB:-ai_incidents}"]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -41,22 +43,35 @@ services:
   api:
     build: .
     ports:
-      - "8000:8000"
+      - "${API_PORT:-8000}:8000"
     environment:
-      # OpenRouter by default (no Ollama dependency). LLM_API_KEY comes
-      # from .env (required for OpenRouter — the app fails on first LLM
-      # call if unset).
+      # LLM backend — all values come from the environment (.env).
+      # LLM_API_KEY is required for remote APIs; the app fails loudly on
+      # the first LLM call if unset.
       - LLM_MODEL=${LLM_MODEL:-openrouter/qwen/qwen3.6-35b-a3b}
       - LLM_API_BASE=${LLM_API_BASE:-}
       - LLM_API_KEY=${LLM_API_KEY:-}
-      - SIMILARITY_THRESHOLD=0.35
+      - SIMILARITY_THRESHOLD=${SIMILARITY_THRESHOLD:-0.35}
       # config.py reads PG_* (config.py:59-63), NOT DB_*
       - PG_HOST=postgres
       - PG_PORT=5432
-      - PG_USER=aiuser
-      - PG_PASSWORD=aipass
-      - PG_DATABASE=ai_incidents
-      - USE_LLM_RERANKING=${USE_LLM_RERANKING:-1}
+      - PG_USER=${POSTGRES_USER:-aiuser}
+      - PG_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required — copy .env.example to .env and set it}
+      - PG_DATABASE=${POSTGRES_DB:-ai_incidents}
+      # W3 integration API — bearer token gating every non-health endpoint.
+      # Fail-closed: empty ⇒ all integration requests rejected (never a default).
+      - INTEGRATION_API_TOKEN=${INTEGRATION_API_TOKEN:-}
+      - INTEGRATION_TOKEN=${INTEGRATION_API_TOKEN:-}
+      - INTEGRATION_WRITE_BACK=${INTEGRATION_WRITE_BACK:-0}
+      - INTEGRATION_MAX_ATTEMPTS=${INTEGRATION_MAX_ATTEMPTS:-3}
+      - INTEGRATION_POLL_S=${INTEGRATION_POLL_S:-5}
+      - INTEGRATION_RETRY_BASE_S=${INTEGRATION_RETRY_BASE_S:-2}
+      # Ticketing seam (W2) — selection + credentials via env only.
+      - TICKETING_SOURCE=${TICKETING_SOURCE:-real}
+      - TICKETING_API_URL=${TICKETING_API_URL:-http://localhost:8002}
+      - TICKETING_API_TOKEN=${TICKETING_API_TOKEN:-}
+      - TICKETING_DRY_RUN=${TICKETING_DRY_RUN:-false}
+      - SYNC_INTERVAL=${SYNC_INTERVAL:-60}
       # Model is baked into the image (/app/hf_cache) — never reach the hub
       # at runtime (no DNS dependency, no startup retry loop).
       - HF_HUB_OFFLINE=1
