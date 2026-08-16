@@ -37,6 +37,9 @@ class ClassificationResult(BaseModel):
         default="FM-000",
         description="Failure mode code from the taxonomy. Pick the best match from FAILURE_MODES. If none matches, use FM-000 (unclassified / new)."
     )
+    # ── Provenance (set by the seams pipeline; empty for direct callers) ──
+    model_version: str = Field(default="", description="Model identity that produced this classification.")
+    prompt_version: str = Field(default="", description="System-prompt version identity that produced this classification.")
 
     @model_validator(mode="after")
     def _check_service_in_system(self) -> "ClassificationResult":

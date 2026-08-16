@@ -306,6 +306,10 @@ def _parse_stage_system(raw: str) -> ClassificationResult | None:
 # ── Cached prompt (built once at import time) ─────────────────────────
 
 _SYSTEM_PROMPT = _build_system_prompt()
+
+# Identity of _SYSTEM_PROMPT — recorded on persisted classifications by the
+# seams pipeline (provenance). Bump when the prompt content changes.
+PROMPT_VERSION = "2026-08-v1"
 def _stage_system_from_partial(raw: str) -> ClassificationResult | None:
     """Recover affected_system from a truncated stage-1 response.
 
@@ -701,6 +705,7 @@ def classify_and_store(
     escalation_info: str | None = None,
     completion_code: str | None = None,
     source_ticket_id: str = "",
+    precomputed: ClassificationResult | None = None,
 ) -> ClassifyResponse:
     _log.info("Classifying incident — title='%s', group='%s', priority=%s, ticket_id='%s'",
               title[:60], assign_group, priority, source_ticket_id)
@@ -737,7 +742,7 @@ def classify_and_store(
             )
 
     # ── Content-hash dedupe gate ──
-    # Runs when there's NO source_ticket_id (real ticketing feed: title +
+    # Runs when there's NO source_ticket_id (external feed: title +
     # description only). Exact duplicates (digit-blanked) within the recency
     # window increment occurrence_count and return the existing incident
     # instead of creating a new one. ID-based dedupe above takes priority
@@ -771,7 +776,7 @@ def classify_and_store(
                 ],
             )
 
-    result = classify(title, description)
+    result = precomputed if precomputed is not None else classify(title, description)
 
     # ── Severity→priority mapping (only when the caller did not supply one) ──
     _priority_map = {"Critical": "critical", "Major": "high", "Minor": "medium", "Cosmetic": "low"}
