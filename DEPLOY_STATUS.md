@@ -46,3 +46,31 @@ Worktree isolation: one worker per worktree, branch `feat/deploy-integration-rea
 - D5: full suite 104p+5x+2x on rebuilt stack.
 - D6: health 200, 91/91 reseeded on fresh volume. sub_offerings/proposals = 0 (clustering disabled per brief).
 - NOTE: W1 hit port conflict from resurrected old stack (external agent) — diagnosed, resolved; run agent stood down by manager.
+
+## D4 — DEFERRED, NOT PASSED (manager correction)
+
+The D4 canary ran on OpenRouter qwen3.6 — the SAME model everything was already tuned on. It proves no regression from the rebuild (worth having) but says NOTHING about the company-hosted model. The entire risk that gate existed to catch is still open.
+
+**Hard precondition for the first run against the real endpoint (llms.elm.sa):**
+1. Canary BEFORE any live traffic.
+2. If it deviates: STOP, report, manager decides. No prompt tuning to compensate.
+This is recorded so D4 is never quietly remembered as green.
+
+Related: D2's resolved-model log (openrouter/qwen/qwen3.6-35b-a3b) is correct for the dev box. The D3 fail-loud work has NOT yet been exercised against the endpoint it was built for. Do not conflate the two.
+
+## W2 — DONE (merged, verified by manager)
+
+- S1 port: TicketSource (fetch_ticket/fetch_attachments/list_changed/write_back) in ai_classification/seams/port.py
+- S2 impls: local_source.py (store-backed, 91 incidents) + real_source.py (NotConfiguredError until TICKETING_API_TOKEN)
+- S3 boundary: Incident model (source_reference/title/description/attachments/timestamps); translation only in adapters
+- S4 entry: process_incident(Incident) -> PipelineResult; sync.py/batch/manual = thin callers
+- S5 result object; pipeline writes nothing; persist_result = separate skippable dry-run step
+- S6 idempotency via content-hash + source_reference; provenance (model_version/prompt_version) persisted
+- S7 containment grep: ticketing name only in seams/ + config selection keys + tests
+- Test counts: original suite 104p+5x+2x UNCHANGED (manager re-ran); seams tests 12/12 (idempotency 2/2, provenance 1/1)
+
+### W2 INTENTIONAL DEVIATION (manager-registered, NOT hidden by green count)
+Deviation 4: LLM-failure handling changed from aborting the poll iteration to per-ticket capture in result.error. Better behavior, right direction for W3 — but it IS a behavior change in a zero-behavior-change workstream. Recorded as an intentional exception. Deviations 2, 3, 5, 6 clean.
+
+## ORCHESTRATION LESSON (for W3 dispatch)
+The run agent was stood down mid-W1 for acting on stale demo-era assumptions ("never down -v") that contradicted the current spec. W3's dispatch must state plainly: the 92 incidents are disposable and scripts/reseed.sh exists — no worker re-derives caution from history.
