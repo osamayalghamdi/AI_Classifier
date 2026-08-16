@@ -73,5 +73,25 @@ class Settings:
     pg_password: str = getenv("PG_PASSWORD", "aipass")
     pg_database: str = getenv("PG_DATABASE", "ai_incidents")
 
+    # ── Integration API (E1-E9) ─────────────────────────────────────────
+    # Bearer token required by EVERY non-health endpoint. Empty => all
+    # integration requests rejected with UNAUTHORIZED (never a default).
+    # INTEGRATION_API_TOKEN (ops convention) takes precedence over
+    # INTEGRATION_TOKEN (older alias) — both are accepted.
+    integration_token: str = getenv("INTEGRATION_API_TOKEN") or getenv("INTEGRATION_TOKEN", "")
+    # Write-back mode for processed results:
+    #   "suggestions" (default — SAFEST): results/suggestions land in the
+    #     job result area, never written into ticket fields.
+    #   "none": no write-back at all.  "full": write back to the ticket
+    #     source (requires a configured source adapter).
+    integration_write_back: str = getenv("INTEGRATION_WRITE_BACK", "suggestions")
+    integration_max_attempts: int = int(getenv("INTEGRATION_MAX_ATTEMPTS", "5"))
+    integration_retry_base_s: int = int(getenv("INTEGRATION_RETRY_BASE_S", "5"))
+    integration_poll_s: float = float(getenv("INTEGRATION_POLL_S", "2.0"))
+    # 0 disables the background worker (tests / manual ticking).
+    integration_worker_enabled: bool = getenv(
+        "INTEGRATION_WORKER_ENABLED", "1"
+    ).lower() in ("1", "true", "yes", "on")
+
 
 settings = Settings()
