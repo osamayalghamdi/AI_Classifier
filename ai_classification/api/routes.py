@@ -18,8 +18,54 @@ _log = logging.getLogger(__name__)
 
 app = FastAPI(title="AI Incident Classification", version="0.2.0", lifespan=lifespan)
 
+
+# ── Structured validation errors (E8) — unknown fields / bad types map
+#    to 422 INVALID_PAYLOAD with stable machine-readable codes instead of
+#    FastAPI's default 422 shape.
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from ..integration.schemas import Err
+
+
+@app.exception_handler(RequestValidationError)
+async def _validation_error_handler(_request, exc: RequestValidationError):
+    fields = [
+        {
+            "field": ".".join(str(p) for p in err.get("loc", []) if p not in ("body", "query", "path")),
+            "issue": err.get("type", "invalid"),
+            "message": err.get("msg", ""),
+        }
+        for err in exc.errors()
+    ]
+    return JSONResponse(
+        status_code=422,
+        content={
+            "error": {
+                "code": Err.INVALID_PAYLOAD,
+                "message": "Payload failed validation — see fields",
+                "fields": fields,
+            }
+        },
+    )
+
+
+# Structured HTTP errors: dict details with an "error" key are returned
+# as-is ({"error": {...}}); plain-string details keep FastAPI's default
+# {"detail": ...} shape so existing endpoints are untouched.
+from fastapi import HTTPException as _HTTPException
+
+
+@app.exception_handler(_HTTPException)
+async def _http_error_handler(_request, exc: _HTTPException):
+    if isinstance(exc.detail, dict) and "error" in exc.detail:
+        return JSONResponse(status_code=exc.status_code, content=exc.detail)
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+
 # Proposal review API (sub-offering engine, Phase 2)
 app.include_router(proposal_router)
+from .integration_routes import router as integration_router, ready_router
+app.include_router(integration_router)
+app.include_router(ready_router)
 
 # CORS — allow dashboard at any origin
 app.add_middleware(

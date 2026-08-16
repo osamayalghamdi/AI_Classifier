@@ -1016,6 +1016,12 @@ async def lifespan(app: FastAPI):
     from ..core.grouping import start_rebuild_loop
     start_rebuild_loop()
 
+    # E1-E9 integration worker (async ingest queue) — gated so tests can
+    # drive the queue synchronously (INTEGRATION_WORKER_ENABLED=0).
+    if settings.integration_worker_enabled:
+        from ..integration import start_integration_worker
+        start_integration_worker()
+
     yield
     _log.info("Shutting down store")
     store.close()

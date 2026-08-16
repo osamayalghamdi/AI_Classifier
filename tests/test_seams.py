@@ -75,10 +75,13 @@ class TestRealSource:
             with pytest.raises(NotConfiguredError, match="not configured"):
                 call()
 
-    def test_not_implemented_when_configured(self, monkeypatch):
+    def test_with_token_attempts_network_not_configured_error(self, monkeypatch):
+        # With a token the client is live: NotConfiguredError must NOT be
+        # raised — the real HTTP attempt is (no server on localhost:8002).
         src = RealTicketingSource("http://localhost:8002", token="tok")
-        with pytest.raises(NotImplementedError):
+        with pytest.raises(Exception) as exc:
             src.fetch_ticket("x")
+        assert not isinstance(exc.value, NotConfiguredError)
 
 
 class TestSelection:
