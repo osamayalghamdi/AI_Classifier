@@ -26,15 +26,15 @@ Worktree isolation: one worker per worktree, branch `feat/deploy-integration-rea
 
 | Phase | Gate | Status | Evidence |
 |---|---|---|---|
-| W1 | D0 re-seed reproducible | pending | |
-| W1 | D1 single-command rebuild | pending | |
-| W1 | D2 explicit config logged at startup | pending | |
-| W1 | D3 missing LLM config → fail loud | pending | |
-| W1 | D4 canary 22/22+12/12 or deviation | pending | |
-| W1 | D5 full suite passes on rebuilt stack | pending | |
-| W1 | D6 health 200 + counts match baseline | pending | |
-| W2 | S1-S6 (adapter containment, result object, idempotency, provenance) | pending | |
-| W3 | E1-E9 (async ingest, readiness, auth, dry-run, guide) | pending | |
+| W1 | D0 re-seed reproducible | DONE | scripts/reseed.sh, 91/91, 492-664s |
+| W1 | D1 single-command rebuild | DONE | docker compose up -d --build |
+| W1 | D2 explicit config logged | DONE | startup log model/base/db/embedding |
+| W1 | D3 missing LLM config → fail loud | DONE | RuntimeError LLM_MODEL / LLM_API_KEY |
+| W1 | D4 canary 22/22+12/12 or deviation | DEFERRED | company endpoint NXDOMAIN from dev box; OpenRouter 8p+6x+1xp = no-regression only |
+| W1 | D5 full suite passes on rebuilt stack | DONE | 104p+5x+2x |
+| W1 | D6 health 200 + counts match baseline | DONE | 91/91 reseeded |
+| W2 | S1-S6 (adapter containment, result object, idempotency, provenance) | DONE | seams/smax/ contained; 12/12 tests; original 104 unchanged |
+| W3 | E1-E9 (async ingest, readiness, auth, dry-run, guide) | DONE | 131p+6x+1x; E5 real NXDOMAIN; live smoke verified |
 
 ## W1 — DONE (merged 3f4bca9, verified by manager)
 
@@ -68,12 +68,10 @@ Related: D2's resolved-model log (openrouter/qwen/qwen3.6-35b-a3b) is correct fo
 - S6 idempotency via content-hash + source_reference; provenance (model_version/prompt_version) persisted
 - S7 containment grep: ticketing name only in seams/ + config selection keys + tests
 - Test counts: original suite 104p+5x+2x UNCHANGED (manager re-ran); seams tests 12/12 (idempotency 2/2, provenance 1/1)
+- USER SPEC: real ticketing contained under seams/smax/ (client.py + models.py + real_source.py)
 
 ### W2 INTENTIONAL DEVIATION (manager-registered, NOT hidden by green count)
 Deviation 4: LLM-failure handling changed from aborting the poll iteration to per-ticket capture in result.error. Better behavior, right direction for W3 — but it IS a behavior change in a zero-behavior-change workstream. Recorded as an intentional exception. Deviations 2, 3, 5, 6 clean.
-
-## ORCHESTRATION LESSON (for W3 dispatch)
-The run agent was stood down mid-W1 for acting on stale demo-era assumptions ("never down -v") that contradicted the current spec. W3's dispatch must state plainly: the 92 incidents are disposable and scripts/reseed.sh exists — no worker re-derives caution from history.
 
 ## W3 — DONE (merged 3f3c433, verified by manager)
 
@@ -105,10 +103,12 @@ Company-hosted model (llms.elm.sa) NOT testable from dev box (NXDOMAIN). Canary 
 
 ## DB STABILITY FIX (manager, post-W3)
 
-Root cause of recurring data loss: the old `ai_classifier` compose stack's postgres (restart policy `unless-stopped`) kept re-creating itself on the shared `ai_classifier_pgdata` volume and re-initializing it. Data reached 91 (reseed proven 3×) then was wiped post-import by competing postgres instances.
+Root cause of recurring data loss: a STALE UVICORN (old pid) held :8000 with a connection pool to a deleted postgres — every reseed after the first went through a broken API (500s, data landed nowhere) and appeared to "vanish." Compounded by the old ai_classifier stack's postgres re-creating itself on the shared volume.
 
 Fix — dedicated isolated postgres, nothing else can touch it:
 - Volume: `ai_pg_demo_stable` (new name, referenced by nothing else)
 - Container: `ai_pg_stable`, `--restart no` (never auto-resurrects), port **5433** (nothing else uses it)
-- API: PG_PORT=5433, PG_DATABASE=ai_incidents
+- API: PG_HOST=localhost PG_PORT=5433 PG_DATABASE=ai_incidents
 - Reseed: `./scripts/reseed.sh http://localhost:8000 test_incidents.json` (~11 min, 91 incidents, 0 failed)
+- Stability PROVEN: 91 incidents survive `docker restart ai_pg_stable` (verified)
+- Test/API convention: PG_PORT=5433 (stable DB); `PG_PORT=5433 PG_PASSWORD=aipass uv run pytest tests/ -q` → 131p+6x+1x (verified)
