@@ -102,3 +102,13 @@ Company-hosted model (llms.elm.sa) NOT testable from dev box (NXDOMAIN). Canary 
 2. W2 deviation 4 (LLM-failure per-ticket capture) — intentional, verified better, registered.
 3. SMAX client endpoints (/tickets, changed_since, suggestions) are best-guess REST shapes — must be reconciled with SMAX's actual API before live integration.
 4. Integration worker starts in API lifespan (INTEGRATION_WORKER_ENABLED default?) — confirm default is safe for prod.
+
+## DB STABILITY FIX (manager, post-W3)
+
+Root cause of recurring data loss: the old `ai_classifier` compose stack's postgres (restart policy `unless-stopped`) kept re-creating itself on the shared `ai_classifier_pgdata` volume and re-initializing it. Data reached 91 (reseed proven 3×) then was wiped post-import by competing postgres instances.
+
+Fix — dedicated isolated postgres, nothing else can touch it:
+- Volume: `ai_pg_demo_stable` (new name, referenced by nothing else)
+- Container: `ai_pg_stable`, `--restart no` (never auto-resurrects), port **5433** (nothing else uses it)
+- API: PG_PORT=5433, PG_DATABASE=ai_incidents
+- Reseed: `./scripts/reseed.sh http://localhost:8000 test_incidents.json` (~11 min, 91 incidents, 0 failed)
