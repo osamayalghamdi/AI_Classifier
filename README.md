@@ -28,6 +28,34 @@ LLM-powered incident classification with failure-mode taxonomy and exact-match g
 | GET | `/health` | Service status |
 | POST | `/reset` | Delete all incidents |
 
+**Integration API (ready):** `/api/v1/incidents` (async ingest, 202 + reference),
+`/api/v1/incidents/{ref}` (fetch result), `/api/v1/incidents/dry-run` (writes
+nothing), `/api/v1/backfill` (batch ≤200), `/ready` (db/embedding/llm checks).
+Bearer auth (`INTEGRATION_API_TOKEN`). Full contract: `docs/INTEGRATION_GUIDE.md`.
+
+## SMAX integration — code ready, not live yet
+
+SMAX = the ticketing system. Two ways to connect:
+
+1. **API (ready now):** SMAX (or any system) pushes incidents →
+   `POST /api/v1/incidents` → poll `GET /api/v1/incidents/{ref}` for the
+   result. Nothing to configure on the SMAX side beyond the bearer token.
+
+2. **Polling (code exists, NOT yet tested against real SMAX):** the app
+   polls SMAX for changed tickets itself (adapter: `ai_classification/seams/smax/`).
+   Enable when SMAX credentials exist:
+
+   ```
+   TICKETING_API_URL=<smax-url>     # default http://localhost:8002
+   TICKETING_API_TOKEN=<token>      # required — until set, sync logs
+                                    # "SMAX source is not configured" (expected)
+   TICKETING_SOURCE=real            # default
+   TICKETING_DRY_RUN=true           # first: verify nothing is written back
+   ```
+
+   Until `TICKETING_API_TOKEN` is configured, the API path (1) is the
+   integration route.
+
 ## Project Layout
 
 ```
