@@ -44,6 +44,6 @@ else
 fi
 
 # ── Start API ─────────────────────────────────────────────────────────
-exec uvicorn ai_classification.api.routes:app \
+exec uvicorn ai_classification.services.ingest.routes:app \
     --host 0.0.0.0 \
     --port 8000

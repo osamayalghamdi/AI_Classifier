@@ -29,7 +29,7 @@ from typing import Any
 import pytest
 from litellm import completion
 
-from ai_classification.config import settings
+from ai_classification.shared.config import settings
 
 FIXTURE = os.path.join(os.path.dirname(__file__), "pairwise_canary_fixture.json")
 REQUIRED_MODEL_SUBSTR = ("openrouter", "qwen3.6")

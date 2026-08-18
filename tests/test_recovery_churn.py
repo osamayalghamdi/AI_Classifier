@@ -4,7 +4,7 @@ The queue replaces the old in-memory `_retried_still_fallback` set: the
 guard is now durable (DB table) instead of process-local.
 """
 
-from ai_classification.seams.recovery import recovery_candidates, run_recovery
+from ai_classification.services.jobs.recovery import recovery_candidates, run_recovery
 
 
 class FakeStore:
@@ -43,24 +43,24 @@ def _failed_inc(i: int) -> dict:
 
 
 def _patch_store(monkeypatch, store):
-    """recovery.py lazily imports `store` from ai_classification.core.store —
+    """recovery.py lazily imports `store` from ai_classification.shared.store —
     patch the singleton there."""
-    from ai_classification.core import store as store_mod
+    import ai_classification.shared.store as store_mod
     monkeypatch.setattr(store_mod, "store", store)
 
 
 def _patch_classify(monkeypatch, fake_cls):
     """recovery.py lazily imports classify/PROMPT_VERSION from
-    ai_classification.core.classifier — patch on the source module."""
-    from ai_classification.core import classifier as classifier_mod
+    ai_classification.services.classify.classifier — patch on the source module."""
+    import ai_classification.services.classify.classifier as classifier_mod
     monkeypatch.setattr(classifier_mod, "classify", lambda t, d: fake_cls)
     monkeypatch.setattr(classifier_mod, "PROMPT_VERSION", "p")
 
 
 def _patch_settings(monkeypatch, llm_model="m"):
-    """recovery.py lazily imports settings from ai_classification.config —
+    """recovery.py lazily imports settings from ai_classification.shared.config —
     patch on the source module."""
-    from ai_classification import config as config_mod
+    from ai_classification.shared import config as config_mod
     fake = type("S", (), {"llm_model": llm_model})()
     monkeypatch.setattr(config_mod, "settings", fake)
 
@@ -82,7 +82,7 @@ def test_recovery_failure_queues_ticket(monkeypatch):
     class Boom(Exception):
         pass
 
-    from ai_classification.core import classifier as classifier_mod
+    import ai_classification.services.classify.classifier as classifier_mod
     monkeypatch.setattr(classifier_mod, "classify", lambda t, d: (_ for _ in ()).throw(Boom("still broken")))
     monkeypatch.setattr(classifier_mod, "PROMPT_VERSION", "p")
     _patch_settings(monkeypatch)

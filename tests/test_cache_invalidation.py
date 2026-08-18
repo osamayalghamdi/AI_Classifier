@@ -9,7 +9,7 @@ the store mutation points (pool_remove / update_classification) call it.
 
 import time
 
-from ai_classification.core import grouping as g
+import ai_classification.services.cluster.grouping as g
 
 
 def _inc(i: str) -> dict:
@@ -89,8 +89,8 @@ def test_ar_name_cache_ttl_expires(monkeypatch):
 def test_store_mutation_helper_routes_to_grouping(monkeypatch):
     """The lazy-import bridge (store -> grouping) actually fires — a move or
     re-classification invalidates the cluster caches."""
-    from ai_classification.core import grouping as grouping_mod
-    from ai_classification.core import store as store_mod
+    import ai_classification.services.cluster.grouping as grouping_mod
+    import ai_classification.shared.store as store_mod
     seen = []
     monkeypatch.setattr(grouping_mod, "invalidate_incident", lambda iid: seen.append(iid))
 

@@ -9,11 +9,11 @@ import pytest
 from dataclasses import replace
 from fastapi.testclient import TestClient
 
-from ai_classification.config import settings as base_settings
-from ai_classification.core.store import IncidentStore
-from ai_classification.core.suboffering import offering_of, embed_pure
-from ai_classification.core.suboffering_cluster import generate_candidates, compute_member_flags
-from ai_classification.core import verifier as verifier_mod
+from ai_classification.shared.config import settings as base_settings
+from ai_classification.shared.store import IncidentStore
+from ai_classification.services.match.suboffering import offering_of, embed_pure
+from ai_classification.services.cluster.suboffering_cluster import generate_candidates, compute_member_flags
+import ai_classification.services.cluster.verifier as verifier_mod
 
 from .conftest import TEST_PG_DATABASE
 from .test_incident_store import FixedVecModel, _truncate, _make_store
@@ -150,11 +150,11 @@ class TestEngineStore:
 # ── proposal API flow (routes against the test store) ─────────────────
 @pytest.fixture
 def api(engine_store, monkeypatch):
-    import ai_classification.api.proposal_routes as pr
-    import ai_classification.core.suboffering as so
+    import ai_classification.services.review.proposal_routes as pr
+    import ai_classification.services.match.suboffering as so
     monkeypatch.setattr(pr, "store", engine_store)
     monkeypatch.setattr(so, "store", engine_store)
-    from ai_classification.api.routes import app
+    from ai_classification.services.ingest.routes import app
     return TestClient(app)
 
 

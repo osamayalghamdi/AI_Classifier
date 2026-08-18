@@ -22,7 +22,7 @@ from sentence_transformers import SentenceTransformer
 
 from ai_classification.shared.config import settings
 from ai_classification.domain.models import ClassificationResult
-from ai_classification.sync import start_sync_worker
+from ai_classification.services.jobs.sync import start_sync_worker
 
 _log = logging.getLogger(__name__)
 

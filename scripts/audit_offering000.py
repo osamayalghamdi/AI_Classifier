@@ -5,10 +5,10 @@ import sys
 
 sys.path.insert(0, ".")
 
-from ai_classification.core.store import store
-from ai_classification.core.suboffering import offering_of, OFFERING_000
-from ai_classification.core.suboffering_cluster import generate_candidates, AUTO_ACCEPT
-from ai_classification.core.verifier import Verifier
+from ai_classification.shared.store import store
+from ai_classification.services.match.suboffering import offering_of, OFFERING_000
+from ai_classification.services.cluster.suboffering_cluster import generate_candidates, AUTO_ACCEPT
+from ai_classification.services.cluster.verifier import Verifier
 import numpy as np
 
 
@@ -22,7 +22,7 @@ def main(cache_path: str, shuffle_seed: int | None = None):
         import random
         random.Random(shuffle_seed).shuffle(pool)
     verifier = Verifier(cache_path=cache_path)
-    from ai_classification.core.suboffering import embed_pure
+    from ai_classification.services.match.suboffering import embed_pure
     embs = np.stack([embed_pure(i.get("title", ""), i.get("description", "")) for i in pool])
     sim = embs @ embs.T
     np.fill_diagonal(sim, -1.0)

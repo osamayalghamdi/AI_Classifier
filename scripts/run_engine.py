@@ -17,10 +17,10 @@ from collections import Counter
 
 sys.path.insert(0, ".")
 
-from ai_classification.core.store import store
-from ai_classification.core.suboffering import OFFERING_000, offering_of
-from ai_classification.core.suboffering_cluster import run_all_pools
-from ai_classification.core.verifier import Verifier
+from ai_classification.shared.store import store
+from ai_classification.services.match.suboffering import OFFERING_000, offering_of
+from ai_classification.services.cluster.suboffering_cluster import run_all_pools
+from ai_classification.services.cluster.verifier import Verifier
 
 store.setup()
 

@@ -11,12 +11,12 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
-from ai_classification.core.store import IncidentStore, VECTOR_DIM
+from ai_classification.shared.store import IncidentStore, VECTOR_DIM
 from ai_classification.domain.models import ClassificationResult
 from ai_classification.domain.taxonomy import (
     AffectedSystem, IncidentType, Severity, Urgency, Category,
 )
-from ai_classification.config import settings as base_settings
+from ai_classification.shared.config import settings as base_settings
 
 from .conftest import TEST_PG_DATABASE
 
@@ -116,7 +116,7 @@ def _get_embedding(s: IncidentStore, iid: str):
 
 def _make_store(monkeypatch, model, threshold=None):
     """Build an IncidentStore against the real test Postgres database."""
-    import ai_classification.core.store as store_mod
+    import ai_classification.shared.store as store_mod
 
     monkeypatch.setattr(store_mod, "SentenceTransformer", lambda *a, **_: model)
 

@@ -28,8 +28,8 @@ from collections import defaultdict
 import networkx as nx
 import numpy as np
 
-from ai_classification.core.store import store
-from ai_classification.core.llm import call_llm, strip_json_fences
+from ai_classification.shared.store import store
+from ai_classification.services.classify.llm import call_llm, strip_json_fences
 from ai_classification.services.match.suboffering import (
     MATCH_THRESHOLD,
     embed_pure,
@@ -280,14 +280,14 @@ def start_rebuild_loop():
 
 def _maybe_heal(last_heal: float) -> float:
     """Run the re-classification sweep on its own cadence (heal)."""
-    from ai_classification.config import settings
+    from ai_classification.shared.config import settings
     if not settings.reclassify_enabled:
         return last_heal
     now = time.time()
     if now - last_heal < settings.reclassify_interval_s:
         return last_heal
     try:
-        from ai_classification.core.heal import reclassify_fallback_incidents
+        from ai_classification.services.jobs.heal import reclassify_fallback_incidents
         reclassify_fallback_incidents()
     except Exception as exc:  # noqa: BLE001 — heal must never kill the loop
         _log.error("Heal sweep failed: %s", exc)

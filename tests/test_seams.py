@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from ai_classification.core.store import IncidentStore
+from ai_classification.shared.store import IncidentStore
 from ai_classification.seams import (
     Incident,
     LocalFakeTicketSource,
@@ -23,7 +23,7 @@ from ai_classification.seams import (
     process_incident,
 )
 from ai_classification.seams.pipeline import _existing_classification
-from ai_classification.config import settings as base_settings
+from ai_classification.shared.config import settings as base_settings
 
 from .conftest import TEST_PG_DATABASE
 from .test_incident_store import FixedVecModel, _make_result, _truncate
@@ -32,8 +32,8 @@ from .test_incident_store import FixedVecModel, _make_result, _truncate
 def _make_seams_store(monkeypatch, model=None):
     """IncidentStore (test DB, mocked embeddings) wired into the module
     singletons the pipeline uses via lazy imports."""
-    import ai_classification.core.store as store_mod
-    import ai_classification.core.classifier as classifier_mod
+    import ai_classification.shared.store as store_mod
+    import ai_classification.services.classify.classifier as classifier_mod
 
     s = _make_store(monkeypatch, model or FixedVecModel())
     # The pipeline lazy-imports `store` from these modules at call time, so
@@ -44,7 +44,7 @@ def _make_seams_store(monkeypatch, model=None):
 
 
 def _make_store(monkeypatch, model):
-    import ai_classification.core.store as store_mod
+    import ai_classification.shared.store as store_mod
     from dataclasses import replace
 
     monkeypatch.setattr(store_mod, "SentenceTransformer", lambda *a, **_: model)
@@ -89,7 +89,7 @@ class TestSelection:
         assert isinstance(get_ticket_source(), RealTicketingSource)
 
     def test_local_selected_by_config(self, monkeypatch):
-        import ai_classification.config as config_mod
+        import ai_classification.shared.config as config_mod
 
         class _FakeSettings:
             ticketing_source = "local"
@@ -137,7 +137,7 @@ class TestPipelineResult:
                 signature=f"sig {title}",
             )
 
-        monkeypatch.setattr("ai_classification.core.classifier.classify", _fake_classify)
+        monkeypatch.setattr("ai_classification.services.classify.classifier.classify", _fake_classify)
         inc = Incident(source_reference="EXT-99", title="T1", description="D1")
         r = process_incident(inc)
         assert r.is_new is True
@@ -161,7 +161,7 @@ class TestPipelineResult:
                 raise AssertionError("classify must NOT be called for seen content")
             return _make_result(canonical_statement="CS", signature="sg")
 
-        monkeypatch.setattr("ai_classification.core.classifier.classify", _fake_classify)
+        monkeypatch.setattr("ai_classification.services.classify.classifier.classify", _fake_classify)
         inc = Incident(source_reference="EXT-1", title="T1", description="D1")
         r1 = process_incident(inc)
         persist_result(r1)
@@ -184,7 +184,7 @@ class TestIdempotency:
                 signature=f"sig {title}",
             )
 
-        monkeypatch.setattr("ai_classification.core.classifier.classify", _fake_classify)
+        monkeypatch.setattr("ai_classification.services.classify.classifier.classify", _fake_classify)
         inc = Incident(source_reference="EXT-42", title="T42", description="D42")
 
         r1 = process_incident(inc)
@@ -207,7 +207,7 @@ class TestIdempotency:
     def test_dry_run_writes_nothing(self, monkeypatch):
         s = _make_seams_store(monkeypatch)
         inc = Incident(source_reference="EXT-DR", title="T", description="D")
-        monkeypatch.setattr("ai_classification.core.classifier.classify",
+        monkeypatch.setattr("ai_classification.services.classify.classifier.classify",
                             lambda t, d: _make_result(canonical_statement="CS", signature="sg"))
         r = process_incident(inc)
         out = persist_result(r, dry_run=True)
@@ -225,7 +225,7 @@ class TestProvenance:
         def _fake_classify(title, description):
             return _make_result(canonical_statement="CS", signature="sg")
 
-        monkeypatch.setattr("ai_classification.core.classifier.classify", _fake_classify)
+        monkeypatch.setattr("ai_classification.services.classify.classifier.classify", _fake_classify)
         inc = Incident(source_reference="EXT-P", title="TP", description="DP")
         r = process_incident(inc)
         assert r.model_version == base_settings.llm_model
@@ -249,7 +249,7 @@ class TestThinCallers:
         s = _make_seams_store(monkeypatch)
         s.save_incident("loc0000000003", "M", "N", _make_result(),
                         source_ticket_ids=["EXT-M"])
-        monkeypatch.setattr("ai_classification.core.classifier.classify",
+        monkeypatch.setattr("ai_classification.services.classify.classifier.classify",
                             lambda t, d: _make_result(canonical_statement="CS", signature="sg"))
         src = LocalFakeTicketSource(s)
         out = manual_process("EXT-M", src, persist=False)

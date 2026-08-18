@@ -8,9 +8,9 @@ clustered — without turning the pool into a grab-bag.
 
 import numpy as np
 
-from ai_classification.core import store as store_mod
-from ai_classification.core import suboffering as sub_mod
-from ai_classification.seams import repool
+import ai_classification.shared.store as store_mod
+import ai_classification.services.match.suboffering as sub_mod
+from ai_classification.services.jobs import repool
 
 _VEC = np.ones(8, dtype=np.float32)
 

@@ -17,7 +17,7 @@ from typing import Any
 
 from litellm import completion
 
-from ai_classification.config import settings
+from ai_classification.shared.config import settings
 
 _log = logging.getLogger(__name__)
 

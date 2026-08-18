@@ -16,8 +16,8 @@ import types
 
 import pytest
 
-from ai_classification.config import settings
-from ai_classification.core import classifier as classifier_mod
+from ai_classification.shared.config import settings
+import ai_classification.services.classify.classifier as classifier_mod
 from ai_classification.domain.models import ClassificationResult
 from ai_classification.domain.taxonomy import (
     AffectedSystem,
@@ -65,10 +65,10 @@ def _cascade_on(monkeypatch):
 def fake_completion(monkeypatch):
     """Queue of LLM responses; pops from the front per call. Tracks call count.
 
-    Patches `ai_classification.core.llm.completion` — call_llm (used by every
+    Patches `ai_classification.services.classify.llm.completion` — call_llm (used by every
     cascade stage) imports completion there.
     """
-    import ai_classification.core.llm as mod_llm
+    import ai_classification.services.classify.llm as mod_llm
 
     outputs = []
     calls = []
