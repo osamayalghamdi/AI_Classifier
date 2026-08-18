@@ -5,16 +5,16 @@ import logging
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
-from .schemas import ClassifyRequest, ClassifyResponse, ClassifyBatchRequest, ClassifyBatchResponse, ResolveResponse, BulkImportRequest
-from ..core.store import (
+from ai_classification.api.schemas import ClassifyRequest, ClassifyResponse, ClassifyBatchRequest, ClassifyBatchResponse, ResolveResponse, BulkImportRequest
+from ai_classification.shared.store import (
     lifespan, get_health, resolve_incident, get_incident, list_incidents, delete_all_incidents,
     store,
 )
-from ..core.classifier import classify_and_store, classify_batch
-from ..config import settings
-from ..core.grouping import build_clusters, invalidate_cache, request_rebuild
-from ..core.import_service import import_incidents_from_file, import_incidents_from_body
-from .proposal_routes import router as proposal_router
+from ai_classification.services.classify.classifier import classify_and_store, classify_batch
+from ai_classification.shared.config import settings
+from ai_classification.services.cluster.grouping import build_clusters, invalidate_cache, request_rebuild
+from ai_classification.services.ingest.import_service import import_incidents_from_file, import_incidents_from_body
+from ai_classification.services.review.proposal_routes import router as proposal_router
 
 _log = logging.getLogger(__name__)
 
@@ -26,7 +26,7 @@ app = FastAPI(title="AI Incident Classification", version="0.2.0", lifespan=life
 #    FastAPI's default 422 shape.
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from ..integration.schemas import Err
+from ai_classification.services.jobs.integration.schemas import Err
 
 
 @app.exception_handler(RequestValidationError)
@@ -65,7 +65,7 @@ async def _http_error_handler(_request, exc: _HTTPException):
 
 # Proposal review API (sub-offering engine, Phase 2)
 app.include_router(proposal_router)
-from .integration_routes import router as integration_router, ready_router
+from ai_classification.services.ingest.integration_routes import router as integration_router, ready_router
 app.include_router(integration_router)
 app.include_router(ready_router)
 
@@ -96,7 +96,7 @@ def health():
 def test_llm(question: str = "Say hello in one short sentence.", max_tokens: int = 200):
     import time
 
-    from ..core.llm import call_llm
+    from ai_classification.services.classify.llm import call_llm
 
     _log.info("GET /test/llm — question='%s'", question[:80])
     t0 = time.time()
@@ -134,7 +134,7 @@ def test_llm(question: str = "Say hello in one short sentence.", max_tokens: int
 def test_all():
     import time as _t
 
-    from ..core.llm import call_llm
+    from ai_classification.services.classify.llm import call_llm
 
     _log.info("GET /test/all — running full system battery")
     results: list[dict] = []
@@ -156,7 +156,7 @@ def test_all():
 
     # 1. DB — connect + count incidents
     def _db():
-        from ..integration import _connect
+        from ai_classification.services.jobs.integration import _connect
         with _connect() as conn:
             with conn.cursor() as cur:
                 cur.execute("SELECT count(*) FROM incidents")
@@ -165,7 +165,7 @@ def test_all():
     # 2. Embedding model — encode a string, confirm shape
     def _embedding():
         import numpy as np
-        from ..core.store import store
+        from ai_classification.shared.store import store
         if store._model is None:
             raise RuntimeError("embedding model not loaded")
         v = store._model.encode("test ticket")
@@ -181,13 +181,13 @@ def test_all():
 
     # 4. Classification — full pipeline on a sample ticket (no store write)
     def _classify():
-        from ..core.classifier import classify
+        from ai_classification.services.classify.classifier import classify
         r = classify("Rawdah permit booking fails on date selection", "error on the done button")
         return f"{r.affected_system} / {r.failure_mode} / {r.severity}"
 
     # 5. Similar-ticket retrieval — nearest neighbours for a sample
     def _similar():
-        from ..core.store import store
+        from ai_classification.shared.store import store
         if not store.ready:
             raise RuntimeError("store not ready")
         hits = store.find_similar("Rawdah permit booking fails on date selection", top_k=3)
@@ -195,7 +195,7 @@ def test_all():
 
     # 6. Clusters — build the current report
     def _clusters():
-        from ..core.grouping import build_clusters
+        from ai_classification.services.cluster.grouping import build_clusters
         rep = build_clusters("daily")
         return f"{rep.get('total_incidents')} incidents, {len(rep.get('clusters', []))} clusters"
 
