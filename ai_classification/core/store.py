@@ -400,6 +400,55 @@ class IncidentStore:
         finally:
             self._putconn(conn)
 
+    def find_fallback_incidents(self, limit: int = 10) -> list[dict]:
+        """Active incidents whose stored classification is the LLM-failure
+        fallback (low confidence + reasoning starting with
+        'Classification failed after'). These are the heal candidates."""
+        if not self._ready or self._pool is None:
+            return []
+        conn = self._getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id, title, description, extracted_text FROM incidents "
+                    "WHERE status = 'active' "
+                    "AND classification_json::jsonb->>'confidence' = 'low' "
+                    "AND classification_json::jsonb->>'reasoning' LIKE %s "
+                    "LIMIT %s",
+                    ("Classification failed after%", limit),
+                )
+                cols = ("id", "title", "description", "extracted_text")
+                return [dict(zip(cols, r)) for r in cur.fetchall()]
+        finally:
+            self._putconn(conn)
+
+    def reclassify_incident(
+        self, incident_id: str, title: str, description: str,
+        extracted_text: str, classification,
+    ) -> bool:
+        """Update an incident's classification + embedding in place (heal path).
+
+        Embedding is recomputed from the TICKET'S OWN TEXT — same rule as
+        save_incident (the embedding signal must stay the real ticket text)."""
+        if not self._ready or self._pool is None:
+            return False
+        embed_text = self._build_embedding_text(title, description, extracted_text)
+        embedding = self._embed(embed_text)
+        conn = self._getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE incidents SET classification_json = %s, embedding = %s "
+                    "WHERE id = %s",
+                    (classification.model_dump_json(),
+                     embedding.tolist() if embedding is not None else None,
+                     incident_id),
+                )
+            conn.commit()
+            return cur.rowcount > 0
+        finally:
+            self._putconn(conn)
+
     # ── Admin / Reset ──────────────────────────────────────────────
 
     def delete_all(self) -> int:

@@ -268,12 +268,30 @@ def start_rebuild_loop():
     def _first_build():
         _build_and_cache()
         # now enter periodic loop
+        last_heal = 0.0
         while True:
             time.sleep(_BUILD_INTERVAL)
             _build_and_cache()
+            last_heal = _maybe_heal(last_heal)
     thread = threading.Thread(target=_first_build, daemon=True)
     thread.start()
     _log.info("Cluster rebuild loop started — every %ds", _BUILD_INTERVAL)
+
+
+def _maybe_heal(last_heal: float) -> float:
+    """Run the re-classification sweep on its own cadence (heal)."""
+    from ..config import settings
+    if not settings.reclassify_enabled:
+        return last_heal
+    now = time.time()
+    if now - last_heal < settings.reclassify_interval_s:
+        return last_heal
+    try:
+        from ..core.heal import reclassify_fallback_incidents
+        reclassify_fallback_incidents()
+    except Exception as exc:  # noqa: BLE001 — heal must never kill the loop
+        _log.error("Heal sweep failed: %s", exc)
+    return now
 
 
 # Public API — returns latest snapshot instantly, no LLM calls
