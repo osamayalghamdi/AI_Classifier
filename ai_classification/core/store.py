@@ -445,6 +445,8 @@ class IncidentStore:
                      incident_id),
                 )
             conn.commit()
+            if cur.rowcount > 0:
+                self._invalidate_cluster_caches(incident_id)
             return cur.rowcount > 0
         finally:
             self._putconn(conn)
