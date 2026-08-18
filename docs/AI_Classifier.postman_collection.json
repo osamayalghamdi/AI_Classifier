@@ -20,8 +20,12 @@
       ]
     },
     {
-      "name": "2. LLM test",
+      "name": "2. LLM & full system test",
       "item": [
+        {
+          "name": "GET /test/all — RUN THE WHOLE BATTERY (db/embedding/llm/classify/similar/clusters)",
+          "request": { "method": "GET", "url": "{{base}}/test/all" }
+        },
         {
           "name": "GET /test/llm?question=... — ask the model anything",
           "request": {
