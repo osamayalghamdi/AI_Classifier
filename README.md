@@ -1,6 +1,6 @@
 # AI Incident Classifier
 
-LLM-powered incident classification with failure-mode taxonomy and exact-match grouping. Built for Hajj operations (Nusuk Masar Haj).
+LLM-powered incident classification on the Nusuk Masar Haj service-offering model (offering + sub-offering), with embedding clustering for live duplicate detection and root-cause grouping. Built for Hajj operations (Nusuk Masar Haj).
 
 <img width="1619" height="903" alt="Screenshot 1448-02-15 at 7 22 01 AM" src="https://github.com/user-attachments/assets/3b288fec-616f-4919-bf4d-00e5852768f4" />
 
@@ -13,7 +13,7 @@ LLM-powered incident classification with failure-mode taxonomy and exact-match g
 | Embeddings | BAAI/bge-m3 (1024d) |
 | Storage | PostgreSQL + pgvector (HNSW ANN index) |
 | Frontend | Vanilla JS, no build step |
-| Grouping | Two-phase: FM-code exact match → embedding fallback |
+| Grouping | Two-phase: offering exact match → embedding fallback |
 
 ## API
 
@@ -194,6 +194,7 @@ inside the Docker network (deliberately safer). Change ports via
 | `/ready` | Readiness — db / embedding / llm (one-shot) |
 | `/status` | Per-service status: db / embedding / llm + resolved model & URL |
 | `/test/llm` | **Ask the configured model anything** — live LLM smoke test |
+| `/test/all` | **RUN THE WHOLE BATTERY** — db/embedding/llm/classify/similar/clusters in one call |
 | `/docs` | Swagger UI — interactive API explorer |
 | `/classify` | POST — classify one ticket |
 | `/incidents` | GET — list incidents |
