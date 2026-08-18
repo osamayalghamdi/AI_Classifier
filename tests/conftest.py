@@ -7,6 +7,26 @@ psycopg2 was considered and rejected: it's fragile and misses real
 integration bugs (SQL errors, pgvector behavior, connection pooling).
 """
 
+import os
+
+# MUST be set before ai_classification.config is imported: Settings is a
+# module-level singleton evaluated at import time. Integration API tests
+# auth with this token; make the suite green without manual env exports
+# (documented convention: INTEGRATION_TOKEN=test-token).
+os.environ.setdefault("INTEGRATION_TOKEN", "test-token")
+os.environ.setdefault("INTEGRATION_WORKER_ENABLED", "0")
+
+# SAFETY GUARD: integration tests operate on settings.pg_database and can
+# wipe rows. Never let them run against the production DB (ai_incidents) —
+# force the isolated test DB when PG_DATABASE wasn't explicitly set.
+if not os.environ.get("PG_DATABASE"):
+    os.environ["PG_DATABASE"] = "ai_incidents_test"
+elif os.environ["PG_DATABASE"] == "ai_incidents":
+    raise SystemExit(
+        "REFUSING to run tests against the production database (ai_incidents). "
+        "Set PG_DATABASE=ai_incidents_test (or unset PG_DATABASE entirely)."
+    )
+
 import psycopg2
 import pytest
 

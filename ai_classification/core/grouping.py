@@ -41,6 +41,26 @@ MIN_CLUSTER_SIZE = 3               # smallest group to return
 MIN_DENSITY = 0.4                  # chain filter
 MAX_VALIDATOR_GROUP_SIZE = 15      # candidates larger than this are not validated
 
+# ── Arabic display labels for FM-named clusters ───────────────────────────
+# Display-only (dashboard/NOC labels). The frozen taxonomy (FAILURE_MODES)
+# is untouched — classification and embeddings keep the upstream English
+# names; only the report's failure_mode_desc is localized.
+FM_AR_LABELS: dict[str, str] = {
+    "FM-000": "غير مصنف",
+    "FM-005": "فشل إيداع المعاملات المالية في البنك أو المحفظة",
+    "FM-007": "اختفاء أيقونة تقييم الشركات من الواجهة",
+    "FM-008": "عدم تحديث حالة البلاغ المعالج إلى مغلق",
+    "FM-010": "تعذر إدخال أرقام الحجاج أثناء التسجيل",
+    "FM-011": "تعذر الوصول لتحديث بيانات الفوترة الضريبية",
+    "FM-014": "تعذر الرد على البلاغات أو إغلاقها",
+    "FM-015": "فشل اعتماد طلبات التنقل بين المدن قبل المغادرة",
+    "FM-018": "فشل إصدار تصريح زيارة الروضة عند اختيار التاريخ",
+    "FM-020": "فشل تأكيد الوصول الفعلي لعقد السكن",
+    "FM-021": "فشل تقديم طلب الاعتراض بسبب خطأ في البيانات",
+    "FM-022": "تعذر تقديم طلب التظلم على المخالفات",
+    "FM-004": "عطل تشغيلي في نظام CRM",
+}
+
 # ── Verdict cache ──────────────────────────────────────────────────────────
 # Key = sorted, joined member IDs (fingerprint). Value = verdict dict.
 # Persists across rebuild cycles so stable groups don't get re-validated.
@@ -198,7 +218,7 @@ def _build_clusters(period: str = "daily") -> dict:
         top_sys, top_svc = _dominant_labels(members)
         cid = hashlib.md5(fm.encode()).hexdigest()[:12]
         fm_entry = _FM.get(fm)
-        fm_name = fm_entry[0] if fm_entry else fm
+        fm_name = FM_AR_LABELS.get(fm) or (fm_entry[0] if fm_entry else fm)
         cluster_incidents = []
         for idx, inc in zip(indices, members):
             # Compute similarity to cluster centroid (not self-similarity = 100%)
@@ -559,7 +579,9 @@ Rules:
   tickets are simply unrelated, not "mostly related with an outlier". In this
   case put every ID in "remove" with a reason.
 - Never invent an ID that wasn't given to you. Never omit one.
-- name: a short label (max 8 words) for the shared issue (omit if is_coherent is false).
+- name: a short label (max 8 words) for the shared issue — MUST be written in
+  ARABIC (العربية), since the dashboard is bilingual and most tickets are in
+  Arabic (omit if is_coherent is false).
 - description: one-line description of what this incident is (omit if is_coherent is false).
 
 Return format:
@@ -569,7 +591,7 @@ Return format:
   "remove": [
     {"id": "id3", "reason": "This is a login failure, the rest are checkout timeouts."}
   ],
-  "name": "Short group name (max 8 words)",
+  "name": "اسم مختصر للمشكلة (بحد أقصى 8 كلمات بالعربية)",
   "description": "One-line description of what this incident is."
 }"""
 # ── Coherence metric ─────────────────────────────────────────────────────

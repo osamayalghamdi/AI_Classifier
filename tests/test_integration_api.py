@@ -18,6 +18,11 @@ import subprocess
 import sys
 import time
 
+# Auth + worker env MUST be set before ai_classification.config is imported
+# (Settings is a module-level singleton evaluated at import time).
+os.environ.setdefault("INTEGRATION_TOKEN", "test-token")
+os.environ.setdefault("INTEGRATION_WORKER_ENABLED", "0")
+
 import psycopg2
 import pytest
 from fastapi.testclient import TestClient

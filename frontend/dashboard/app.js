@@ -16,6 +16,11 @@
 // "dash_api" / "classify_url".
 const API_HOST = location.hostname || "localhost";
 const API_OVERRIDE = localStorage.getItem("dash_api");
+// W3 integration auth: every non-health endpoint requires the bearer token
+// (INTEGRATION_API_TOKEN). Set once via the header input or console:
+// localStorage.setItem("dash_token", "<token>")
+const DASH_TOKEN = localStorage.getItem("dash_token") || "";
+const apiHeaders = () => (DASH_TOKEN ? { "Authorization": `Bearer ${DASH_TOKEN}` } : {});
 let API, CLASSIFY_URL;
 if (API_OVERRIDE) {
   API = API_OVERRIDE;
@@ -74,8 +79,8 @@ async function loadData() {
   setConn(null, "loading");
   try {
     const [rep, incs] = await Promise.all([
-      fetch(`${API}/api/reports/daily`).then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); }),
-      fetch(`${API}/incidents`).then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); }),
+      fetch(`${API}/api/reports/daily`, { headers: apiHeaders() }).then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); }),
+      fetch(`${API}/incidents`, { headers: apiHeaders() }).then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); }),
     ]);
     const clusters = (rep.clusters || []).map((c) => ({
       cluster_id: c.cluster_id, name: c.failure_mode_desc || c.name || c.summary?.slice(0, 60) || "Cluster",
@@ -188,6 +193,8 @@ function restoreState() {
     const v = document.getElementById(`view-${ROLE}`);
     if (v) v.classList.add("active");
   }
+  const tokEl = document.getElementById("dashTokenInput");
+  if (tokEl) tokEl.value = DASH_TOKEN;
   document.getElementById("vtGrouped")?.classList.toggle("active", !FLAT);
   document.getElementById("vtFlat")?.classList.toggle("active", FLAT);
   const sevEl = document.getElementById("empSevFilter");
@@ -210,6 +217,11 @@ $("#roleSwitch").addEventListener("click", (e) => {
   $(`#view-${ROLE}`).classList.add("active");
   saveState();
   render();
+});
+
+$("#dashTokenInput")?.addEventListener("change", function () {
+  localStorage.setItem("dash_token", this.value.trim());
+  location.reload();
 });
 
 $("#vtGrouped").addEventListener("click", () => { FLAT = false; syncVT(); saveState(); renderEmployee(); });
@@ -630,7 +642,7 @@ async function fetchIncidentDetail(tid, detailEl) {
   }
   detailEl.innerHTML = '<div class="t-detail-loading">Loading incident details…</div>';
   try {
-    const resp = await fetch(`${API}/incidents/${tid}`);
+    const resp = await fetch(`${API}/incidents/${tid}`, { headers: apiHeaders() });
     if (!resp.ok) throw new Error(resp.status);
     const inc = await resp.json();
     const html = renderIncidentDetail(inc);
@@ -702,7 +714,7 @@ async function searchIncidentById() {
   box.innerHTML = idResultHead("Incident <code>" + esc(q) + "</code>") +
     '<div class="t-detail-loading" style="padding:12px 16px">Looking up…</div>';
   try {
-    const resp = await fetch(`${API}/incidents/${encodeURIComponent(q)}`);
+    const resp = await fetch(`${API}/incidents/${encodeURIComponent(q)}`, { headers: apiHeaders() });
     if (!resp.ok) {
       box.innerHTML = idResultHead("Incident <code>" + esc(q) + "</code>") +
         '<div style="padding:12px 16px;font-size:13px;color:var(--text-dim)">No incident found with this ID — check the ID shown after filing, or use the list below.</div>';
@@ -818,6 +830,34 @@ function updateTimer() {
 }
 
 setInterval(updateTimer, 1000);
+
+// Service status indicator — db / embedding / llm, refreshed with the
+// data poll. Red dot + label when any service is down (e.g. the company
+// LLM endpoint unreachable), green when all ok, gray while warming.
+async function updateServiceStatus() {
+  const el = $("#svcStatus");
+  if (!el) return;
+  try {
+    const r = await fetch(`${API}/status`, { headers: apiHeaders() });
+    const d = await r.json();
+    const svcs = d.services || {};
+    const names = { db: "db", embedding: "embed", llm: "llm" };
+    const parts = Object.keys(names)
+      .filter((k) => svcs[k])
+      .map((k) => {
+        const st = svcs[k].status === "ok";
+        return `<span style="color:${st ? "var(--minor)" : "var(--crit)"}">${names[k]}:${st ? "ok" : "DOWN"}</span>`;
+      });
+    const anyDown = Object.values(svcs).some((s) => s.status !== "ok");
+    el.innerHTML = (anyDown ? "⚠ " : "● ") + parts.join(" ");
+    el.style.color = anyDown ? "var(--crit)" : "var(--minor)";
+  } catch (e) {
+    el.textContent = "● status:n/a";
+    el.style.color = "var(--text-faint)";
+  }
+}
+updateServiceStatus();
+setInterval(updateServiceStatus, 60000);
 
 setInterval(async () => {
   lastRun = Date.now();
