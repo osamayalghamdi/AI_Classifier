@@ -6,9 +6,9 @@ in core.classifier)."""
 import pytest
 from datetime import datetime, timedelta, timezone
 
-from ai_classification.core import classifier
-from ai_classification.core import store as store_module
-from ai_classification.core.store import store, SimilarMatch
+import ai_classification.services.classify.classifier as classifier
+import ai_classification.shared.store as store_module
+from ai_classification.shared.store import store, SimilarMatch
 from ai_classification.domain.models import ClassificationResult
 from ai_classification.domain.taxonomy import AffectedSystem, IncidentType, Severity, Urgency, Category
 

@@ -16,7 +16,7 @@ import logging
 
 import numpy as np
 
-from ai_classification.core.store import store
+from ai_classification.shared.store import store
 
 _log = logging.getLogger(__name__)
 

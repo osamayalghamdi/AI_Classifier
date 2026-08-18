@@ -18,7 +18,7 @@ import subprocess
 import sys
 import time
 
-# Auth + worker env MUST be set before ai_classification.config is imported
+# Auth + worker env MUST be set before ai_classification.shared.config is imported
 # (Settings is a module-level singleton evaluated at import time).
 os.environ.setdefault("INTEGRATION_TOKEN", "test-token")
 os.environ.setdefault("INTEGRATION_WORKER_ENABLED", "0")
@@ -29,12 +29,12 @@ from fastapi.testclient import TestClient
 
 from .test_cascade import _settings_with, make_fake_completion
 
-import ai_classification.core.classifier as classifier_mod
-import ai_classification.core.llm as mod_llm
-from ai_classification.api.routes import app
-from ai_classification.config import settings
-from ai_classification.integration import get_job, list_jobs, worker_tick
-from ai_classification.integration.schemas import Err
+import ai_classification.services.classify.classifier as classifier_mod
+import ai_classification.services.classify.llm as mod_llm
+from ai_classification.services.ingest.routes import app
+from ai_classification.shared.config import settings
+from ai_classification.services.jobs.integration import get_job, list_jobs, worker_tick
+from ai_classification.services.jobs.integration.schemas import Err
 
 
 def _job(ref: str) -> dict:
@@ -89,9 +89,9 @@ def client():
     fresh instance (same test DB); the lifespan start/stop then applies to
     the isolated instance and the global singleton is untouched.
     """
-    import ai_classification.core.store as store_mod
-    import ai_classification.core.classifier as classifier_mod
-    from ai_classification.core.store import IncidentStore
+    import ai_classification.shared.store as store_mod
+    import ai_classification.services.classify.classifier as classifier_mod
+    from ai_classification.shared.store import IncidentStore
 
     # classifier.py binds `store` at import time (persist path) — patch it
     # too so classify_and_store writes through the isolated instance.
@@ -261,7 +261,7 @@ def test_e5_real_llm_unreachable_retry_then_flag():
     ref = f"e5-{int(time.time())}"
     script = """
 import os, time
-from ai_classification.integration import enqueue, ensure_jobs_table, get_job, worker_tick
+from ai_classification.services.jobs.integration import enqueue, ensure_jobs_table, get_job, worker_tick
 ref = os.environ["E5_REF"]
 ensure_jobs_table()
 enqueue({"source_reference": ref, "title": "E5 real NXDOMAIN",

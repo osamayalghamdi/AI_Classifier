@@ -9,7 +9,7 @@ integration bugs (SQL errors, pgvector behavior, connection pooling).
 
 import os
 
-# MUST be set before ai_classification.config is imported: Settings is a
+# MUST be set before ai_classification.shared.config is imported: Settings is a
 # module-level singleton evaluated at import time. Integration API tests
 # auth with this token; make the suite green without manual env exports
 # (documented convention: INTEGRATION_TOKEN=test-token).
@@ -30,7 +30,7 @@ elif os.environ["PG_DATABASE"] == "ai_incidents":
 import psycopg2
 import pytest
 
-from ai_classification.config import settings
+from ai_classification.shared.config import settings
 
 TEST_PG_DATABASE = "ai_incidents_test"
 

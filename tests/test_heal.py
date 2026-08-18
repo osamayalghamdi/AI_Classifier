@@ -10,11 +10,11 @@ import uuid
 import psycopg2
 import pytest
 
-import ai_classification.core.classifier as classifier_mod
-import ai_classification.core.llm as mod_llm
-from ai_classification.config import settings
-from ai_classification.core.heal import reclassify_fallback_incidents
-from ai_classification.core.store import store
+import ai_classification.services.classify.classifier as classifier_mod
+import ai_classification.services.classify.llm as mod_llm
+from ai_classification.shared.config import settings
+from ai_classification.services.jobs.heal import reclassify_fallback_incidents
+from ai_classification.shared.store import store
 
 from .test_cascade import _settings_with, make_fake_completion
 

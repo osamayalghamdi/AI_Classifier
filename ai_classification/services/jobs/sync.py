@@ -12,7 +12,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from ai_classification.config import settings
+from ai_classification.shared.config import settings
 from ai_classification.seams import NotConfiguredError, get_ticket_source, persist_result, process_incident
 
 _log = logging.getLogger(__name__)

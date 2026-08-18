@@ -28,10 +28,10 @@ def get_ticket_source() -> TicketSource:
       NotConfiguredError until TICKETING_API_TOKEN exists.
     - "local": fake source backed by the incident store (tests + offline).
     """
-    from ..config import settings
+    from ai_classification.shared.config import settings
 
     if settings.ticketing_source == "local":
-        from ..core.store import store
+        from ai_classification.shared.store import store
 
         return LocalFakeTicketSource(store)
     return RealTicketingSource(

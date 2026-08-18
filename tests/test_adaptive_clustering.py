@@ -13,7 +13,7 @@ monkeypatched LLM validator (no network, no DB).
 import numpy as np
 import pytest
 
-from ai_classification.core import grouping as g
+import ai_classification.services.cluster.grouping as g
 
 
 @pytest.fixture(autouse=True)

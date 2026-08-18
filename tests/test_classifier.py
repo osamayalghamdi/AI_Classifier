@@ -12,16 +12,16 @@ import types
 
 import pytest
 
-from ai_classification.config import settings
-from ai_classification.core.classifier import classify
-from ai_classification.core.llm import strip_json_fences
+from ai_classification.shared.config import settings
+from ai_classification.services.classify.classifier import classify
+from ai_classification.services.classify.llm import strip_json_fences
 from ai_classification.domain.models import ClassificationResult
 
 
 @pytest.fixture(autouse=True)
 def _legacy_single_shot(monkeypatch):
     """Pin the legacy single-shot path: cascade must not change these results."""
-    import ai_classification.core.classifier as mod
+    import ai_classification.services.classify.classifier as mod
 
     d = {k: v for k, v in settings.__dict__.items() if not k.startswith("_")}
     d["cascade_classification"] = False
@@ -81,7 +81,7 @@ def _patch_completion(monkeypatch):
     Supports retry: stores outputs in a list and pops from the front
     on each call, so both attempt 1 and retry can return the same data.
     """
-    import ai_classification.core.llm as mod_llm
+    import ai_classification.services.classify.llm as mod_llm
 
     outputs = []
 

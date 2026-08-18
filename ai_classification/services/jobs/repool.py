@@ -33,16 +33,16 @@ CROSS_OFFERING_THRESHOLD = 0.75
 
 
 def repool_once(*, dry_run: bool = False) -> dict:
-    from ai_classification.core.store import store
-    from ai_classification.core.suboffering import (
+    from ai_classification.shared.store import store
+    from ai_classification.services.match.suboffering import (
         OFFERING_000,
         embed_pure,
         feed_incident,
         match_against_exemplars,
         offering_of,
     )
-    from ai_classification.core.suboffering_cluster import run_all_pools
-    from ai_classification.core.verifier import Verifier
+    from ai_classification.services.cluster.suboffering_cluster import run_all_pools
+    from ai_classification.services.cluster.verifier import Verifier
 
     stats = {"pool_before": 0, "matched": 0, "phase1_moved": 0, "phase2_moved": 0,
              "remaining": 0, "clustered_pools": 0, "proposals_created": 0,
@@ -134,7 +134,7 @@ def repool_once(*, dry_run: bool = False) -> dict:
 
 def start_repool_worker(interval: float | None = None) -> threading.Thread:
     """Background daemon: periodic repool sweep (default: settings.repool_interval_seconds, 900s)."""
-    from ai_classification.config import settings
+    from ai_classification.shared.config import settings
 
     interval = interval if interval is not None else float(getattr(settings, "repool_interval_seconds", 900))
 
@@ -158,7 +158,7 @@ if __name__ == "__main__":
     import logging as _l
     _l.basicConfig(level=_l.INFO)
 
-    from ai_classification.core.store import store
+    from ai_classification.shared.store import store
 
     store.setup()
     stats = repool_once(dry_run="--dry-run" in sys.argv)

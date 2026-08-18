@@ -15,7 +15,7 @@ from collections import Counter
 
 import numpy as np
 
-from ai_classification.core.store import store
+from ai_classification.shared.store import store
 from ai_classification.services.match.suboffering import embed_pure, offering_of, OFFERING_000
 from ai_classification.services.cluster.verifier import Verifier
 

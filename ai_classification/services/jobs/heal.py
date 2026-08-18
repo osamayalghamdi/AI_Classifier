@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import logging
 
-from ai_classification.config import settings
+from ai_classification.shared.config import settings
 
 _log = logging.getLogger(__name__)
 
@@ -31,8 +31,8 @@ def reclassify_fallback_incidents(limit: int | None = None) -> dict:
     real classification; still_fallback = re-classification produced the
     fallback again (LLM still down or genuinely unclassifiable).
     """
-    from ai_classification.core.classifier import classify
-    from ai_classification.core.store import store
+    from ai_classification.services.classify.classifier import classify
+    from ai_classification.shared.store import store
 
     limit = limit or settings.reclassify_max_per_tick
     rows = store.find_fallback_incidents(limit)

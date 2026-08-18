@@ -17,10 +17,10 @@ import sys
 
 sys.path.insert(0, ".")
 
-from ai_classification.core.store import store
-from ai_classification.core.suboffering import offering_of, OFFERING_000
-from ai_classification.core.suboffering_cluster import run_pool, OFFERING000_MAX_MEMBERS
-from ai_classification.core.verifier import Verifier
+from ai_classification.shared.store import store
+from ai_classification.services.match.suboffering import offering_of, OFFERING_000
+from ai_classification.services.cluster.suboffering_cluster import run_pool, OFFERING000_MAX_MEMBERS
+from ai_classification.services.cluster.verifier import Verifier
 
 
 def main() -> int:

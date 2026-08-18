@@ -23,9 +23,9 @@ def process_incident(incident: Incident) -> PipelineResult:
     """
     # Lazy imports — classifier imports store and store imports sync, so a
     # top-level import here would be circular.
-    from ..core.classifier import PROMPT_VERSION, classify, content_hash
-    from ..core.store import store
-    from ..config import settings
+    from ai_classification.services.classify.classifier import PROMPT_VERSION, classify, content_hash
+    from ai_classification.shared.store import store
+    from ai_classification.shared.config import settings
 
     processed_at = datetime.now(timezone.utc)
     title = incident.title or ""
@@ -113,8 +113,8 @@ def persist_result(result: PipelineResult, *, dry_run: bool = False) -> dict:
       - new   → classify_and_store (content-hash gate stays race-safe)
       - seen  → increment_occurrence + status propagation (no LLM call)
     """
-    from ..core.classifier import classify_and_store
-    from ..core.store import store
+    from ai_classification.services.classify.classifier import classify_and_store
+    from ai_classification.shared.store import store
 
     if result.error:
         return {"action": "skipped", "reason": result.error}
@@ -174,7 +174,7 @@ def _existing_classification(existing: dict):
     """Rebuild a ClassificationResult from a stored row (best-effort)."""
     from pydantic import TypeAdapter
 
-    from ..core.classifier import ClassificationResult
+    from ai_classification.services.classify.classifier import ClassificationResult
 
     cls_data = existing.get("classification_dict")
     if not cls_data:

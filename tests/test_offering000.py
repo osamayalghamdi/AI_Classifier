@@ -16,9 +16,9 @@ import random
 import numpy as np
 import pytest
 
-from ai_classification.core.store import store as live_store  # noqa: F401  (store module init)
-from ai_classification.core.suboffering import OFFERING_000
-from ai_classification.core.suboffering_cluster import run_pool
+import ai_classification.shared.store as live_store  # noqa: F401  (store module init)
+from ai_classification.services.match.suboffering import OFFERING_000
+from ai_classification.services.cluster.suboffering_cluster import run_pool
 
 from .test_incident_store import FixedVecModel, _make_store
 from .conftest import TEST_PG_DATABASE
@@ -90,8 +90,8 @@ def _vecs_for(pairs: dict[tuple[str, str], float]) -> dict[str, np.ndarray]:
 def _patch_stores(monkeypatch, s):
     """Point both engine modules' module-level `store` at the test store so
     embed_pure / create_proposal hit the test DB."""
-    monkeypatch.setattr("ai_classification.core.suboffering_cluster.store", s)
-    monkeypatch.setattr("ai_classification.core.suboffering.store", s)
+    monkeypatch.setattr("ai_classification.services.cluster.suboffering_cluster.store", s)
+    monkeypatch.setattr("ai_classification.services.match.suboffering.store", s)
 
 
 class TestF4ContaminationGuard:
@@ -151,11 +151,11 @@ class TestDecisionMintNewOffering:
     def test_approve_with_new_offering_name_mints_under_new_offering(self, engine_store, monkeypatch):
         """W3: approve + new_offering_name -> sub_offering minted under the NEW
         offering id (not the proposal's OFFERING-000 pool id)."""
-        import ai_classification.api.proposal_routes as pr
-        import ai_classification.core.suboffering as so
+        import ai_classification.services.review.proposal_routes as pr
+        import ai_classification.services.match.suboffering as so
         monkeypatch.setattr(pr, "store", engine_store)
         monkeypatch.setattr(so, "store", engine_store)
-        from ai_classification.api.routes import app
+        from ai_classification.services.ingest.routes import app
         from fastapi.testclient import TestClient
         from .test_incident_store import _insert_raw, _make_result
         s = engine_store
@@ -180,11 +180,11 @@ class TestDecisionMintNewOffering:
 
     def test_approve_without_name_keeps_pool_offering(self, engine_store, monkeypatch):
         """W2 semantics preserved: plain approve mints under the proposal's pool offering."""
-        import ai_classification.api.proposal_routes as pr
-        import ai_classification.core.suboffering as so
+        import ai_classification.services.review.proposal_routes as pr
+        import ai_classification.services.match.suboffering as so
         monkeypatch.setattr(pr, "store", engine_store)
         monkeypatch.setattr(so, "store", engine_store)
-        from ai_classification.api.routes import app
+        from ai_classification.services.ingest.routes import app
         from fastapi.testclient import TestClient
         s = engine_store
         prop = s.create_proposal("some-pool", ["i1", "i2", "i3"], 0.6, {},
