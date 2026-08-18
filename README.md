@@ -75,6 +75,73 @@ python3 -m http.server 8085 --bind 0.0.0.0
 open http://192.168.1.50:8085
 ```
 
+## Deploy on a Linux VM with Docker (recommended)
+
+The project runs entirely inside Docker — the VM only needs Docker, ~15 GB
+disk, and internet (for the one-time image build). No Python, Node, or
+database installs on the VM.
+
+```bash
+# 1. Install Docker (one-time)
+curl -fsSL https://get.docker.com | sh
+sudo usermod -aG docker $USER && newgrp docker
+
+# 2. Get the code
+git clone git@github.com:osamayalghamdi/AI_Classifier.git
+cd AI_Classifier
+git checkout feat/deploy-integration-ready
+
+# 3. Configure (see "How to change things" below)
+cp .env.example .env
+nano .env          # fill in the ELM API key + a database password
+
+# 4. THE GATE — check the AI model works before anything else
+./scripts/canary.sh
+
+# 5. Build + start (~10 min the first time)
+docker compose build api
+docker compose up -d postgres api nginx
+
+# 6. Load demo data (optional)
+./scripts/reseed.sh http://localhost:8000 test_incidents.json
+```
+
+Open the dashboard at `http://<VM-IP>:8082`.
+
+Everything is documented in detail in `DEPLOY.md`.
+
+## How to change things (all in one file: `.env`)
+
+| What you want to change | Line in `.env` |
+|---|---|
+| The AI model | `LLM_MODEL` (e.g. `openai/qwen3.6` or `ollama/qwen2.5:7b`) |
+| The AI service URL | `LLM_API_BASE` (e.g. `https://llms.elm.sa/v1`) |
+| The AI API key | `LLM_API_KEY` |
+| Database password (REQUIRED) | `POSTGRES_PASSWORD` |
+| Integration API token | `INTEGRATION_API_TOKEN` (empty = locked) |
+| Duplicate-ticket threshold | `SIMILARITY_THRESHOLD` (0.35 for deploy) |
+
+After editing `.env`, restart the API:
+
+```bash
+docker compose restart api
+```
+
+**Status check** — see if everything is healthy:
+
+```bash
+curl http://localhost:8000/status
+# {"status":"ok","services":{"db":...,"embedding":...,"llm":...}}
+```
+
+The dashboard shows a red `⚠ llm:DOWN` indicator in the top bar when the
+AI endpoint is unreachable, and the startup logs print
+`SERVICE LLM: UNREACHABLE` loudly — so a wrong key or unreachable model
+is visible immediately.
+
+**Full detail:** `DEPLOY.md` (deploy runbook) and `DEPLOY_STATUS.md`
+(what was verified, gate results, known open items).
+
 ## Classification Flow
 
 1. **ID-based dedupe** — exact match on source_ticket_id prevents double-counting; text similarity is informational only
@@ -109,14 +176,17 @@ open http://192.168.1.50:8085
 ## Tests
 
 ```bash
-uv run pytest tests/test_classifier.py -v   # 15 tests, mocked LLM
-uv run pytest tests/ -v                      # 42 tests, some need PG
+# Needs a Postgres (compose: docker compose up -d postgres) and the LLM env.
+# The suite REFUSES to run against the production database (ai_incidents) —
+# it forces ai_incidents_test automatically.
+PG_PORT=5432 uv run pytest tests/ -q
+# ~131 passed + xfail/xpass (documented flaky canary pairs)
 ```
 
 ## Test Data
 
 ```bash
-curl -s -X POST http://127.0.0.1:8000/reset
-curl -s -X POST http://127.0.0.1:8000/import/test_incidents.json
-curl -s http://127.0.0.1:8000/reports/daily | python3 -m json.tool
+./scripts/reseed.sh http://localhost:8000 test_incidents.json
+# ~11 min: wipes, imports 100 tickets, classifies + embeds through the live
+# pipeline → 91 stored (9 duplicate titles deduped). Re-runnable anytime.
 ```
