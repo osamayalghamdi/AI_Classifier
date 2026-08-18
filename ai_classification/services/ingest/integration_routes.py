@@ -14,11 +14,11 @@ import secrets
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 
-from ..config import settings
-from ..integration import enqueue, get_job, list_jobs, worker_tick
-from ..integration.schemas import Err, IntegrationBatch, IntegrationIncident, error_body
-from ..seams.port import Incident
-from ..seams.pipeline import persist_result, process_incident
+from ai_classification.shared.config import settings
+from ai_classification.services.jobs.integration import enqueue, get_job, list_jobs, worker_tick
+from ai_classification.services.jobs.integration.schemas import Err, IntegrationBatch, IntegrationIncident, error_body
+from ai_classification.seams.port import Incident
+from ai_classification.seams.pipeline import persist_result, process_incident
 
 _log = logging.getLogger(__name__)
 
@@ -159,7 +159,7 @@ def readiness():
 
     # DB
     try:
-        from ..integration import _connect
+        from ai_classification.services.jobs.integration import _connect
         with _connect() as conn:
             with conn.cursor() as cur:
                 cur.execute("SELECT 1")
@@ -169,7 +169,7 @@ def readiness():
 
     # Embedding model
     try:
-        from ..core.store import store
+        from ai_classification.shared.store import store
         if store._model is None:
             checks["embedding"] = "error: model not loaded"
         else:
@@ -217,7 +217,7 @@ def _json_response(code: int, body: dict):
 
 @ready_router.get("/status")
 def service_status():
-    from ..core.status_monitor import monitor
+    from ai_classification.services.ingest.status_monitor import monitor
 
     snap = monitor.snapshot()
     if not snap:
