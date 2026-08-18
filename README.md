@@ -237,6 +237,27 @@ curl http://<VM-IP>:8082/              # dashboard loads?
 curl http://<VM-IP>:8000/docs          # API explorer
 ```
 
+## Volume-adaptive clustering
+
+Incident volume is not constant — some periods have a handful of tickets,
+others a flood (Hajj season). The clustering sensitivity therefore adapts
+to how many active incidents exist right now:
+
+- **Few incidents (≤ 20):** sensitivity is LOOSE — the embedding threshold
+  drops to 0.40 and groups of just 2 tickets count as real clusters, so
+  operators see "2 real problems" instead of 15 lonely tickets.
+- **Many incidents (≥ 150):** sensitivity is TIGHT — the threshold rises to
+  0.60 and a cluster needs at least 4 tickets, so unrelated tickets don't
+  merge into giant meaningless clusters.
+- **In between:** the threshold interpolates smoothly (0.40 → 0.60), and
+  the minimum cluster size steps 2 → 4.
+
+The internal coherence floor scales with the threshold too (0.50 in the
+loose regime, 0.70 at mid volume — the previous behavior exactly — and
+0.80 in a flood). The whole mechanism is a pure, deterministic function
+of the active-incident count — same data always gives the same groups,
+and the LLM validator still runs at temperature 0 with seed 42.
+
 ## Classification Flow
 
 1. **ID-based dedupe** — exact match on source_ticket_id prevents double-counting; text similarity is informational only

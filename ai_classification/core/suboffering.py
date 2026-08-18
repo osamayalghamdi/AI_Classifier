@@ -26,11 +26,16 @@ OFFERING_000 = "OFFERING-000"
 
 
 def offering_of(service: str | None) -> str | None:
-    """First segment of the service string (before the first '.')."""
+    """First segment of the service string (before the LAST '.').
+
+    Service values look like "System/Application - Nusuk Masar Haj.Bill
+    Generation" — the offering is everything before the last dot. Splitting
+    on the FIRST dot is wrong for versioned systems like "7.1 Invoicing and
+    Billing - Nusuk Masar Haj.Bill Generation" (would yield "7")."""
     svc = (service or "").strip()
     if "." not in svc:
         return None
-    return svc.split(".", 1)[0].strip()
+    return svc.rsplit(".", 1)[0].strip()
 
 
 def embed_pure(title: str, description: str) -> np.ndarray | None:

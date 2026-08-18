@@ -1,21 +1,23 @@
-"""Two-phase incident grouping: FM exact-match (Phase 1) then embedding + LLM (Phase 2).
+"""Two-phase incident grouping: offering exact-match (Phase 1) then embedding + LLM (Phase 2).
 
 Used by the /api/reports endpoint to propose clusters from active incidents.
 
-Phase 1 — FM exact-match: Incidents whose LLM classification shares the same
-failure_mode code (other than FM-000) form guaranteed clusters. No similarity
-threshold or LLM validation needed — the classification already determined they
-are the same root cause.
+Phase 1 — Offering exact-match: Incidents whose LLM classification shares the
+same offering (first segment of the service string, e.g. "System/Application
+- Nusuk Masar Haj") form guaranteed clusters. No similarity threshold or LLM
+validation needed — the classification already determined they are the same
+root cause. Tickets without a resolvable offering (OFFERING-000) fall to
+Phase 2. (The legacy failure_mode code is NOT a grouping key anymore.)
 
-Phase 2 — Embedding + LLM: The remaining FM-000 (unclassified) incidents are
-clustered by cosine similarity over bge-m3 embeddings, using a single wide
-threshold (0.50) for recall. Graph-connected components above MIN_DENSITY are
-sent to an LLM validator that confirms coherence, prunes outliers, and assigns
-a human-readable name. Any candidate group larger than MAX_VALIDATOR_GROUP_SIZE
-is dropped outright — a graph component that big is almost certainly a false
-merge of several real incidents.
+Phase 2 — Embedding + LLM: The remaining OFFERING-000 incidents are
+clustered by cosine similarity over bge-m3 embeddings, using an
+volume-adaptive threshold for recall. Graph-connected components above
+MIN_DENSITY are sent to an LLM validator that confirms coherence, prunes
+outliers, and assigns a human-readable name. Any candidate group larger
+than MAX_VALIDATOR_GROUP_SIZE is dropped outright — a graph component that
+big is almost certainly a false merge of several real incidents.
 
-Pipeline position: 30_cluster — FM exact-match + embedding clustering."""
+Pipeline position: 30_cluster — offering exact-match + embedding clustering."""
 
 import hashlib
 import json
@@ -26,14 +28,17 @@ from collections import defaultdict
 import networkx as nx
 import numpy as np
 
-from ..config import settings
 from .store import store
 from .llm import call_llm, strip_json_fences
+from .suboffering import offering_of, OFFERING_000
 
 _log = logging.getLogger(__name__)
 
 # ── Tunable parameters ──────────────────────────────────────────────────
 
+# Phase-2 (embedding) clustering base values. These are the *middle-of-the-
+# road* settings; the rebuild loop adapts them to the current incident
+# volume via _sensitivity_params() — see below.
 SIMILARITY_THRESHOLD = 0.50        # intra-bucket clustering threshold (deliberately wider than
                                    # store.settings.similarity_threshold (0.80) — the grouping pass
                                    # casts a wider net for recall; fine-grained dedupe is stricter).
@@ -41,25 +46,44 @@ MIN_CLUSTER_SIZE = 3               # smallest group to return
 MIN_DENSITY = 0.4                  # chain filter
 MAX_VALIDATOR_GROUP_SIZE = 15      # candidates larger than this are not validated
 
-# ── Arabic display labels for FM-named clusters ───────────────────────────
-# Display-only (dashboard/NOC labels). The frozen taxonomy (FAILURE_MODES)
-# is untouched — classification and embeddings keep the upstream English
-# names; only the report's failure_mode_desc is localized.
-FM_AR_LABELS: dict[str, str] = {
-    "FM-000": "غير مصنف",
-    "FM-005": "فشل إيداع المعاملات المالية في البنك أو المحفظة",
-    "FM-007": "اختفاء أيقونة تقييم الشركات من الواجهة",
-    "FM-008": "عدم تحديث حالة البلاغ المعالج إلى مغلق",
-    "FM-010": "تعذر إدخال أرقام الحجاج أثناء التسجيل",
-    "FM-011": "تعذر الوصول لتحديث بيانات الفوترة الضريبية",
-    "FM-014": "تعذر الرد على البلاغات أو إغلاقها",
-    "FM-015": "فشل اعتماد طلبات التنقل بين المدن قبل المغادرة",
-    "FM-018": "فشل إصدار تصريح زيارة الروضة عند اختيار التاريخ",
-    "FM-020": "فشل تأكيد الوصول الفعلي لعقد السكن",
-    "FM-021": "فشل تقديم طلب الاعتراض بسبب خطأ في البيانات",
-    "FM-022": "تعذر تقديم طلب التظلم على المخالفات",
-    "FM-004": "عطل تشغيلي في نظام CRM",
-}
+# ── Volume-adaptive sensitivity ─────────────────────────────────────────
+# Incident volume is NOT constant: some periods have a handful of tickets,
+# others a flood (e.g. Hajj season). Fixed thresholds behave badly at both
+# extremes:
+#   * Few incidents  → thresholds too strict → related tickets never group,
+#     operators see 15 single-ticket "clusters" instead of 2 real problems.
+#   * Many incidents → thresholds too loose  → unrelated tickets merge into
+#     giant meaningless clusters.
+# So the sensitivity (similarity threshold + min cluster size) is a smooth
+# function of the ACTIVE incident count, with floor/ceiling bounds:
+#   count <= LOOSE_AT   → LOOSE regime:  lower threshold, min size 2
+#   count >= TIGHT_AT   → TIGHT regime:  higher threshold, min size 4
+#   in between          → linear interpolation on the threshold
+# Deterministic (pure function of the count — same data, same grouping,
+# no randomness; the LLM validator still uses seed 42 / temperature 0).
+LOOSE_AT = 20                        # at or below this many active incidents
+TIGHT_AT = 150                       # at or above this many active incidents
+LOOSE_THRESHOLD = 0.40               # few incidents: cast a wide net
+TIGHT_THRESHOLD = 0.60               # flood: precision over recall
+LOOSE_MIN_CLUSTER = 2                # few incidents: pairs can be a real group
+TIGHT_MIN_CLUSTER = 4                # flood: require strong evidence for a group
+
+
+def _sensitivity_params(active_count: int) -> tuple[float, int]:
+    """Volume-adaptive (similarity_threshold, min_cluster_size).
+
+    Pure function of the active incident count — deterministic, no state,
+    no randomness. Bounded between the LOOSE and TIGHT regimes.
+    """
+    if active_count <= LOOSE_AT:
+        return LOOSE_THRESHOLD, LOOSE_MIN_CLUSTER
+    if active_count >= TIGHT_AT:
+        return TIGHT_THRESHOLD, TIGHT_MIN_CLUSTER
+    # Linear interpolation between the two regimes.
+    frac = (active_count - LOOSE_AT) / (TIGHT_AT - LOOSE_AT)
+    threshold = LOOSE_THRESHOLD + frac * (TIGHT_THRESHOLD - LOOSE_THRESHOLD)
+    min_size = round(LOOSE_MIN_CLUSTER + frac * (TIGHT_MIN_CLUSTER - LOOSE_MIN_CLUSTER))
+    return round(threshold, 3), min_size
 
 # ── Verdict cache ──────────────────────────────────────────────────────────
 # Key = sorted, joined member IDs (fingerprint). Value = verdict dict.
@@ -181,11 +205,19 @@ def _build_clusters(period: str = "daily") -> dict:
 
     # Filter to incidents that actually have embeddings
     pairs = [(inc, emb) for inc, emb in raw if emb is not None]
-    if len(pairs) < MIN_CLUSTER_SIZE:
+    if len(pairs) < LOOSE_MIN_CLUSTER:
         return {"total_incidents": len(pairs), "clusters": [], "subsystem_summary": subsystem_summary}
 
     incidents, embeddings = zip(*pairs)
     emb_matrix = np.stack(embeddings)
+
+    # Volume-adaptive sensitivity — one threshold + min-size for this
+    # rebuild, derived from how many active incidents we have.
+    adaptive_threshold, adaptive_min_size = _sensitivity_params(len(incidents))
+    _log.info(
+        "Volume-adaptive sensitivity: %d active incidents → threshold=%.3f, min_cluster_size=%d",
+        len(incidents), adaptive_threshold, adaptive_min_size,
+    )
 
     # Cosine similarity
     sim = emb_matrix @ emb_matrix.T
@@ -193,32 +225,31 @@ def _build_clusters(period: str = "daily") -> dict:
 
     n = len(incidents)
 
-    # Phase 1: Exact-match grouping by failure_mode code
-    # Tickets sharing an FM code (not FM-000) form guaranteed clusters.
-    # This bypasses embedding similarity entirely for classified tickets.
-    fm_buckets: dict[str, list[int]] = defaultdict(list)
+    # Phase 1: Exact-match grouping by OFFERING (coarse service bucket)
+    # Tickets sharing an offering (service first segment, e.g. "System/
+    # Application - Nusuk Masar Haj") form guaranteed clusters. This is the
+    # product taxonomy (offerings/sub-offerings) — the legacy failure_mode
+    # code is NOT used as a grouping key anymore. Tickets without a
+    # resolvable offering (OFFERING-000) fall through to Phase 2.
+    offering_buckets: dict[str, list[int]] = defaultdict(list)
     for i, inc in enumerate(incidents):
         c = inc.get("classification_dict", {})
-        fm = c.get("failure_mode", "FM-000") or "FM-000"
-        fm_buckets[fm].append(i)
+        offering = offering_of(c.get("service")) or OFFERING_000
+        offering_buckets[offering].append(i)
 
-    _log.debug("FM buckets: %s", {k: len(v) for k, v in sorted(fm_buckets.items()) if k != "FM-000"})
-
-    # Load FM descriptions
-    from ai_classification.core.failure_modes import FAILURE_MODES as _FM
+    _log.debug("Offering buckets: %s",
+               {k: len(v) for k, v in sorted(offering_buckets.items()) if k != OFFERING_000})
 
     all_clusters: list[dict] = []
     used: set[int] = set()
 
-    for fm, indices in fm_buckets.items():
-        if fm == "FM-000" or len(indices) < MIN_CLUSTER_SIZE:
+    for offering, indices in offering_buckets.items():
+        if offering == OFFERING_000 or len(indices) < adaptive_min_size:
             continue
         members = [incidents[i] for i in indices]
         worst_sev = _worst_severity(members)
         top_sys, top_svc = _dominant_labels(members)
-        cid = hashlib.md5(fm.encode()).hexdigest()[:12]
-        fm_entry = _FM.get(fm)
-        fm_name = FM_AR_LABELS.get(fm) or (fm_entry[0] if fm_entry else fm)
+        cid = hashlib.md5(offering.encode()).hexdigest()[:12]
         cluster_incidents = []
         for idx, inc in zip(indices, members):
             # Compute similarity to cluster centroid (not self-similarity = 100%)
@@ -242,51 +273,52 @@ def _build_clusters(period: str = "daily") -> dict:
             cluster_incidents.append(di)
         cluster = {
             "cluster_id": cid,
-            "name": fm,
-            "failure_mode_desc": fm_name,
+            "name": offering,
+            "failure_mode_desc": offering,
             "affected_system": top_sys,
             "affected_service": top_svc,
             "worst_severity": worst_sev,
             "count": len(members),
-            "summary": f"{len(members)} tickets sharing failure mode {fm}",
+            "summary": f"{len(members)} tickets sharing offering {offering}",
             "pruned": [],
             "coherence": cluster_coherence(members, sim, indices),
             "incidents": cluster_incidents,
         }
         all_clusters.append(cluster)
         used.update(indices)
-        _log.info("FM cluster: %s — %d tickets, %s", fm, len(members), worst_sev)
+        _log.info("Offering cluster: %s — %d tickets, %s", offering, len(members), worst_sev)
 
-    # Phase 2: Embedding-based clustering for FM-000 (unclassified) leftovers
+    # Phase 2: Embedding-based clustering for OFFERING-000 (unclassified) leftovers
     leftover = [i for i in range(n) if i not in used]
-    if len(leftover) >= MIN_CLUSTER_SIZE:
+    if len(leftover) >= adaptive_min_size:
         prefix_buckets: dict[str, list[int]] = {}
         for i in leftover:
             cs = _extract_canonical_statement(incidents[i])
             prefix = cs.split(":")[0].strip() if ":" in cs else cs[:20]
             prefix_buckets.setdefault(prefix, []).append(i)
-        _log.debug("FM-000 prefix buckets: %s", {k: len(v) for k, v in sorted(prefix_buckets.items())})
+        _log.debug("OFFERING-000 prefix buckets: %s",
+                   {k: len(v) for k, v in sorted(prefix_buckets.items())})
         for px, bx in prefix_buckets.items():
-            if len(bx) < MIN_CLUSTER_SIZE:
+            if len(bx) < adaptive_min_size:
                 continue
             bx_clusters, bx_used = _cluster_pass(
-                incidents, sim, SIMILARITY_THRESHOLD, bx
+                incidents, sim, adaptive_threshold, bx, adaptive_min_size
             )
             all_clusters.extend(bx_clusters)
             used.update(bx_used)
         # Cross-bucket pass on remaining leftovers
         still_left = [i for i in leftover if i not in used]
-        if len(still_left) >= MIN_CLUSTER_SIZE:
+        if len(still_left) >= adaptive_min_size:
             cross_clusters, cross_used = _cluster_pass(
-                incidents, sim, SIMILARITY_THRESHOLD + 0.05, still_left
+                incidents, sim, adaptive_threshold + 0.05, still_left, adaptive_min_size
             )
             all_clusters.extend(cross_clusters)
             used.update(cross_used)
 
     all_clusters.sort(key=lambda c: c["count"], reverse=True)
     _log.info("build_clusters — %d active incidents, %d clusters found (phase1=%d, phase2=%s)",
-              n, len(all_clusters), sum(1 for c in all_clusters if (c["name"] or "").startswith("FM-") and c["name"] != "FM-000"),
-              "active" if len(leftover) >= MIN_CLUSTER_SIZE else "skipped")
+              n, len(all_clusters), sum(1 for c in all_clusters if (c["name"] or "").startswith("OFFERING") and c["name"] != OFFERING_000),
+              "active" if len(leftover) >= adaptive_min_size else "skipped")
     return {"total_incidents": n, "clusters": all_clusters, "subsystem_summary": subsystem_summary}
 
 
@@ -297,6 +329,7 @@ def _build_clusters(period: str = "daily") -> dict:
 # each dense component with the LLM, return accepted clusters + used indices
 def _cluster_pass(
     incidents: tuple, sim: np.ndarray, threshold: float, candidate_indices: list[int],
+    min_cluster_size: int = MIN_CLUSTER_SIZE,
 ) -> tuple[list[dict], set[int]]:
     G = nx.Graph()
     G.add_nodes_from(candidate_indices)
@@ -311,7 +344,7 @@ def _cluster_pass(
     used: set[int] = set()
 
     for comp in components:
-        if len(comp) < MIN_CLUSTER_SIZE:
+        if len(comp) < min_cluster_size:
             continue
         sub = G.subgraph(comp)
         n_nodes = len(comp)
@@ -380,26 +413,36 @@ def _cluster_pass(
             verdict_name = verdict.get("name") or None
             verdict_description = verdict.get("description") or None
 
-        if len(member_pairs) < MIN_CLUSTER_SIZE:
+        if len(member_pairs) < min_cluster_size:
             continue
 
         # ── Emission floor ── reject clusters whose internal coherence is too low
-        # Short signatures produce tighter vectors; a mean below 0.70 means the
-        # group is held together by shared filler (e.g. all starting "Error")
-        # rather than real semantic similarity.
+        # Short signatures produce tighter vectors; a mean below the floor means
+        # the group is held together by shared filler (e.g. all starting "Error")
+        # rather than real semantic similarity. The floor scales with the
+        # adaptive threshold:
+        #   loose (0.40) → floor 0.50  (pairs at 0.55 DO group — the point of
+        #                                the loose regime; the old flat 0.70
+        #                                killed every weak-but-real pair)
+        #   mid   (0.50) → floor 0.70  (EXACTLY the previous behavior)
+        #   tight (0.60) → floor 0.80  (flood: require strong agreement)
+        if threshold <= 0.45:
+            emission_floor = threshold + 0.10
+        else:
+            emission_floor = min(0.80, threshold + 0.20)
         member_indices = sorted(m for m, _ in member_pairs)
         intra_pairs = 0
         intra_sum = 0.0
         for a in range(len(member_indices)):
             for b in range(a + 1, len(member_indices)):
                 val = sim[member_indices[a], member_indices[b]]
-                if val >= SIMILARITY_THRESHOLD:
+                if val >= threshold:
                     intra_pairs += 1
                     intra_sum += val
         mean_intra = intra_sum / intra_pairs if intra_pairs > 0 else 0.0
-        if mean_intra < 0.70:
-            _log.info("Cluster rejected by emission floor (mean_intra=%.3f < 0.70) — %d tickets",
-                      mean_intra, len(member_pairs))
+        if mean_intra < emission_floor - 1e-9:   # float-safe comparison
+            _log.info("Cluster rejected by emission floor (mean_intra=%.3f < %.2f) — %d tickets",
+                      mean_intra, emission_floor, len(member_pairs))
             continue
 
         cluster_incidents = [inc for _, inc in member_pairs]
