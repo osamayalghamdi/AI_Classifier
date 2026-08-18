@@ -5,9 +5,9 @@ import logging
 from pathlib import Path
 
 from fastapi import HTTPException
-from ..api.schemas import ClassifyBatchResponse
-from ..config import settings
-from .classifier import classify_batch
+from ai_classification.api.schemas import ClassifyBatchResponse
+from ai_classification.shared.config import settings
+from ai_classification.services.classify.classifier import classify_batch
 
 _log = logging.getLogger(__name__)
 
