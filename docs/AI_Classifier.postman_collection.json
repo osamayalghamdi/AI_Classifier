@@ -1,0 +1,188 @@
+{
+  "info": {
+    "_postman_id": "a1-classifier-001",
+    "name": "AI_Classifier — All Endpoints",
+    "description": "Every endpoint of the AI_Classifier API. Base URL: http://<VM-IP>:8000 — edit the 'base' variable. Integration endpoints (marked AUTH) need INTEGRATION_API_TOKEN from .env as the 'token' variable.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "base", "value": "http://localhost:8000" },
+    { "key": "token", "value": "test-token" }
+  ],
+  "item": [
+    {
+      "name": "1. Health & status",
+      "item": [
+        { "name": "GET /health — is the API up?", "request": { "method": "GET", "url": "{{base}}/health" } },
+        { "name": "GET /ready — db/embedding/llm (one-shot)", "request": { "method": "GET", "url": "{{base}}/ready" } },
+        { "name": "GET /status — per-service status + resolved config", "request": { "method": "GET", "url": "{{base}}/status" } },
+        { "name": "GET /docs — Swagger UI (browser)", "request": { "method": "GET", "url": "{{base}}/docs" } }
+      ]
+    },
+    {
+      "name": "2. LLM test",
+      "item": [
+        {
+          "name": "GET /test/llm?question=... — ask the model anything",
+          "request": {
+            "method": "GET",
+            "url": "{{base}}/test/llm?question=What%20is%20your%20name%3F&max_tokens=200"
+          }
+        },
+        {
+          "name": "POST /test/llm — same, JSON body",
+          "request": {
+            "method": "POST",
+            "url": "{{base}}/test/llm",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\"question\": \"Say hello in Arabic in one line.\", \"max_tokens\": 100}" }
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. Classification",
+      "item": [
+        {
+          "name": "POST /classify — classify a ticket",
+          "request": {
+            "method": "POST",
+            "url": "{{base}}/classify",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"title\": \"Rawdah permit booking fails\", \"description\": \"User cannot book Rawdah permit, error on the done button\", \"source_ticket_id\": \"TKT-DEMO-001\"}"
+            }
+          }
+        },
+        {
+          "name": "POST /classify/batch — up to 50 tickets",
+          "request": {
+            "method": "POST",
+            "url": "{{base}}/classify/batch",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"items\": [{\"title\": \"Rawdah permit booking fails\", \"description\": \"error on done button\"}, {\"title\": \"Tax billing access blocked\", \"description\": \"users blocked from tax billing data update\"}]}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "4. Incidents",
+      "item": [
+        { "name": "GET /incidents — list all", "request": { "method": "GET", "url": "{{base}}/incidents" } },
+        { "name": "GET /incidents?status=active", "request": { "method": "GET", "url": "{{base}}/incidents?status=active" } },
+        { "name": "GET /incidents/{id} — one incident", "request": { "method": "GET", "url": "{{base}}/incidents/REPLACE_WITH_ID" } },
+        {
+          "name": "POST /incidents/{id}/resolve — mark resolved",
+          "request": { "method": "POST", "url": "{{base}}/incidents/REPLACE_WITH_ID/resolve" }
+        }
+      ]
+    },
+    {
+      "name": "5. Reports & clusters",
+      "item": [
+        { "name": "GET /api/reports/daily — clustered report (dashboard data)", "request": { "method": "GET", "url": "{{base}}/api/reports/daily" } },
+        { "name": "GET /reports/daily — alias", "request": { "method": "GET", "url": "{{base}}/reports/daily" } }
+      ]
+    },
+    {
+      "name": "6. Data management",
+      "item": [
+        {
+          "name": "POST /import — bulk import JSON body",
+          "request": {
+            "method": "POST",
+            "url": "{{base}}/import",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\"incidents\": [{\"title\": \"Example ticket\", \"description\": \"example description\"}]}" }
+          }
+        },
+        { "name": "POST /reset — DELETE ALL INCIDENTS (careful!)", "request": { "method": "POST", "url": "{{base}}/reset" } }
+      ]
+    },
+    {
+      "name": "7. Integration API (AUTH — needs Bearer token)",
+      "item": [
+        {
+          "name": "POST /api/v1/incidents — async ingest (202, returns fast)",
+          "request": {
+            "method": "POST",
+            "url": "{{base}}/api/v1/incidents",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"source_reference\": \"TKT-1001\", \"title\": \"Rawdah permit fails\", \"description\": \"error on done button\", \"status\": \"active\"}"
+            }
+          }
+        },
+        {
+          "name": "GET /api/v1/incidents/{ref} — fetch result by reference",
+          "request": {
+            "method": "GET",
+            "url": "{{base}}/api/v1/incidents/TKT-1001",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          }
+        },
+        {
+          "name": "POST /api/v1/incidents/dry-run — nothing persisted",
+          "request": {
+            "method": "POST",
+            "url": "{{base}}/api/v1/incidents/dry-run",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"source_reference\": \"DRY-1\", \"title\": \"Dry run test\", \"description\": \"should not persist\"}"
+            }
+          }
+        },
+        {
+          "name": "POST /api/v1/backfill — batch historical ingest",
+          "request": {
+            "method": "POST",
+            "url": "{{base}}/api/v1/backfill",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"incidents\": [{\"source_reference\": \"BF-1\", \"title\": \"Backfill one\", \"description\": \"desc\"}]}"
+            }
+          }
+        },
+        {
+          "name": "GET /api/v1/jobs — list ingest jobs",
+          "request": {
+            "method": "GET",
+            "url": "{{base}}/api/v1/jobs",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          }
+        },
+        {
+          "name": "POST /api/v1/worker/tick — run the worker once (manual)",
+          "request": {
+            "method": "POST",
+            "url": "{{base}}/api/v1/worker/tick?limit=10",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }]
+          }
+        },
+        {
+          "name": "UNAUTHENTICATED example — expect 401",
+          "request": {
+            "method": "GET",
+            "url": "{{base}}/api/v1/incidents/TKT-1001"
+          }
+        }
+      ]
+    }
+  ]
+}
