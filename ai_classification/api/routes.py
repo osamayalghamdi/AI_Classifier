@@ -125,6 +125,96 @@ def test_llm(question: str = "Say hello in one short sentence.", max_tokens: int
         }
 
 
+# ── Full system test — one call runs the whole battery ─────────────────
+# db → embedding → llm → classify → similar → clusters. Each check is a
+# REAL call against the live stack; failures are reported per-check (the
+# battery continues, never aborts mid-way). Rollup: all ok = HTTP 200.
+@app.get("/test/all")
+def test_all():
+    import time as _t
+
+    from ..core.llm import call_llm
+
+    _log.info("GET /test/all — running full system battery")
+    results: list[dict] = []
+
+    def _check(name: str, fn) -> None:
+        t0 = _t.time()
+        try:
+            detail = fn()
+            results.append({
+                "check": name, "status": "ok",
+                "detail": detail, "latency_s": round(_t.time() - t0, 2),
+            })
+        except Exception as exc:  # noqa: BLE001
+            results.append({
+                "check": name, "status": "error",
+                "detail": f"{type(exc).__name__}: {str(exc)[:200]}",
+                "latency_s": round(_t.time() - t0, 2),
+            })
+
+    # 1. DB — connect + count incidents
+    def _db():
+        from ..integration import _connect
+        with _connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT count(*) FROM incidents")
+                return f"connected, {cur.fetchone()[0]} incidents"
+
+    # 2. Embedding model — encode a string, confirm shape
+    def _embedding():
+        import numpy as np
+        from ..core.store import store
+        if store._model is None:
+            raise RuntimeError("embedding model not loaded")
+        v = store._model.encode("test ticket")
+        return f"model={settings.embedding_model_name}, dim={np.asarray(v).shape[-1]}"
+
+    # 3. LLM — real completion against the configured endpoint
+    def _llm():
+        answer = call_llm(
+            [{"role": "user", "content": "Reply with exactly: OK"}],
+            max_tokens=10, temperature=0.0,
+        )
+        return f"model={settings.llm_model}, base={settings.llm_api_base or '(default)'}, reply={answer.strip()[:40]!r}"
+
+    # 4. Classification — full pipeline on a sample ticket (no store write)
+    def _classify():
+        from ..core.classifier import classify
+        r = classify("Rawdah permit booking fails on date selection", "error on the done button")
+        return f"{r.affected_system} / {r.failure_mode} / {r.severity}"
+
+    # 5. Similar-ticket retrieval — nearest neighbours for a sample
+    def _similar():
+        from ..core.store import store
+        if not store.ready:
+            raise RuntimeError("store not ready")
+        hits = store.find_similar("Rawdah permit booking fails on date selection", top_k=3)
+        return f"{len(hits)} similar found"
+
+    # 6. Clusters — build the current report
+    def _clusters():
+        from ..core.grouping import build_clusters
+        rep = build_clusters("daily")
+        return f"{rep.get('total_incidents')} incidents, {len(rep.get('clusters', []))} clusters"
+
+    _check("db", _db)
+    _check("embedding", _embedding)
+    _check("llm", _llm)
+    _check("classify", _classify)
+    _check("similar", _similar)
+    _check("clusters", _clusters)
+
+    ok = all(r["status"] == "ok" for r in results)
+    return {
+        "status": "ok" if ok else "degraded",
+        "model": settings.llm_model,
+        "api_base": settings.llm_api_base or "(provider default)",
+        "checked_at": _t.strftime("%Y-%m-%d %H:%M:%S"),
+        "checks": results,
+    }
+
+
 # Classify a new incident
 @app.post("/classify", response_model=ClassifyResponse)
 def classify_incident(req: ClassifyRequest):
