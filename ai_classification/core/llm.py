@@ -6,7 +6,6 @@ parsers; this module consolidates them.
 
 Pipeline position: 05_llm — shared LLM call wrapper (classify, grouping)."""
 
-import json
 import logging
 
 from litellm import completion

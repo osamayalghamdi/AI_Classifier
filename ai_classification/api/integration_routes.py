@@ -13,7 +13,6 @@ import logging
 import secrets
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
-from pydantic import ValidationError
 
 from ..config import settings
 from ..integration import enqueue, get_job, list_jobs, worker_tick
