@@ -10,7 +10,7 @@ import logging
 
 from litellm import completion
 
-from ..config import settings
+from ai_classification.shared.config import settings
 
 _log = logging.getLogger(__name__)
 
