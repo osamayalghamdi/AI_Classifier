@@ -164,6 +164,59 @@ class TestClusterPassVolumeExtremes:
         assert clusters == []
 
 
+# ── Arabic cluster naming ────────────────────────────────────────────────
+
+class TestArabicClusterName:
+    def _mk(self, n=2):
+        return [{"id": f"i{x}", "title": f"Rawdah permit fails {x}",
+                 "description": "error on the done button"} for x in range(n)]
+
+    def test_uses_llm_generated_arabic(self, monkeypatch):
+        monkeypatch.setattr(g, "call_llm", lambda *a, **k: "فشل إصدار تصريح الروضة")
+        g._ar_name_cache.clear()
+        name = g._arabic_cluster_name(self._mk())
+        assert name == "فشل إصدار تصريح الروضة"
+
+    def test_falls_back_when_llm_fails(self, monkeypatch):
+        def boom(*a, **k):
+            raise RuntimeError("LLM down")
+        monkeypatch.setattr(g, "call_llm", boom)
+        g._ar_name_cache.clear()
+        incs = self._mk()
+        name = g._arabic_cluster_name(incs)
+        assert name == incs[0]["title"]  # first member title fallback
+
+    def test_rejects_non_arabic_output(self, monkeypatch):
+        monkeypatch.setattr(g, "call_llm", lambda *a, **k: "Rawdah permit fails")
+        g._ar_name_cache.clear()
+        incs = self._mk()
+        name = g._arabic_cluster_name(incs)
+        assert name == incs[0]["title"]  # no Arabic script → keep English fallback
+
+    def test_cached_per_member_fingerprint(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(g, "call_llm",
+                            lambda *a, **k: (calls.append(1) or "مشكلة الحجاج"))
+        g._ar_name_cache.clear()
+        incs = self._mk()
+        g._arabic_cluster_name(incs)
+        g._arabic_cluster_name(incs)   # same members → cache hit
+        assert len(calls) == 1
+
+    def test_feeds_all_members_into_prompt(self, monkeypatch):
+        seen = {}
+        def fake(messages, **k):
+            seen["content"] = messages[0]["content"]
+            return "مشكلة مشتركة"
+        monkeypatch.setattr(g, "call_llm", fake)
+        g._ar_name_cache.clear()
+        incs = self._mk(3)
+        g._arabic_cluster_name(incs)
+        for inc in incs:
+            assert inc["title"] in seen["content"], "every member must be read"
+        assert incs[0]["description"] in seen["content"]
+
+
 # ── End-to-end: _build_clusters respects the adaptive params ─────────────
 
 class TestBuildClustersAdaptive:
