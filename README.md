@@ -70,8 +70,8 @@ AI_Classifier/
 │   ├── core/
 │   │   ├── classifier.py        # LLM classification via LiteLLM
 │   │   ├── store.py             # PostgreSQL + pgvector persistence
-│   │   ├── grouping.py          # Two-phase clustering (FM + embedding)
-│   │   ├── failure_modes.py     # 22 FM codes mined from real tickets
+│   │   ├── grouping.py          # Two-phase clustering (offering + embedding)
+│   │   ├── failure_modes.py     # Legacy FM codes (internal only — not the product taxonomy)
 │   │   └── import_service.py    # Bulk import logic
 │   └── domain/
 │       ├── models.py            # ClassificationResult, SimilarMatch
@@ -106,33 +106,19 @@ open http://192.168.1.50:8085
 ## Classification Flow
 
 1. **ID-based dedupe** — exact match on source_ticket_id prevents double-counting; text similarity is informational only
-2. **LLM classifies** — returns system, service, severity, FM code from taxonomy
-3. **Embedding** — uses taxonomy description string (not LLM output) for FM-matched tickets
+2. **LLM classifies** — returns offering/sub-offering, service, severity
+3. **Embedding** — matches against the offering description (not LLM output)
 4. **Background rebuild** — every 5 min:
-   - **Phase 1**: Exact-match by FM code (50%+ coverage)
+   - **Phase 1**: Exact-match by offering
    - **Phase 2**: Embedding similarity for unclassified tickets
 
-## Failure-Mode Taxonomy
+## Taxonomy
 
-22 codes mined from 199 real tickets, each with includes/excludes keywords:
-
-| Code | Description | Tickets |
-|------|-------------|---------|
-| FM-018 | Rawdah permit issuance fails | 19 |
-| FM-007 | Company evaluation icon missing | 10 |
-| FM-014 | Users unable to reply/close reports | 8 |
-| FM-001 | Database server CPU exceeds threshold | 8 |
-| FM-020 | Arrival confirmation fails | 8 |
-| FM-011 | Tax billing data access blocked | 8 |
-| FM-022 | Appeal submission fails | 7 |
-| FM-015 | Inter-city request approval fails | 6 |
-| FM-010 | Pilgrim data entry blocked | 5 |
-| FM-005 | Payment transactions fail | 4 |
-| FM-004 | CRM operational failure | 4 |
-| FM-008 | Complaint status not updated | 4 |
-| FM-017 | Registration rejects license | 3 |
-| FM-012 | Manual permit request | 3 |
-| FM-002 | Housing confirmations cancelled | 3 |
+The system classifies incidents against the **offering catalog** — offerings
+and sub-offerings, versioned JSON, grown from real tickets (data-driven).
+The LLM returns the offering/sub-offering; embeddings match against offering
+descriptions. Legacy FM codes are internal identifiers only, not the product
+taxonomy.
 
 ## Tests
 
