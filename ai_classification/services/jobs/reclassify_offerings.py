@@ -44,7 +44,7 @@ def _is_valid_service(service: str) -> bool:
 
 
 def _targets() -> list[dict]:
-    from ..core.store import store
+    from ai_classification.core.store import store
 
     out = []
     for inc in store.list_incidents():
@@ -65,9 +65,9 @@ def _targets() -> list[dict]:
 
 
 def run_reclassify(*, dry_run: bool = False) -> dict:
-    from ..core.classifier import PROMPT_VERSION, classify
-    from ..core.store import store
-    from ..config import settings
+    from ai_classification.core.classifier import PROMPT_VERSION, classify
+    from ai_classification.core.store import store
+    from ai_classification.config import settings
 
     targets = _targets()
     stats = {"candidates": len(targets), "reclassified": 0, "failed": 0,
@@ -98,7 +98,7 @@ def run_reclassify(*, dry_run: bool = False) -> dict:
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
-    from ..core.store import store
+    from ai_classification.core.store import store
 
     store.setup()
     stats = run_reclassify(dry_run="--dry-run" in sys.argv)
