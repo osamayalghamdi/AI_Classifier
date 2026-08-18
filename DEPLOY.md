@@ -11,6 +11,9 @@ the production server, not the dev box). No Ollama needed on the server.
 curl -fsSL https://get.docker.com | sh
 sudo usermod -aG docker $USER && newgrp docker
 docker compose version   # expect v2.x
+# uv (for the canary + test steps) + python3 (reseed script)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+sudo apt-get install -y python3
 ```
 
 ## 1. Get the code
@@ -68,11 +71,11 @@ curl -s -o /dev/null -w "%{http_code}\n" https://llms.elm.sa/v1/models
 ## 2.5 CRITICAL GATE — canary before any live traffic (D4)
 
 The 34-pair canary validates the company-hosted model BEFORE anything
-real flows through it. Run it against the ELM endpoint:
+real flows through it. One command — reads LLM_* from .env explicitly
+(no CWD traps, refuses the ollama default):
 
 ```bash
-# inside the repo, with the .env LLM vars active:
-uv run pytest tests/test_pairwise_canary.py -v
+./scripts/canary.sh
 ```
 
 Expected: 22/22 wrong pairs → NO and 5/5 correct → YES (8 passed,
