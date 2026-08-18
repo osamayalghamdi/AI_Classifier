@@ -262,6 +262,7 @@ class IncidentStore:
                 cur.execute(
                     "UPDATE incidents SET classification_json = %s WHERE id = %s",
                     (classification_json, incident_id))
+            conn.commit()  # psycopg2 opens a txn implicitly — must commit or the write is rolled back on putconn
         finally:
             self._putconn(conn)
         self._invalidate_cluster_caches(incident_id)

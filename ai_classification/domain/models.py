@@ -65,12 +65,26 @@ class ClassificationResult(BaseModel):
             own = SERVICES_BY_SYSTEM.get(self.affected_system, {})
             for key in own:
                 if self.service == key or self.service.startswith(key + "."):
+                    offering = self.service[len(key) + 1:] if self.service != key else ""
+                    if offering and offering not in own[key]:
+                        raise ValueError(
+                            f"offering '{offering}' is not valid for service "
+                            f"'{key}' of affected_system '{self.affected_system}'. "
+                            f"Allowed offerings: {own[key]}"
+                        )
                     return self
             for system, services in SERVICES_BY_SYSTEM.items():
                 if system == self.affected_system:
                     continue
                 for key in services:
                     if self.service == key or self.service.startswith(key + "."):
+                        offering = self.service[len(key) + 1:] if self.service != key else ""
+                        if offering and offering not in services[key]:
+                            raise ValueError(
+                                f"offering '{offering}' is not valid for service "
+                                f"'{key}' of affected_system '{system.value}'. "
+                                f"Allowed offerings: {services[key]}"
+                            )
                         self.affected_system = system
                         return self
         raise ValueError(
