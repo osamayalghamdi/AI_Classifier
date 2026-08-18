@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import logging
 
-from ..port import Incident, PipelineResult, TicketSource
+from ..port import Incident, PipelineResult
 from .client import SmaxClient
 from .models import from_smax, to_smax_suggestion
 

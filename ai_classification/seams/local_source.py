@@ -8,7 +8,7 @@ field names leak past this module.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime
 
 from .port import Incident, PipelineResult
 
