@@ -216,15 +216,20 @@ class TestCascadeFallback:
         assert result.service == "General / Unspecified"
         assert len(calls) == 1  # no further stages after system failure
 
-    def test_service_stage_failure_returns_generic_fallback(self, fake_completion):
+    def test_service_stage_failure_repairs_to_first_offering(self, fake_completion):
         outputs, calls = fake_completion
         outputs.append(_full_result_json())  # stage 2 ok
-        outputs.append("garbage")            # stage 3 fails
+        outputs.append("garbage")            # stage 3 first attempt fails
+        # retry also fails (empty queue -> "{}") -> deterministic repair
         result = classifier_mod.classify("Nusuk Masar Haj x", "nusuk masar haj issue")
         assert isinstance(result, ClassificationResult)
+        # repaired to a REAL taxonomy value, never Generic/Unknown
+        assert result.service == (
+            "System/Application - Nusuk Masar Haj.Backend Latency"
+        )  # first offering of the stage-2 service
         assert result.confidence == "low"
-        assert result.affected_system == AffectedSystem.other
-        assert len(calls) == 2
+        assert result.affected_system == AffectedSystem.nusuk_masar_haj
+        assert len(calls) == 3  # stage 2 + stage 3 + retry
 
     def test_never_raises(self, fake_completion):
         outputs, calls = fake_completion
@@ -329,6 +334,27 @@ class TestDotPathValidator:
     def test_invalid_dot_path_raises(self):
         with pytest.raises(ValueError):
             ClassificationResult(**_full_result(service="No Such Service.Offering"))
+
+    def test_invented_offering_raises(self):
+        # "Integration" is NOT an offering of System/Application - Nusuk Masar Haj
+        with pytest.raises(ValueError):
+            ClassificationResult(**_full_result(
+                service="System/Application - Nusuk Masar Haj.Integration"
+            ))
+
+    def test_invented_contract_offering_raises(self):
+        # LLM invented a descriptive sentence as the offering — must be rejected
+        with pytest.raises(ValueError):
+            ClassificationResult(**_full_result(
+                service="contracts - Nusuk Masar Haj.Actual arrival confirmation fails for housing contract"
+            ))
+
+    def test_echoed_service_name_as_offering_raises(self):
+        # LLM echoed the service name as the offering — must be rejected
+        with pytest.raises(ValueError):
+            ClassificationResult(**_full_result(
+                service="System/Application - Nusuk Masar Haj.System/Application"
+            ))
 
     def test_bare_service_old_behavior_unchanged(self):
         r = ClassificationResult(**_full_result(

@@ -178,7 +178,7 @@ def _build_system_prompt() -> str:
 {{
   "affected_system": "string — one from the list below",
   "service": "string — one service from the chosen system's list",
-  "incident_type": "Spike | Degradation | Unavailability | Outage — the symptom/what happened",
+  "incident_type": "Spike | Degradation | Unavailability | Outage — the symptom/what happened. Spike = a sudden increase in errors/alerts/traffic (monitoring-style); use ONLY when the ticket explicitly mentions a spike/surge of errors. Feature requests, test tickets, and tickets describing a missing UI element are NOT Spikes — use Degradation or Unavailability instead.",
   "severity": "Critical | Major | Minor | Cosmetic",
   "urgency": "Immediate | High | Medium | Low",
   "category": "Software | Performance | Configuration | Security | Network Issue | Integration | Data Issue | Human Error | External / Third Party | Other — the root cause type/why it happened",
@@ -309,7 +309,7 @@ _SYSTEM_PROMPT = _build_system_prompt()
 
 # Identity of _SYSTEM_PROMPT — recorded on persisted classifications by the
 # seams pipeline (provenance). Bump when the prompt content changes.
-PROMPT_VERSION = "2026-08-v1"
+PROMPT_VERSION = "2026-08-v2"  # v2: Spike definition + offering verbatim rules + stage-3 retry/repair
 def _stage_system_from_partial(raw: str) -> ClassificationResult | None:
     """Recover affected_system from a truncated stage-1 response.
 
@@ -485,7 +485,7 @@ _CASCADE_JSON_SCHEMA = """\
 {
   "affected_system": "string — one from the list below",
   "service": "string — see the stage rules below",
-  "incident_type": "Spike | Degradation | Unavailability | Outage — the symptom/what happened",
+  "incident_type": "Spike | Degradation | Unavailability | Outage — the symptom/what happened. Spike = a sudden increase in errors/alerts/traffic (monitoring-style); use ONLY when the ticket explicitly mentions a spike/surge of errors. Feature requests, test tickets, and tickets describing a missing UI element are NOT Spikes — use Degradation or Unavailability instead.",
   "severity": "Critical | Major | Minor | Cosmetic",
   "urgency": "Immediate | High | Medium | Low",
   "category": "Software | Performance | Configuration | Security | Network Issue | Integration | Data Issue | Human Error | External / Third Party | Other — the root cause type/why it happened",
@@ -498,6 +498,7 @@ _CASCADE_JSON_SCHEMA = """\
 
 ## Key Rules
 - incident_type = WHAT HAPPENED (symptom). category = WHY IT HAPPENED (root cause type). Never mix them.
+- service MUST be one of the allowed values EXACTLY as written — never invent, never rephrase, never shorten a service or offering name.
 - Respond with JSON only — no markdown, no commentary.
 - If unsure, pick the closest match and set confidence "low".
 
@@ -588,8 +589,12 @@ def _stage_offering_llm(title: str, description: str, result: ClassificationResu
 
     Empty or single-offering lists SKIP the LLM call (deterministic):
     empty → bare service name, single → "Service.Offering".
-    Returns None only on LLM/parse failure. May raise only if the service
-    cannot be resolved to an offering list (the caller degrades to fallback).
+    On LLM/parse failure (incl. an invented offering rejected by the
+    taxonomy validator): retries ONCE with the validation error, then
+    repairs deterministically to the service's first valid offering with
+    confidence "low" — never nukes to Generic/Unknown. May raise only if
+    the service cannot be resolved to an offering list (the caller
+    degrades to fallback).
     """
     system = result.affected_system
     services = SERVICES_BY_SYSTEM.get(system, {})
@@ -615,22 +620,47 @@ def _stage_offering_llm(title: str, description: str, result: ClassificationResu
 
     options = "\n".join(f"  - {o}" for o in offerings)
     rules = (
-        f"affected_system is FIXED to '{system.value}'. service is FIXED to '{key}'.\n"
-        "- Pick the offering that best matches the ticket.\n"
+        f"affected_system is FIXED to '{system.value}'. service is FIXED to '{key}'.\\n"
+        "- Pick the offering that best matches the ticket.\\n"
+        "- The offering MUST be one of the listed options EXACTLY as written — copy it verbatim.\\n"
+        "- NEVER invent a new offering, NEVER rephrase/shorten/translate one, NEVER use the service name as the offering.\\n"
+        "- 'Error Spikes' is ONLY for tickets that explicitly report a sudden increase in errors/alerts/spikes. If the ticket mentions no spike of errors, do NOT pick it — pick the closest other option or set confidence low.\\n"
         f"- Set the service field to '{key}.<offering>' — the service name, a dot, then the chosen offering."
     )
     allowed = (
         f"service (pick one — ONLY these {len(offerings)} offerings, respond as '{key}.<offering>'):\n{options}"
     )
     _log.debug("Cascade stage 3/3 (offering) — service='%s', %d options", key, len(offerings))
+    user_prompt = _build_user_prompt(title, description)
     try:
         return _parse_and_validate(call_llm([
             {"role": "system", "content": _build_stage_system_prompt(rules, allowed)},
-            {"role": "user", "content": _build_user_prompt(title, description)},
+            {"role": "user", "content": user_prompt},
         ], max_tokens=600, temperature=0.0))
     except Exception as e:
-        _log.warning("Cascade stage 3/3 (offering) failed for service '%s': %s", key, e)
-        return None
+        last_error = str(e)
+        _log.warning("Cascade stage 3/3 (offering) failed for service '%s': %s", key, last_error)
+
+    # Retry once with the validation error — the LLM usually fixes an invented
+    # offering when told exactly which values are allowed.
+    try:
+        return _parse_and_validate(call_llm([
+            {"role": "system", "content": _build_stage_system_prompt(rules, allowed)},
+            {"role": "user", "content": _build_retry_prompt(user_prompt, last_error)},
+        ], max_tokens=600, temperature=0.0))
+    except Exception as e:
+        _log.warning("Cascade stage 3/3 (offering) retry failed for service '%s': %s", key, e)
+
+    # Deterministic repair: attach the service's FIRST valid offering so the
+    # stored value is a REAL taxonomy value and the ticket stays in the
+    # service's pool (offering_of = service name). Confidence drops to low —
+    # this is a fallback, not a confident pick. Never nukes to Generic/Unknown.
+    result.service = f"{key}.{offerings[0]}"
+    result.confidence = "low"
+    result.reasoning = (result.reasoning or "") + (
+        " Offering selection failed after retry; repaired to first valid offering."
+    )
+    return result
 
 
 def _classify_cascade(title: str, description: str) -> ClassificationResult:
