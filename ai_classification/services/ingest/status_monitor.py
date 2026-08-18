@@ -19,7 +19,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 
-from ..config import settings
+from ai_classification.shared.config import settings
 
 _log = logging.getLogger(__name__)
 
@@ -47,7 +47,7 @@ class _Monitor:
     def _probe_db(self) -> ServiceStatus:
         st = ServiceStatus(name="db")
         try:
-            from ..integration import _connect
+            from ai_classification.services.jobs.integration import _connect
             with _connect() as conn:
                 with conn.cursor() as cur:
                     cur.execute("SELECT 1")
@@ -60,7 +60,7 @@ class _Monitor:
         st = ServiceStatus(name="embedding")
         st.resolved = {"model": settings.embedding_model_name}
         try:
-            from ..core.store import store
+            from ai_classification.shared.store import store
             if store._model is None:
                 st.status, st.detail = "error", "model not loaded"
             else:
