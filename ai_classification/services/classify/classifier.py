@@ -13,9 +13,9 @@ from datetime import datetime, timezone
 
 from pydantic import TypeAdapter
 
-from ..config import settings
-from ..domain.models import ClassificationResult, SimilarOpenIncident
-from ..domain.taxonomy import (
+from ai_classification.shared.config import settings
+from ai_classification.domain.models import ClassificationResult, SimilarOpenIncident
+from ai_classification.domain.taxonomy import (
     AffectedSystem,
     IncidentType,
     Severity,
@@ -24,9 +24,9 @@ from ..domain.taxonomy import (
     SERVICES_BY_SYSTEM,
     flatten_services,
 )
-from ..api.schemas import ClassifyResponse, ClassifyBatchResponse
-from .llm import call_llm, strip_json_fences
-from .store import store
+from ai_classification.api.schemas import ClassifyResponse, ClassifyBatchResponse
+from ai_classification.services.classify.llm import call_llm, strip_json_fences
+from ai_classification.shared.store import store
 
 _log = logging.getLogger(__name__)
 
@@ -143,7 +143,7 @@ FEW_SHOT_EXAMPLES = [
 
 # Build examples block with failure mode codes from the taxonomy
 def _build_fm_taxonomy_block() -> str:
-    from .failure_modes import FAILURE_MODES
+    from ai_classification.core.failure_modes import FAILURE_MODES
     lines = []
     for code, fm in sorted(FAILURE_MODES.items()):
         name, system, service, severity = fm[0], fm[1], fm[2], fm[3]

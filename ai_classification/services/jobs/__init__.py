@@ -1,3 +1,1 @@
-"""Jobs service — recurring + manual background jobs (recovery, repool,
-reclassify_offerings, heal sweep, sync worker).
-"""
+"""Background jobs — recovery, repool, reclassify, heal, sync, integration worker."""

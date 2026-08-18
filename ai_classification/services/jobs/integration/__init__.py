@@ -29,10 +29,10 @@ from typing import Any
 import psycopg2
 from psycopg2.extras import Json
 
-from ..config import settings
-from ..seams.port import Incident
-from ..seams.pipeline import persist_result, process_incident
-from .schemas import Err
+from ai_classification.shared.config import settings
+from ai_classification.seams.port import Incident
+from ai_classification.seams.pipeline import persist_result, process_incident
+from ai_classification.services.jobs.integration.schemas import Err
 
 _log = logging.getLogger(__name__)
 

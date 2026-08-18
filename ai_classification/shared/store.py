@@ -20,9 +20,9 @@ import psycopg2.pool
 from fastapi import FastAPI
 from sentence_transformers import SentenceTransformer
 
-from ..config import settings
-from ..domain.models import ClassificationResult
-from ..sync import start_sync_worker
+from ai_classification.shared.config import settings
+from ai_classification.domain.models import ClassificationResult
+from ai_classification.sync import start_sync_worker
 
 _log = logging.getLogger(__name__)
 
@@ -274,7 +274,7 @@ class IncidentStore:
         grouping imports this module at load, so import grouping here at
         call time (no import cycle)."""
         try:
-            from .grouping import invalidate_incident
+            from ai_classification.services.cluster.grouping import invalidate_incident
             invalidate_incident(incident_id)
         except Exception:  # pragma: no cover — best-effort, never block writes
             pass
@@ -1141,21 +1141,21 @@ async def lifespan(app: FastAPI):
 
     start_sync_worker(store)
 
-    from ..seams.repool import start_repool_worker
+    from ai_classification.services.jobs.repool import start_repool_worker
     start_repool_worker()
 
-    from ..core.grouping import start_rebuild_loop
+    from ai_classification.services.cluster.grouping import start_rebuild_loop
     start_rebuild_loop()
 
     # Service status monitor — loud logging when any service (esp. the LLM
     # endpoint) is unreachable; state exposed via GET /status.
-    from ..core.status_monitor import monitor
+    from ai_classification.services.ingest.status_monitor import monitor
     monitor.start()
 
     # E1-E9 integration worker (async ingest queue) — gated so tests can
     # drive the queue synchronously (INTEGRATION_WORKER_ENABLED=0).
     if settings.integration_worker_enabled:
-        from ..integration import start_integration_worker
+        from ai_classification.services.jobs.integration import start_integration_worker
         start_integration_worker()
 
     yield
