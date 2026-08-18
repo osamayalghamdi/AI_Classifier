@@ -1,7 +1,7 @@
 """Job 1 — RECOVERY (one-time, MANUAL): fix tickets whose classification FAILED.
 
 Triggered by a person after the LLM endpoint is fixed (python -m
-ai_classification.seams.recovery). Never automatic.
+ai_classification.services.jobs.recovery). Never automatic.
 
 - Selects ONLY tickets with a real classification ERROR (failed reasoning),
   NOT offering-less or generic ones (those are Repool's domain).
@@ -23,7 +23,7 @@ _log = logging.getLogger(__name__)
 
 def recovery_candidates() -> list[dict]:
     """Incidents whose classification actually FAILED (error reasoning)."""
-    from ..core.store import store
+    from ai_classification.core.store import store
 
     out = []
     queued = {q["incident_id"] for q in store.queue_list()}
@@ -39,9 +39,9 @@ def recovery_candidates() -> list[dict]:
 
 def run_recovery(*, dry_run: bool = False) -> dict:
     """Re-classify failed tickets. Exhausted tickets go to the manual queue."""
-    from ..core.classifier import PROMPT_VERSION, classify
-    from ..core.store import store
-    from ..config import settings
+    from ai_classification.core.classifier import PROMPT_VERSION, classify
+    from ai_classification.core.store import store
+    from ai_classification.config import settings
 
     candidates = recovery_candidates()
     stats = {"candidates": len(candidates), "recovered": 0, "failed": 0,
@@ -72,7 +72,7 @@ if __name__ == "__main__":
     import logging as _l
     _l.basicConfig(level=_l.INFO)
 
-    from ..core.store import store
+    from ai_classification.core.store import store
 
     store.setup()
     stats = run_recovery(dry_run="--dry-run" in sys.argv)
