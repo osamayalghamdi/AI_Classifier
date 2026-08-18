@@ -15,8 +15,8 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from ..core.store import store
-from ..core.suboffering import embed_pure
+from ai_classification.core.store import store
+from ai_classification.core.suboffering import embed_pure
 
 _log = logging.getLogger(__name__)
 
