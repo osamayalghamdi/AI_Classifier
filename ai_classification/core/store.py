@@ -264,6 +264,19 @@ class IncidentStore:
                     (classification_json, incident_id))
         finally:
             self._putconn(conn)
+        self._invalidate_cluster_caches(incident_id)
+
+    @staticmethod
+    def _invalidate_cluster_caches(incident_id: str) -> None:
+        """A ticket's cluster membership changed (moved / re-classified) →
+        drop cached cluster names/verdicts containing it. Lazy import:
+        grouping imports this module at load, so import grouping here at
+        call time (no import cycle)."""
+        try:
+            from .grouping import invalidate_incident
+            invalidate_incident(incident_id)
+        except Exception:  # pragma: no cover — best-effort, never block writes
+            pass
 
     def save_incident(
         self, incident_id: str, title: str, description: str,
@@ -751,6 +764,7 @@ class IncidentStore:
             conn.commit()
         finally:
             self._putconn(conn)
+        self._invalidate_cluster_caches(incident_id)
 
     def pool_remove_many(self, offering_id: str, incident_ids: list[str]) -> None:
         if not self._ready or self._pool is None or not incident_ids:
@@ -764,6 +778,8 @@ class IncidentStore:
             conn.commit()
         finally:
             self._putconn(conn)
+        for iid in incident_ids:
+            self._invalidate_cluster_caches(iid)
 
     def pool_set_cooldown(self, offering_id: str, incident_ids: list[str], until) -> None:
         """Rejected-proposal cooldown: members stay in pool (upsert) but are
