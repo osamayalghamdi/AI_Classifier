@@ -22,13 +22,29 @@ _log = logging.getLogger(__name__)
 # Fallback markers that mean "classification failed, worth retrying":
 _FALLBACK_SERVICES = {"", "General / Unspecified", "Other", "general / unspecified", "other"}
 
+# Churn guard: incident IDs that were already retried once this process
+# lifetime and STILL ended up in a fallback (content-poor tickets like a
+# bare city name or ticket number can never be classified — re-running
+# them every 15 min burns LLM calls and produces zero new information).
+# In-memory by design: a fresh process retries everything once more, then
+# backs off for its lifetime. Cleared explicitly by tests.
+_retried_still_fallback: set[str] = set()
+_RETRY_MAX_ATTEMPTS = 1  # per process lifetime; tune if sweeps are cheap
+
 
 def retry_candidates(limit: int | None = None) -> list[dict]:
-    """Incidents whose stored classification is a failure fallback."""
+    """Incidents whose stored classification is a failure fallback.
+
+    Skips tickets already retried (and still fallback) this process
+    lifetime — the churn guard.
+    """
     from ..core.store import store
 
     out = []
     for inc in store.list_incidents():
+        iid = inc["id"]
+        if iid in _retried_still_fallback:
+            continue
         cj = inc.get("classification_dict") or {}
         reason = cj.get("reasoning") or ""
         svc = (cj.get("service") or "").strip()
@@ -62,6 +78,7 @@ def retry_unassigned(limit: int | None = None, *, dry_run: bool = False) -> dict
         # Pure counting — no LLM calls, nothing written.
         return stats
     for inc in candidates:
+        iid = inc["id"]
         title = inc.get("title", "") or ""
         description = inc.get("description", "") or ""
         try:
@@ -69,15 +86,22 @@ def retry_unassigned(limit: int | None = None, *, dry_run: bool = False) -> dict
             cls.model_version = settings.llm_model
             cls.prompt_version = PROMPT_VERSION
         except Exception as exc:  # noqa: BLE001 — worker keeps sweeping
-            _log.warning("Retry: classify failed for %s: %s", inc.get("id"), exc)
+            _log.warning("Retry: classify failed for %s: %s", iid, exc)
             stats["failed"] += 1
             continue
         new_cj = cls.model_dump_json()
         if not dry_run:
-            store.update_classification(inc["id"], new_cj)
+            store.update_classification(iid, new_cj)
         stats["reclassified"] += 1
-        _log.info("Retry: re-classified %s → service=%s", inc.get("id"),
+        _log.info("Retry: re-classified %s → service=%s", iid,
                   (cls.service or "?")[:60])
+        # Churn guard: still in a fallback after a real attempt → don't
+        # re-pick it this process lifetime (content-poor tickets can never
+        # classify; retrying them every sweep is pure LLM burn).
+        svc = (cls.service or "").strip()
+        if svc in _FALLBACK_SERVICES or not cls.canonical_statement:
+            _retried_still_fallback.add(iid)
+            _log.info("Retry: %s still fallback after retry — excluded from future sweeps", iid)
     return stats
 
 
