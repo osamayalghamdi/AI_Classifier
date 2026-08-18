@@ -182,3 +182,31 @@ class TestBuildClustersAdaptive:
         result = g._build_clusters("daily")
         assert result["total_incidents"] == 1
         assert result["clusters"] == []
+
+    def test_sub_offering_split_does_not_shadow_sim_matrix(self, monkeypatch):
+        """Regression: the Phase-1 sub-offering loop must NOT rebind the
+        `sim` similarity matrix to the matcher's float score — that caused
+        'float' object is not subscriptable in _emit. (Discovered live:
+        rebuild crashed with that exact error; fixed by renaming the
+        matcher's return to sub_sim.)"""
+        _fake_verdict(monkeypatch)
+        # One offering with 5 members at high intra-similarity; empty
+        # sub-offering catalog → residual cluster must emit fine.
+        incs = tuple(_mk_inc(i, fm="FM-018",
+                             title="Rawdah permit fails") for i in range(5))
+        for i, inc in enumerate(incs):
+            inc["classification_dict"]["service"] = (
+                "pilgrim groups and issue permit - Nusuk Masar Haj.Issue Permits")
+        sim = np.full((5, 5), 0.95)
+        np.fill_diagonal(sim, 1.0)
+        emb = np.ones(4, dtype=np.float32)
+        raw = list(zip(incs, [emb] * 5))
+
+        monkeypatch.setattr(g.store, "list_incidents", lambda status="active": list(incs))
+        monkeypatch.setattr(g.store, "list_incidents_with_embeddings", lambda: raw)
+        monkeypatch.setattr(g.store, "list_sub_offerings", lambda *a, **k: [])
+        monkeypatch.setattr(g.store, "list_exemplars", lambda *a, **k: [])
+
+        result = g._build_clusters("daily")
+        assert result["clusters"], "residual offering cluster must form"
+        assert result["clusters"][0]["count"] == 5
