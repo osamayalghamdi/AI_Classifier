@@ -187,6 +187,19 @@ class IncidentStore:
                         CREATE INDEX IF NOT EXISTS idx_proposals_offering_status
                         ON cluster_proposals (offering_id, status)
                     """)
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS manual_review_queue (
+                            incident_id TEXT PRIMARY KEY,
+                            reason TEXT NOT NULL DEFAULT '',
+                            attempts INTEGER NOT NULL DEFAULT 0,
+                            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                            reviewed_at TIMESTAMPTZ
+                        )
+                    """)
+                    cur.execute("""
+                        CREATE INDEX IF NOT EXISTS idx_manual_review_created
+                        ON manual_review_queue (created_at)
+                    """)
                 conn.commit()
             finally:
                 self._pool.putconn(conn)
@@ -681,6 +694,38 @@ class IncidentStore:
         finally:
             self._putconn(conn)
 
+    # ── Manual review queue (Recovery: exhausted retries) ─────────────
+
+    def queue_add(self, incident_id: str, reason: str = "") -> None:
+        if not self._ready or self._pool is None:
+            return
+        conn = self._getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO manual_review_queue (incident_id, reason) "
+                    "VALUES (%s, %s) ON CONFLICT (incident_id) DO UPDATE SET "
+                    "attempts = manual_review_queue.attempts + 1, "
+                    "reason = EXCLUDED.reason",
+                    (incident_id, reason))
+        finally:
+            self._putconn(conn)
+
+    def queue_list(self) -> list[dict]:
+        if not self._ready or self._pool is None:
+            return []
+        conn = self._getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT incident_id, reason, attempts, created_at "
+                    "FROM manual_review_queue WHERE reviewed_at IS NULL "
+                    "ORDER BY created_at")
+                return [{"incident_id": r[0], "reason": r[1], "attempts": r[2],
+                         "created_at": r[3]} for r in cur.fetchall()]
+        finally:
+            self._putconn(conn)
+
     def pool_add(self, offering_id: str, incident_id: str) -> None:
         if not self._ready or self._pool is None:
             return
@@ -1028,8 +1073,8 @@ async def lifespan(app: FastAPI):
 
     start_sync_worker(store)
 
-    from ..seams.retry import start_retry_worker
-    start_retry_worker()
+    from ..seams.repool import start_repool_worker
+    start_repool_worker()
 
     from ..core.grouping import start_rebuild_loop
     start_rebuild_loop()

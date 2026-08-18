@@ -59,8 +59,8 @@ class Settings:
     # ── Ticketing system sync ────────────────────────────────────────────
     ticketing_api_url: str = getenv("TICKETING_API_URL", "http://localhost:8002")
     sync_interval_seconds: int = int(getenv("SYNC_INTERVAL", "60"))
-    # Retry worker sweep interval (seconds) — re-classifies fallback/unassigned
-    retry_interval_seconds: int = int(getenv("RETRY_INTERVAL", "900"))
+    # Repool worker sweep interval (seconds) — re-match-only, never re-classifies
+    repool_interval_seconds: int = int(getenv("REPOOL_INTERVAL", "900"))
     # SEAMS: which ticket source the pipeline talks to — "real" (default,
     # raises not-configured until TICKETING_API_TOKEN exists) or "local"
     # (fake source backed by the incident store; tests + offline runs).
