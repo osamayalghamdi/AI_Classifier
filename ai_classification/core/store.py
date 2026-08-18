@@ -237,6 +237,21 @@ class IncidentStore:
 
     # ── Persist ────────────────────────────────────────────────────
 
+    def update_classification(self, incident_id: str, classification_json: str) -> None:
+        """Re-classification update (retry worker): replace the stored
+        classification on an existing row without touching its identity,
+        status, or occurrence bookkeeping."""
+        if not self._ready or self._pool is None:
+            return
+        conn = self._getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE incidents SET classification_json = %s WHERE id = %s",
+                    (classification_json, incident_id))
+        finally:
+            self._putconn(conn)
+
     def save_incident(
         self, incident_id: str, title: str, description: str,
         classification: ClassificationResult, extracted_text: str = "",
@@ -1012,6 +1027,9 @@ async def lifespan(app: FastAPI):
         _log.warning("Store FAILED (embeddings disabled)")
 
     start_sync_worker(store)
+
+    from ..seams.retry import start_retry_worker
+    start_retry_worker()
 
     from ..core.grouping import start_rebuild_loop
     start_rebuild_loop()

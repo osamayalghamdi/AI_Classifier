@@ -65,8 +65,13 @@ def _mint_sub_offering(proposal: dict, offering_id: str | None = None) -> dict:
 @router.get("")
 def list_proposals(status: str | None = None, offering_id: str | None = None):
     _log.info("GET /proposals — status=%s offering=%s", status, offering_id)
-    return {"proposals": store.list_proposals(status=status, offering_id=offering_id),
-            "total": len(store.list_proposals(status=status, offering_id=offering_id))}
+    props = store.list_proposals(status=status, offering_id=offering_id)
+    # Enrich with member titles so the review UI needs no N+1 detail calls.
+    by_id = {i["id"]: i for i in store.list_incidents()}
+    for p in props:
+        p["members"] = [{"id": iid, "title": (by_id.get(iid, {}) or {}).get("title", "")}
+                        for iid in p.get("member_ids", [])]
+    return {"proposals": props, "total": len(props)}
 
 
 @router.get("/{proposal_id}")

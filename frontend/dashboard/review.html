@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Proposal Review — AI Incident Classifier</title>
+<style>
+:root{
+  --bg:#0d1117; --panel:#161b22; --panel2:#1c2330; --line:#2b3442;
+  --ink:#e6edf3; --muted:#9aa7b4; --faint:#6b7683;
+  --blue:#3b82f6; --blue-deep:#2563eb; --orange:#f97316;
+  --green:#22c55e; --red:#ef4444; --crit:#ef4444; --minor:#eab308;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--ink);font-family:"IBM Plex Sans Arabic","Tajawal","Segoe UI",sans-serif;padding:24px;font-size:14.5px}
+.top{display:flex;align-items:center;gap:14px;margin-bottom:22px}
+.top h1{font-size:19px;font-weight:800}
+.top .sub{color:var(--faint);font-size:12.5px}
+.top .right{margin-left:auto;display:flex;gap:10px;align-items:center}
+input[type=password]{background:#0a0e13;border:1px solid var(--line);border-radius:8px;color:var(--ink);padding:6px 10px;font-size:12.5px;width:130px}
+button{background:var(--blue);border:1px solid transparent;color:#fff;border-radius:8px;padding:7px 14px;font-size:13px;font-weight:700;cursor:pointer}
+button:hover{background:var(--blue-deep)}
+button.ghost{background:transparent;border-color:var(--line);color:var(--muted)}
+button.ok{background:var(--green)}
+button.bad{background:var(--red)}
+button:disabled{opacity:.45;cursor:default}
+.badge{background:var(--panel2);border:1px solid var(--line);border-radius:999px;padding:3px 10px;font-size:12px;color:var(--muted)}
+.badge.pending{color:var(--minor);border-color:var(--minor)}
+.prop{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin-bottom:14px}
+.prop h3{font-size:15.5px;font-weight:800;margin-bottom:2px}
+.prop .offer{color:var(--faint);font-size:12px;margin-bottom:10px}
+.meta{display:flex;gap:10px;margin-bottom:10px;flex-wrap:wrap}
+.members{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px}
+.member{background:var(--panel2);border:1px solid var(--line);border-radius:7px;padding:4px 9px;font-size:12px;color:var(--muted)}
+.actions{display:flex;gap:8px}
+.note{display:flex;gap:8px;margin-bottom:10px}
+.note input{flex:1;background:#0a0e13;border:1px solid var(--line);border-radius:8px;color:var(--ink);padding:6px 10px}
+.status-msg{margin-bottom:14px;font-size:13px}
+#empty{color:var(--faint);text-align:center;padding:40px;font-size:14px}
+</style>
+</head>
+<body>
+<div class="top">
+  <div>
+    <h1>Sub-offering proposals — review gate</h1>
+    <div class="sub">Minting happens ONLY here. Approve = the proposal becomes an ACTIVE sub-offering.</div>
+  </div>
+  <div class="right">
+    <input id="tok" type="password" placeholder="API token">
+    <button class="ghost" onclick="load()">Refresh</button>
+  </div>
+</div>
+<div id="msg" class="status-msg"></div>
+<div id="list"></div>
+<script>
+const API = location.hostname ? (location.port === "8085" ? "http://" + location.hostname + ":8000" : location.origin) : "http://localhost:8000";
+let TOK = localStorage.getItem("dash_token") || "";
+document.getElementById("tok").value = TOK;
+document.getElementById("tok").addEventListener("change", e => { localStorage.setItem("dash_token", e.target.value.trim()); TOK = e.target.value.trim(); });
+
+function esc(s){ return String(s || "").replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+async function api(path, opts){
+  const r = await fetch(API + path, Object.assign({ headers: { "Authorization": "Bearer " + TOK, "Content-Type": "application/json" } }, opts || {}));
+  if (!r.ok) throw new Error(r.status + " " + await r.text().catch(()=> ""));
+  return r.json();
+}
+async function load(){
+  const list = document.getElementById("list");
+  const msg = document.getElementById("msg");
+  msg.textContent = "Loading proposals…";
+  try {
+    const d = await api("/proposals?status=pending");
+    msg.textContent = d.proposals.length + " pending proposal(s) waiting for review.";
+    if (!d.proposals.length){ list.innerHTML = '<div id="empty">No pending proposals — the gate is clear.</div>'; return; }
+    list.innerHTML = d.proposals.map(p => `
+      <div class="prop">
+        <h3>${esc(p.proposed_label) || "(unnamed)"}</h3>
+        <div class="offer">${esc(p.offering_id)}</div>
+        <div class="meta">
+          <span class="badge pending">pending</span>
+          <span class="badge">${p.member_ids.length} members</span>
+          <span class="badge">mean_sim ${p.mean_sim}</span>
+        </div>
+        <div class="members">${(p.members || []).map(m => `<span class="member" title="${esc(m.id)}">${esc(m.title) || "—"}</span>`).join("")}</div>
+        <div class="note"><input id="note-${p.id}" placeholder="Review note (optional)"></div>
+        <div class="actions">
+          <button class="ok" onclick="decide('${p.id}','approve')">✓ Approve & mint</button>
+          <button class="bad" onclick="decide('${p.id}','reject')">✕ Reject</button>
+          <button class="ghost" onclick="decide('${p.id}','merge')">⇄ Merge</button>
+        </div>
+      </div>`).join("");
+  } catch(e){ msg.textContent = "Error: " + e.message; }
+}
+async function decide(id, decision){
+  const note = (document.getElementById("note-" + id) || {}).value || "";
+  const msg = document.getElementById("msg");
+  msg.textContent = "Submitting " + decision + "…";
+  try {
+    const d = await api("/proposals/" + id + "/decision", { method: "POST", body: JSON.stringify({ decision, note }) });
+    msg.textContent = decision + " OK — " + (d.message || JSON.stringify(d).slice(0, 80));
+    load();
+  } catch(e){ msg.textContent = "Decision failed: " + e.message; }
+}
+load();
+</script>
+</body>
+</html>
