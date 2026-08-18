@@ -103,8 +103,9 @@ _VERDICT_CACHE_TTL = 3600 * 24  # 24 hours
 # member-ID fingerprint — one offering emits MULTIPLE clusters (sub-offering
 # splits + residual), each with a DIFFERENT name, so the cache key must be
 # the members, never the offering. TTL keeps the 5-min rebuild from
-# hammering the LLM.
-_ar_name_cache: dict[str, str] = {}
+# hammering the LLM; invalidate_incident() evicts entries when a ticket
+# changes clusters.
+_ar_name_cache: dict[str, dict] = {}  # fingerprint -> {"name", "_cached_at"}
 _AR_NAME_TTL = 3600 * 24  # 24 hours
 
 # Naming prompt (NEW — not one of the frozen classifier/canary prompts).
@@ -141,7 +142,11 @@ def _arabic_cluster_name(member_incidents: list[dict]) -> str:
     fp = _make_fingerprint(member_incidents)
     cached = _ar_name_cache.get(fp)
     if cached:
-        return cached
+        age = time.time() - cached.get("_cached_at", 0)
+        if age > _AR_NAME_TTL:
+            del _ar_name_cache[fp]
+        else:
+            return cached["name"]
     name = member_incidents[0].get("title", "") if member_incidents else "Cluster"
     try:
         tickets = []
@@ -165,7 +170,7 @@ def _arabic_cluster_name(member_incidents: list[dict]) -> str:
             _log.warning("Arabic title rejected (no Arabic script or too long): %r", label[:40])
     except Exception as exc:  # noqa: BLE001 — naming is best-effort
         _log.warning("Arabic title generation failed: %s", exc)
-    _ar_name_cache[fp] = name
+    _ar_name_cache[fp] = {"name": name, "_cached_at": time.time()}
     _log.info("Cluster title: %s (%d tickets)", name, len(member_incidents))
     return name
 
@@ -202,8 +207,26 @@ def _cache_verdict(incidents: list[dict], verdict: dict):
 def invalidate_cache():
     """Clear both verdict cache and cluster snapshot — call after data mutations."""
     _verdict_cache.clear()
+    _ar_name_cache.clear()
     _snapshot.clear()
     _log.info("Full cluster cache invalidated")
+
+
+def invalidate_incident(incident_id: str) -> None:
+    """Drop cached names/verdicts for EVERY cluster whose member set contains
+    this incident — the old cluster it LEFT and the new one it JOINED both
+    carry the ticket's ID in their fingerprint. Membership changed → labels
+    must be regenerated, not served stale. Snapshot cleared so the next
+    dashboard read rebuilds with the new memberships."""
+    dropped = 0
+    for cache in (_ar_name_cache, _verdict_cache):
+        for fp in [k for k in cache if incident_id in k.split(",")]:
+            del cache[fp]
+            dropped += 1
+    if dropped:
+        _snapshot.clear()
+        _log.info("invalidate_incident(%s): dropped %d cached cluster entries",
+                  incident_id, dropped)
 
 
 def request_rebuild():
