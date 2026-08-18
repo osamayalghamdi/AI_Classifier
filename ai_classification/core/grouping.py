@@ -97,6 +97,78 @@ def _sensitivity_params(active_count: int) -> tuple[float, int]:
 _verdict_cache: dict[str, dict] = {}
 _VERDICT_CACHE_TTL = 3600 * 24  # 24 hours
 
+# ── Arabic cluster-name cache ────────────────────────────────────────────
+# Phase-1 offering clusters are named by the LLM in Arabic (the NOC
+# dashboard is bilingual; cluster names should read naturally). Keyed by
+# member-ID fingerprint — one offering emits MULTIPLE clusters (sub-offering
+# splits + residual), each with a DIFFERENT name, so the cache key must be
+# the members, never the offering. TTL keeps the 5-min rebuild from
+# hammering the LLM.
+_ar_name_cache: dict[str, str] = {}
+_AR_NAME_TTL = 3600 * 24  # 24 hours
+
+# Naming prompt (NEW — not one of the frozen classifier/canary prompts).
+# The LLM READS the actual member tickets (titles + descriptions) and must
+# produce a short, simple Arabic title for the cluster — a description of
+# the real shared problem, NOT a translation of an offering/service name.
+AR_NAME_PROMPT = """You are naming an incident cluster on a NOC shift dashboard.
+
+Here are the actual tickets in the cluster (title: description). Read them
+all and identify the ONE shared problem. Give the cluster a short, simple
+ARABIC title (max 6 words) that describes that problem the way an operator
+would say it — e.g. "فشل إصدار تصريح الروضة" (Rawdah permit issuance fails),
+not the system or service name.
+
+Rules:
+- MUST be in Arabic script (العربية), NOT transliterated.
+- Short and simple — what is broken, not which system.
+- Return ONLY the title — no quotes, no explanation, no English.
+
+Tickets:
+{tickets}"""
+
+# Cap on how many member tickets go into the naming prompt (titles +
+# descriptions, truncated). Enough to cover any real cluster without
+# blowing the context window.
+_AR_NAME_MAX_TICKETS = 15
+
+
+def _arabic_cluster_name(member_incidents: list[dict]) -> str:
+    """LLM-generated Arabic title for a cluster, derived from READING the
+    member tickets. Cached per member-ID fingerprint (same members →
+    same name, no repeat LLM calls across rebuilds). Falls back to the
+    English label on failure — the rebuild must never break."""
+    fp = _make_fingerprint(member_incidents)
+    cached = _ar_name_cache.get(fp)
+    if cached:
+        return cached
+    name = member_incidents[0].get("title", "") if member_incidents else "Cluster"
+    try:
+        tickets = []
+        for inc in member_incidents[:_AR_NAME_MAX_TICKETS]:
+            t = (inc.get("title") or "").strip()[:120]
+            d = (inc.get("description") or "").strip()[:200]
+            tickets.append(f"- {t}: {d}" if d else f"- {t}")
+        if not tickets:
+            tickets = ["- (no ticket text)"]
+        raw = call_llm(
+            [{"role": "user", "content": AR_NAME_PROMPT.format(
+                tickets="\n".join(tickets))}],
+            max_tokens=40, temperature=0.0,
+        )
+        label = (raw or "").strip().strip('"').strip("'").strip()
+        label = label.splitlines()[0].strip() if label else ""
+        # Guard: require at least one Arabic-script character, else keep English.
+        if any("\u0600" <= ch <= "\u06FF" for ch in label) and len(label) <= 60:
+            name = label
+        else:
+            _log.warning("Arabic title rejected (no Arabic script or too long): %r", label[:40])
+    except Exception as exc:  # noqa: BLE001 — naming is best-effort
+        _log.warning("Arabic title generation failed: %s", exc)
+    _ar_name_cache[fp] = name
+    _log.info("Cluster title: %s (%d tickets)", name, len(member_incidents))
+    return name
+
 
 def _make_fingerprint(incidents: list[dict]) -> str:
     """Create a stable fingerprint from sorted incident IDs."""
@@ -261,13 +333,21 @@ def _build_clusters(period: str = "daily") -> dict:
         _sub_name[_s["id"]] = _s["name"]
         _exemplars_by_offering[_s["offering_id"]].extend(store.list_exemplars(_s["id"]))
 
-    def _emit(name: str, m_indices: list[int], offering_key: str) -> dict | None:
-        """Build one cluster dict for the given member indices (read-only)."""
+    def _emit(name: str, m_indices: list[int], offering_key: str,
+              arabic: bool = False) -> dict | None:
+        """Build one cluster dict for the given member indices (read-only).
+
+        arabic=True → the cluster label is LLM-generated in Arabic from the
+        current English name (offering-level, residual, AND sub-offering
+        clusters — the NOC dashboard is bilingual, all labels should read
+        naturally in Arabic)."""
         m = [incidents[i] for i in m_indices]
         if not m:
             return None
         worst_sev = _worst_severity(m)
         top_sys, top_svc = _dominant_labels(m)
+        if arabic:
+            name = _arabic_cluster_name(list(m))
         cid = hashlib.md5(f"{offering_key}|{name}".encode()).hexdigest()[:12]
         cluster_incidents = []
         for idx, inc in zip(m_indices, m):
@@ -322,13 +402,13 @@ def _build_clusters(period: str = "daily") -> dict:
         for sub_id, sidx in sub_groups.items():
             if len(sidx) < 2:
                 continue
-            c = _emit(_sub_name.get(sub_id, offering), sidx, offering)
+            c = _emit(_sub_name.get(sub_id, offering), sidx, offering, arabic=True)
             if c:
                 all_clusters.append(c)
         # 2) Residual offering cluster (members that matched no sub-offering)
         residual = [i for i in indices if i not in matched_ids]
         if len(residual) >= adaptive_min_size:
-            c = _emit(offering, residual, offering)
+            c = _emit(offering, residual, offering, arabic=True)
             if c:
                 all_clusters.append(c)
         used.update(indices)
