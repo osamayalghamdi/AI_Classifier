@@ -19,7 +19,7 @@ docker compose version   # expect v2.x
 cd ~
 git clone git@github.com:osamayalghamdi/AI_Classifier.git
 cd AI_Classifier
-git checkout feat/suboffering-clustering   # or the merged release branch
+git checkout feat/deploy-integration-ready   # the integration-ready release branch
 ```
 
 ## 2. Configure the environment (THE critical step)
@@ -42,6 +42,21 @@ LLM_API_KEY=<your ELM key>
 # UNIVERSAL_API_KEY=<key>
 ```
 
+REQUIRED for the database (compose FAILS LOUDLY if unset):
+
+```bash
+POSTGRES_USER=aiuser
+POSTGRES_PASSWORD=<pick a strong password>
+POSTGRES_DB=ai_incidents
+```
+
+Optional integration token (W3 API auth — fail-closed: empty = all
+integration requests rejected with 401):
+
+```bash
+INTEGRATION_API_TOKEN=<token for the ticketing system>
+```
+
 The compose file passes these straight through to the api container.
 Verify from the server BEFORE starting (ELM must resolve from the server):
 
@@ -49,6 +64,22 @@ Verify from the server BEFORE starting (ELM must resolve from the server):
 curl -s -o /dev/null -w "%{http_code}\n" https://llms.elm.sa/v1/models
 # expect 200 (401/403 also OK = reachable; 000 = DNS/network problem)
 ```
+
+## 2.5 CRITICAL GATE — canary before any live traffic (D4)
+
+The 34-pair canary validates the company-hosted model BEFORE anything
+real flows through it. Run it against the ELM endpoint:
+
+```bash
+# inside the repo, with the .env LLM vars active:
+uv run pytest tests/test_pairwise_canary.py -v
+```
+
+Expected: 22/22 wrong pairs → NO and 5/5 correct → YES (8 passed,
+6 xfailed = the 7 documented flaky pairs, 1 xpassed). If the strict
+wrong→NO direction breaks, STOP — report to the manager. Do NOT tune
+prompts or thresholds to make it green. A deviation here is information
+about the model.
 
 ## 3. Build and start
 
@@ -81,8 +112,19 @@ Dashboard: http://SERVER_IP:8082/
 ## 5. Load demo data (optional)
 
 ```bash
-curl -s -X POST http://localhost:8000/import/test_incidents.json
-# ~100 real tickets classified through the live pipeline (~10 min)
+./scripts/reseed.sh http://localhost:8000 test_incidents.json
+# ~100 real tickets classified + embedded through the live pipeline (~11 min)
+# Expect: 91 incidents stored, 0 failed (9 duplicate titles deduped)
+# Re-runnable any time — wipes and rebuilds from source (reproducible).
+```
+
+## 5.5 Run the test suite (sanity check)
+
+```bash
+# MUST point at a test database — the suite refuses to run against the
+# production DB (ai_incidents) by design (conftest safety guard).
+PG_PORT=5432 uv run pytest tests/ -q
+# Expected: ~131 passed + xfail/xpass from the documented flaky canary class
 ```
 
 ## 6. Operational notes
@@ -94,6 +136,12 @@ curl -s -X POST http://localhost:8000/import/test_incidents.json
   no runtime download needed)
 - Image is ~8.75GB (torch+CUDA). CPU-only torch would shrink it — future
   optimization, not required.
+- Integration API (W3): POST /api/v1/incidents (202 async), GET
+  /api/v1/incidents/{ref}, POST /api/v1/incidents/dry-run, POST
+  /api/v1/backfill, GET /api/v1/jobs — all Bearer-token auth. Full
+  contract: docs/INTEGRATION_GUIDE.md
+- Sync worker polls TICKETING_API_URL when TICKETING_API_TOKEN is set;
+  fails loudly (NotConfiguredError) until then.
 
 ## 7. Rollback / update
 
