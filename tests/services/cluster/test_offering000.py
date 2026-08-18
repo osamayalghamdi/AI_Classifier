@@ -20,8 +20,8 @@ import ai_classification.shared.store as live_store  # noqa: F401  (store module
 from ai_classification.services.match.suboffering import OFFERING_000
 from ai_classification.services.cluster.suboffering_cluster import run_pool
 
-from .test_incident_store import FixedVecModel, _make_store
-from .conftest import TEST_PG_DATABASE
+from tests.shared.test_incident_store import FixedVecModel, _make_store
+from tests.conftest import TEST_PG_DATABASE
 
 
 class FakeVerifier:
@@ -157,7 +157,7 @@ class TestDecisionMintNewOffering:
         monkeypatch.setattr(so, "store", engine_store)
         from ai_classification.services.ingest.routes import app
         from fastapi.testclient import TestClient
-        from .test_incident_store import _insert_raw, _make_result
+        from tests.shared.test_incident_store import _insert_raw, _make_result
         s = engine_store
         for iid in ("i1", "i2", "i3"):
             _insert_raw(s, iid, f"title {iid}", f"desc {iid}", "",

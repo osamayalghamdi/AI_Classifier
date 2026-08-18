@@ -27,7 +27,7 @@ import psycopg2
 import pytest
 from fastapi.testclient import TestClient
 
-from .test_cascade import _settings_with, make_fake_completion
+from tests.services.classify.test_cascade import _settings_with, make_fake_completion
 
 import ai_classification.services.classify.classifier as classifier_mod
 import ai_classification.services.classify.llm as mod_llm
@@ -285,7 +285,7 @@ print(f"FINAL: {j['status']} attempts={j['attempts']}", flush=True)
         "INTEGRATION_MAX_ATTEMPTS": "3",
         "INTEGRATION_RETRY_BASE_S": "1",
         "E5_REF": ref,
-        "PYTHONPATH": os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "PYTHONPATH": os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
     })
     r = subprocess.run([sys.executable, "-c", script], capture_output=True,
                        text=True, env=env, timeout=240)
@@ -376,7 +376,7 @@ def test_e8_missing_required_field(client):
 # ── E9: integration guide ships with the repo ────────────────────────
 
 def test_e9_guide_exists_with_required_sections():
-    guide = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    guide = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
                          "docs", "INTEGRATION_GUIDE.md")
     assert os.path.exists(guide), f"missing {guide}"
     text = open(guide).read()

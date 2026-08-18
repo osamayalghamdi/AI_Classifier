@@ -31,7 +31,7 @@ from litellm import completion
 
 from ai_classification.shared.config import settings
 
-FIXTURE = os.path.join(os.path.dirname(__file__), "pairwise_canary_fixture.json")
+FIXTURE = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "pairwise_canary_fixture.json")
 REQUIRED_MODEL_SUBSTR = ("openrouter", "qwen3.6")
 BATCH_SIZE = 8
 BATCH_MAX_TOKENS = 4000  # production batch budget; verbose reasons truncate at 800
