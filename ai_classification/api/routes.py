@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .schemas import ClassifyRequest, ClassifyResponse, ClassifyBatchRequest, ClassifyBatchResponse, ResolveResponse, BulkImportRequest
 from ..core.store import (
     lifespan, get_health, resolve_incident, get_incident, list_incidents, delete_all_incidents,
+    store,
 )
 from ..core.classifier import classify_and_store, classify_batch
 from ..config import settings
@@ -297,6 +298,16 @@ def reports(period: str = "daily"):
 def reports_no_prefix(period: str = "daily"):
     """Frontend-compat alias for /api/reports/{period} — dashboard uses this path."""
     return reports(period)
+
+
+# Manual-review queue (Recovery job: exhausted retries) — feeds review.html
+@app.get("/review-queue")
+def review_queue():
+    items = store.queue_list()
+    by_id = {i["id"]: i for i in store.list_incidents()}
+    for it in items:
+        it["title"] = (by_id.get(it["incident_id"], {}) or {}).get("title", "")
+    return {"items": items}
 
 
 # Import bulk incidents from a JSON file — only title + description
