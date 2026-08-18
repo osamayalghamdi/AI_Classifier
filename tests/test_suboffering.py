@@ -32,18 +32,19 @@ def test_prompt_identity_with_canary():
     assert verifier_mod.PROMPT_VERSION == "v3"
 
 
-# ── offering key: FIRST segment of service string ─────────────────────
+# ── offering key: segment of service string before the LAST dot ─────────
 class TestOfferingOf:
-    def test_first_segment(self):
+    def test_last_segment(self):
         assert offering_of("pilgrim groups and issue permit - Nusuk Masar Haj.Issue Permits") == \
             "pilgrim groups and issue permit - Nusuk Masar Haj"
         assert offering_of("System/Application - Nusuk Masar Haj.Service Unavailability") == \
             "System/Application - Nusuk Masar Haj"
 
-    def test_numeric_prefix_artifact(self):
-        # "7.1 Invoicing..." contains a dot in the service name itself — literal
-        # first segment is "7". Documented artifact (see W2 report).
-        assert offering_of("7.1 Invoicing and Billing - Nusuk Masar Haj.Bill Payment") == "7"
+    def test_versioned_system_keeps_full_name(self):
+        # "7.1 Invoicing..." contains a dot in the system name itself — split
+        # on the LAST dot so the versioned name survives (fixed: was "7").
+        assert offering_of("7.1 Invoicing and Billing - Nusuk Masar Haj.Bill Payment") == \
+            "7.1 Invoicing and Billing - Nusuk Masar Haj"
 
     def test_no_offering_is_none(self):
         assert offering_of("General / Unspecified") is None
