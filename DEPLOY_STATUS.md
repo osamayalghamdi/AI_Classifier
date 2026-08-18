@@ -26,15 +26,15 @@ Worktree isolation: one worker per worktree, branch `feat/deploy-integration-rea
 
 | Phase | Gate | Status | Evidence |
 |---|---|---|---|
-| W1 | D0 re-seed reproducible | pending | |
-| W1 | D1 single-command rebuild | pending | |
-| W1 | D2 explicit config logged at startup | pending | |
-| W1 | D3 missing LLM config → fail loud | pending | |
-| W1 | D4 canary 22/22+12/12 or deviation | pending | |
-| W1 | D5 full suite passes on rebuilt stack | pending | |
-| W1 | D6 health 200 + counts match baseline | pending | |
-| W2 | S1-S6 (adapter containment, result object, idempotency, provenance) | pending | |
-| W3 | E1-E9 (async ingest, readiness, auth, dry-run, guide) | pending | |
+| W1 | D0 re-seed reproducible | DONE | scripts/reseed.sh, 91/91, 492-664s |
+| W1 | D1 single-command rebuild | DONE | docker compose up -d --build |
+| W1 | D2 explicit config logged | DONE | startup log model/base/db/embedding |
+| W1 | D3 missing LLM config → fail loud | DONE | RuntimeError LLM_MODEL / LLM_API_KEY |
+| W1 | D4 canary 22/22+12/12 or deviation | DEFERRED | company endpoint NXDOMAIN from dev box; OpenRouter 8p+6x+1xp = no-regression only |
+| W1 | D5 full suite passes on rebuilt stack | DONE | 104p+5x+2x |
+| W1 | D6 health 200 + counts match baseline | DONE | 91/91 reseeded |
+| W2 | S1-S6 (adapter containment, result object, idempotency, provenance) | DONE | seams/smax/ contained; 12/12 tests; original 104 unchanged |
+| W3 | E1-E9 (async ingest, readiness, auth, dry-run, guide) | DONE | 131p+6x+1x; E5 real NXDOMAIN; live smoke verified |
 
 ## W1 — DONE (merged 3f4bca9, verified by manager)
 
@@ -68,9 +68,47 @@ Related: D2's resolved-model log (openrouter/qwen/qwen3.6-35b-a3b) is correct fo
 - S6 idempotency via content-hash + source_reference; provenance (model_version/prompt_version) persisted
 - S7 containment grep: ticketing name only in seams/ + config selection keys + tests
 - Test counts: original suite 104p+5x+2x UNCHANGED (manager re-ran); seams tests 12/12 (idempotency 2/2, provenance 1/1)
+- USER SPEC: real ticketing contained under seams/smax/ (client.py + models.py + real_source.py)
 
 ### W2 INTENTIONAL DEVIATION (manager-registered, NOT hidden by green count)
 Deviation 4: LLM-failure handling changed from aborting the poll iteration to per-ticket capture in result.error. Better behavior, right direction for W3 — but it IS a behavior change in a zero-behavior-change workstream. Recorded as an intentional exception. Deviations 2, 3, 5, 6 clean.
 
-## ORCHESTRATION LESSON (for W3 dispatch)
-The run agent was stood down mid-W1 for acting on stale demo-era assumptions ("never down -v") that contradicted the current spec. W3's dispatch must state plainly: the 92 incidents are disposable and scripts/reseed.sh exists — no worker re-derives caution from history.
+## W3 — DONE (merged 3f3c433, verified by manager)
+
+- E1: POST /api/v1/incidents → 202 + reference in 1.0s (manager timed it live); processing async via worker thread
+- E2: GET /api/v1/incidents/{ref} → structured result or pending/retryable/flagged
+- E3: POST /api/v1/backfill → 202 + references (manager verified live)
+- E4: /health liveness + /ready → {db, embedding, llm} each reported independently (manager verified: all "ok")
+- E5: LLM-unreachable → retryable → FLAGGED after max attempts, real NXDOMAIN endpoint (llms.elm.sa), no mock. Test passed (manager re-ran: 1 passed, asserts real DNS-failure signature in error)
+- E6: auth (Bearer token) on every non-health endpoint; unauthenticated → 401 structured UNAUTHORIZED (manager verified live)
+- E7: dry-run persists nothing, writes nothing back — manager verified live: jobs list unchanged after DRY-1
+- E8: docs/INTEGRATION_GUIDE.md (251 lines, curl example per endpoint)
+- E9: full suite 131p+5x+2x (manager re-ran); sub-offering clustering confirmed still disabled
+- Write-back default: SAFEST — suggestions to separate channel, applied=false (verified in live job result)
+
+## FINAL STATE — all three workstreams merged on feat/deploy-integration-ready
+
+### W1: DONE — infra rebuilt from source; reseed reproducible (91/91, 492s); fail-loud config; canary no-regression on OpenRouter. D4 DEFERRED: company-model canary is the hard precondition before live traffic on llms.elm.sa.
+### W2: DONE — SMAX contained under seams/smax/ (client/models/real_source per user spec); single pipeline entry; result object; idempotent; provenance; original 104 tests unchanged. One intentional deviation registered (LLM-failure → per-ticket error capture).
+### W3: DONE — integration-ready API + guide; E1-E9 verified by manager (live smoke + re-run tests).
+
+### MODEL CUTOVER FINDING
+Company-hosted model (llms.elm.sa) NOT testable from dev box (NXDOMAIN). Canary on OpenRouter qwen3.6 shows no regression from rebuild. The D4 precondition stands: run the 34-pair canary against llms.elm.sa BEFORE any live traffic on the server; if it deviates, STOP — no prompt tuning.
+
+### OPEN ITEMS / RISKS
+1. D4 canary vs company model — first thing on the server after deploy.
+2. W2 deviation 4 (LLM-failure per-ticket capture) — intentional, verified better, registered.
+3. SMAX client endpoints (/tickets, changed_since, suggestions) are best-guess REST shapes — must be reconciled with SMAX's actual API before live integration.
+4. Integration worker starts in API lifespan (INTEGRATION_WORKER_ENABLED default?) — confirm default is safe for prod.
+
+## DB STABILITY FIX (manager, post-W3)
+
+Root cause of recurring data loss: a STALE UVICORN (old pid) held :8000 with a connection pool to a deleted postgres — every reseed after the first went through a broken API (500s, data landed nowhere) and appeared to "vanish." Compounded by the old ai_classifier stack's postgres re-creating itself on the shared volume.
+
+Fix — dedicated isolated postgres, nothing else can touch it:
+- Volume: `ai_pg_demo_stable` (new name, referenced by nothing else)
+- Container: `ai_pg_stable`, `--restart no` (never auto-resurrects), port **5433** (nothing else uses it)
+- API: PG_HOST=localhost PG_PORT=5433 PG_DATABASE=ai_incidents
+- Reseed: `./scripts/reseed.sh http://localhost:8000 test_incidents.json` (~11 min, 91 incidents, 0 failed)
+- Stability PROVEN: 91 incidents survive `docker restart ai_pg_stable` (verified)
+- Test/API convention: PG_PORT=5433 (stable DB); `PG_PORT=5433 PG_PASSWORD=aipass uv run pytest tests/ -q` → 131p+6x+1x (verified)

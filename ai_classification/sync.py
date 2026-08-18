@@ -33,10 +33,23 @@ def _write_last_sync(ts: str) -> None:
 
 
 def start_sync_worker(store) -> None:
-    """Daemon poll loop — one tick: list_changed → process → persist."""
-    source = get_ticket_source()
+    """Daemon poll loop — one tick: list_changed → process → persist.
+
+    If the selected ticket source isn't configured (e.g. TICKETING_SOURCE
+    is the real SMAX source but TICKETING_API_TOKEN is unset), log once at
+    startup and idle — do NOT spam the log with an error every poll tick
+    on a fresh deployment. (NotConfiguredError is raised lazily by the
+    source's methods, so the check is on the config, not the constructor.)
+    """
     interval = settings.sync_interval_seconds
     dry_run = settings.ticketing_dry_run
+    if settings.ticketing_source != "local" and not (settings.ticketing_api_token or "").strip():
+        _log.info(
+            "Sync worker NOT started — TICKETING_SOURCE=real but "
+            "TICKETING_API_TOKEN is unset. Set it to enable polling."
+        )
+        return
+    source = get_ticket_source()
     _log.info("Sync worker started — every %ss via source=%s (dry_run=%s)",
               interval, settings.ticketing_source, dry_run)
 

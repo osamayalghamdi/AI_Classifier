@@ -10,6 +10,7 @@ from ..core.store import (
     lifespan, get_health, resolve_incident, get_incident, list_incidents, delete_all_incidents,
 )
 from ..core.classifier import classify_and_store, classify_batch
+from ..config import settings
 from ..core.grouping import build_clusters, invalidate_cache, request_rebuild
 from ..core.import_service import import_incidents_from_file, import_incidents_from_body
 from .proposal_routes import router as proposal_router
@@ -82,6 +83,46 @@ app.add_middleware(
 def health():
     _log.debug("Health check")
     return get_health()
+
+
+# ── LLM test endpoint — ask the configured model anything ──────────────
+# Live smoke test of the LLM: sends a raw prompt to the CURRENTLY
+# configured model (whatever .env selects) and returns the raw answer
+# plus timing + resolved config. Handy on a fresh VM to confirm the
+# company endpoint + key work before anything else.
+@app.post("/test/llm")
+@app.get("/test/llm")
+def test_llm(question: str = "Say hello in one short sentence.", max_tokens: int = 200):
+    import time
+
+    from ..core.llm import call_llm
+
+    _log.info("GET /test/llm — question='%s'", question[:80])
+    t0 = time.time()
+    try:
+        answer = call_llm(
+            [{"role": "user", "content": question}],
+            max_tokens=max_tokens,
+            temperature=0.2,
+        )
+        return {
+            "status": "ok",
+            "model": settings.llm_model,
+            "api_base": settings.llm_api_base or "(provider default)",
+            "question": question,
+            "answer": answer,
+            "latency_s": round(time.time() - t0, 2),
+        }
+    except Exception as exc:  # noqa: BLE001 — report the failure, don't hide it
+        _log.warning("GET /test/llm FAILED — %s", exc)
+        return {
+            "status": "error",
+            "model": settings.llm_model,
+            "api_base": settings.llm_api_base or "(provider default)",
+            "question": question,
+            "error": str(exc)[:300],
+            "latency_s": round(time.time() - t0, 2),
+        }
 
 
 # Classify a new incident

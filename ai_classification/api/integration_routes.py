@@ -208,3 +208,36 @@ def readiness():
 def _json_response(code: int, body: dict):
     from fastapi.responses import JSONResponse
     return JSONResponse(status_code=code, content=body)
+
+
+# ── /status — live per-service detail (no auth, next to /health /ready) ──
+# Returns the status monitor's cached state: each service (db, embedding,
+# llm) with its resolved config and last check time, plus a rollup. The
+# monitor logs LOUDLY on state changes, so this endpoint is the "look now"
+# view while the logs are the "noticed without looking" view.
+
+@ready_router.get("/status")
+def service_status():
+    from ..core.status_monitor import monitor
+
+    snap = monitor.snapshot()
+    if not snap:
+        return _json_response(503, {
+            "status": "warming",
+            "detail": "status monitor has not completed its first probe cycle yet",
+            "services": {},
+        })
+    services = {
+        name: {
+            "status": st.status,
+            "detail": st.detail,
+            "resolved": st.resolved,
+            "last_checked": st.last_checked,
+        }
+        for name, st in sorted(snap.items())
+    }
+    any_down = any(st.status != "ok" for st in snap.values())
+    return _json_response(
+        200 if not any_down else 503,
+        {"status": "degraded" if any_down else "ok", "services": services},
+    )
