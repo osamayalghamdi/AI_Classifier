@@ -25,8 +25,8 @@ from ai_classification.seams import (
 from ai_classification.seams.pipeline import _existing_classification
 from ai_classification.shared.config import settings as base_settings
 
-from .conftest import TEST_PG_DATABASE
-from .test_incident_store import FixedVecModel, _make_result, _truncate
+from tests.conftest import TEST_PG_DATABASE
+from tests.shared.test_incident_store import FixedVecModel, _make_result, _truncate
 
 
 def _make_seams_store(monkeypatch, model=None):

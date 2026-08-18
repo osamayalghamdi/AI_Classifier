@@ -15,15 +15,15 @@ from ai_classification.services.match.suboffering import offering_of, embed_pure
 from ai_classification.services.cluster.suboffering_cluster import generate_candidates, compute_member_flags
 import ai_classification.services.cluster.verifier as verifier_mod
 
-from .conftest import TEST_PG_DATABASE
-from .test_incident_store import FixedVecModel, _truncate, _make_store
+from tests.conftest import TEST_PG_DATABASE
+from tests.shared.test_incident_store import FixedVecModel, _truncate, _make_store
 
 
 # ── prompt identity (drift guard: engine copy must equal the canary copy) ──
 def test_prompt_identity_with_canary():
     import ast
     import re
-    import tests.test_pairwise_canary as canary
+    import tests.services.classify.test_pairwise_canary as canary
     engine = verifier_mod.STRICT_PROMPT_V3
     canary_prompt = canary.STRICT_PROMPT_V3
     assert engine == canary_prompt, (

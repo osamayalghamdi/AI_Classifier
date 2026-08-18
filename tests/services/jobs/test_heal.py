@@ -16,7 +16,7 @@ from ai_classification.shared.config import settings
 from ai_classification.services.jobs.heal import reclassify_fallback_incidents
 from ai_classification.shared.store import store
 
-from .test_cascade import _settings_with, make_fake_completion
+from tests.services.classify.test_cascade import _settings_with, make_fake_completion
 
 FALLBACK = json.dumps({
     "affected_system": "Other",

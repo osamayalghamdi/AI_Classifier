@@ -18,7 +18,7 @@ from ai_classification.domain.taxonomy import (
 )
 from ai_classification.shared.config import settings as base_settings
 
-from .conftest import TEST_PG_DATABASE
+from tests.conftest import TEST_PG_DATABASE
 
 
 # ── Helpers ───────────────────────────────────────────────────────────
