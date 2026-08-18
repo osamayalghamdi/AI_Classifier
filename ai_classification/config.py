@@ -95,5 +95,17 @@ class Settings:
         "INTEGRATION_WORKER_ENABLED", "1"
     ).lower() in ("1", "true", "yes", "on")
 
+    # ── Re-classification sweep (heal) ──────────────────────────────────
+    # Periodically re-classify incidents whose stored classification is the
+    # LLM-failure fallback (low confidence + "Classification failed after"
+    # reasoning), so an LLM outage self-heals once the endpoint is reachable
+    # again. Only fallback-marked rows are touched — good classifications
+    # are never re-run.
+    reclassify_enabled: bool = getenv(
+        "RECLASSIFY_ENABLED", "1"
+    ).lower() in ("1", "true", "yes", "on")
+    reclassify_interval_s: int = int(getenv("RECLASSIFY_INTERVAL_S", "600"))
+    reclassify_max_per_tick: int = int(getenv("RECLASSIFY_MAX_PER_TICK", "10"))
+
 
 settings = Settings()
