@@ -30,7 +30,13 @@ import numpy as np
 
 from .store import store
 from .llm import call_llm, strip_json_fences
-from .suboffering import offering_of, OFFERING_000
+from .suboffering import (
+    MATCH_THRESHOLD,
+    embed_pure,
+    match_against_exemplars,
+    offering_of,
+    OFFERING_000,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -243,22 +249,34 @@ def _build_clusters(period: str = "daily") -> dict:
     all_clusters: list[dict] = []
     used: set[int] = set()
 
-    for offering, indices in offering_buckets.items():
-        if offering == OFFERING_000 or len(indices) < adaptive_min_size:
-            continue
-        members = [incidents[i] for i in indices]
-        worst_sev = _worst_severity(members)
-        top_sys, top_svc = _dominant_labels(members)
-        cid = hashlib.md5(offering.encode()).hexdigest()[:12]
+    # Sub-offering membership (READ-ONLY): ACTIVE sub-offerings + their
+    # exemplars, so phase-1 emits FM-equivalent sub-clusters (named by
+    # sub-offering) whenever the engine has minted them.
+    _subs = store.list_sub_offerings(status="active")
+    _subs_by_offering: dict[str, list[dict]] = defaultdict(list)
+    _exemplars_by_offering: dict[str, list[dict]] = defaultdict(list)
+    _sub_name: dict[str, str] = {}
+    for _s in _subs:
+        _subs_by_offering[_s["offering_id"]].append(_s)
+        _sub_name[_s["id"]] = _s["name"]
+        _exemplars_by_offering[_s["offering_id"]].extend(store.list_exemplars(_s["id"]))
+
+    def _emit(name: str, m_indices: list[int], offering_key: str) -> dict | None:
+        """Build one cluster dict for the given member indices (read-only)."""
+        m = [incidents[i] for i in m_indices]
+        if not m:
+            return None
+        worst_sev = _worst_severity(m)
+        top_sys, top_svc = _dominant_labels(m)
+        cid = hashlib.md5(f"{offering_key}|{name}".encode()).hexdigest()[:12]
         cluster_incidents = []
-        for idx, inc in zip(indices, members):
-            # Compute similarity to cluster centroid (not self-similarity = 100%)
+        for idx, inc in zip(m_indices, m):
             centroid_sim = 100.0
-            if len(indices) > 1:
-                member_sims = [float(sim[idx, other]) for other in indices if other != idx]
+            if len(m_indices) > 1:
+                member_sims = [float(sim[idx, other]) for other in m_indices if other != idx]
                 if member_sims:
                     centroid_sim = round(sum(member_sims) / len(member_sims) * 100, 1)
-            di = {
+            cluster_incidents.append({
                 "id": inc["id"],
                 "title": inc.get("title", ""),
                 "severity": _extract_severity(inc),
@@ -269,24 +287,52 @@ def _build_clusters(period: str = "daily") -> dict:
                 "service": top_svc,
                 "status": inc.get("status", "active"),
                 "created_at": inc.get("created_at", ""),
-            }
-            cluster_incidents.append(di)
-        cluster = {
+            })
+        return {
             "cluster_id": cid,
-            "name": offering,
-            "failure_mode_desc": offering,
+            "name": name,
+            "failure_mode_desc": name,
             "affected_system": top_sys,
             "affected_service": top_svc,
             "worst_severity": worst_sev,
-            "count": len(members),
-            "summary": f"{len(members)} tickets sharing offering {offering}",
+            "count": len(m_indices),
+            "summary": f"{len(m_indices)} tickets — {name}",
             "pruned": [],
-            "coherence": cluster_coherence(members, sim, indices),
+            "coherence": cluster_coherence(m, sim, m_indices),
             "incidents": cluster_incidents,
         }
-        all_clusters.append(cluster)
+
+    for offering, indices in offering_buckets.items():
+        if offering == OFFERING_000 or len(indices) < adaptive_min_size:
+            continue
+        # 1) Sub-offering split — FM-equivalent granularity via read-only
+        #    exemplar matching. Unmatched members fall through to the
+        #    offering-level residual cluster.
+        sub_groups: dict[str, list[int]] = {}
+        exemplars = _exemplars_by_offering.get(offering, [])
+        for idx in indices:
+            inc = incidents[idx]
+            emb = embed_pure(inc.get("title", ""), inc.get("description", ""))
+            if emb is None:
+                continue
+            sub_id, sub_sim = match_against_exemplars(emb, exemplars)
+            if sub_id and sub_sim >= MATCH_THRESHOLD:
+                sub_groups.setdefault(sub_id, []).append(idx)
+        matched_ids = {i for g in sub_groups.values() for i in g}
+        for sub_id, sidx in sub_groups.items():
+            if len(sidx) < 2:
+                continue
+            c = _emit(_sub_name.get(sub_id, offering), sidx, offering)
+            if c:
+                all_clusters.append(c)
+        # 2) Residual offering cluster (members that matched no sub-offering)
+        residual = [i for i in indices if i not in matched_ids]
+        if len(residual) >= adaptive_min_size:
+            c = _emit(offering, residual, offering)
+            if c:
+                all_clusters.append(c)
         used.update(indices)
-        _log.info("Offering cluster: %s — %d tickets, %s", offering, len(members), worst_sev)
+        _log.info("Offering cluster: %s — %d tickets", offering, len(indices))
 
     # Phase 2: Embedding-based clustering for OFFERING-000 (unclassified) leftovers
     leftover = [i for i in range(n) if i not in used]
