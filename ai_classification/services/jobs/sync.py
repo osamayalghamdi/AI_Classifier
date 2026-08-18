@@ -12,12 +12,15 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from .config import settings
-from .seams import NotConfiguredError, get_ticket_source, persist_result, process_incident
+from ai_classification.config import settings
+from ai_classification.seams import NotConfiguredError, get_ticket_source, persist_result, process_incident
 
 _log = logging.getLogger(__name__)
 
-SYNC_STAMP = Path(__file__).parent.parent / ".last_sync"
+# Moved from package root (ai_classification/sync.py) to services/jobs/ — the
+# repo-root stamp is now three levels up. Keep it at the repo root so the
+# stamp survives restarts and is shared with the main tree's tooling.
+SYNC_STAMP = Path(__file__).parent.parent.parent / ".last_sync"
 
 # Read the last sync timestamp from file, default to epoch
 def _read_last_sync() -> str:
