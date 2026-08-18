@@ -1,4 +1,4 @@
-"""core/heal.py — periodic re-classification of fallback-classified incidents.
+"""services/jobs/heal.py — periodic re-classification of fallback-classified incidents.
 
 When the LLM is unreachable, the classifier degrades to a low-confidence
 generic fallback (reasoning starts with "Classification failed after ...")
@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import logging
 
-from ..config import settings
+from ai_classification.config import settings
 
 _log = logging.getLogger(__name__)
 
@@ -31,8 +31,8 @@ def reclassify_fallback_incidents(limit: int | None = None) -> dict:
     real classification; still_fallback = re-classification produced the
     fallback again (LLM still down or genuinely unclassifiable).
     """
-    from ..core.classifier import classify
-    from ..core.store import store
+    from ai_classification.core.classifier import classify
+    from ai_classification.core.store import store
 
     limit = limit or settings.reclassify_max_per_tick
     rows = store.find_fallback_incidents(limit)
