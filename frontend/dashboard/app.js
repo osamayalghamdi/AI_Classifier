@@ -831,6 +831,34 @@ function updateTimer() {
 
 setInterval(updateTimer, 1000);
 
+// Service status indicator — db / embedding / llm, refreshed with the
+// data poll. Red dot + label when any service is down (e.g. the company
+// LLM endpoint unreachable), green when all ok, gray while warming.
+async function updateServiceStatus() {
+  const el = $("#svcStatus");
+  if (!el) return;
+  try {
+    const r = await fetch(`${API}/status`, { headers: apiHeaders() });
+    const d = await r.json();
+    const svcs = d.services || {};
+    const names = { db: "db", embedding: "embed", llm: "llm" };
+    const parts = Object.keys(names)
+      .filter((k) => svcs[k])
+      .map((k) => {
+        const st = svcs[k].status === "ok";
+        return `<span style="color:${st ? "var(--minor)" : "var(--crit)"}">${names[k]}:${st ? "ok" : "DOWN"}</span>`;
+      });
+    const anyDown = Object.values(svcs).some((s) => s.status !== "ok");
+    el.innerHTML = (anyDown ? "⚠ " : "● ") + parts.join(" ");
+    el.style.color = anyDown ? "var(--crit)" : "var(--minor)";
+  } catch (e) {
+    el.textContent = "● status:n/a";
+    el.style.color = "var(--text-faint)";
+  }
+}
+updateServiceStatus();
+setInterval(updateServiceStatus, 60000);
+
 setInterval(async () => {
   lastRun = Date.now();
   const before = _lastFp;
