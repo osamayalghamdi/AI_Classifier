@@ -142,6 +142,53 @@ is visible immediately.
 **Full detail:** `DEPLOY.md` (deploy runbook) and `DEPLOY_STATUS.md`
 (what was verified, gate results, known open items).
 
+## Ports & URLs
+
+The deployed stack exposes **3 ports** (all changeable in `.env`):
+
+| Port | Service | What it is | URL |
+|---|---|---|---|
+| **8082** | nginx | The dashboard (UI) | `http://<VM-IP>:8082` |
+| **8000** | FastAPI | The API (what integrations call) | `http://<VM-IP>:8000` |
+| **8001** | OCR | OCR microservice (attachments) | `http://<VM-IP>:8001` |
+
+Postgres (5432) is NOT exposed to the host — only the api reaches it,
+inside the Docker network (deliberately safer). Change ports via
+`API_PORT` in `.env` (e.g. `API_PORT=9000` if 8000 is taken).
+
+### Key API URLs (:8000)
+
+| URL | Purpose |
+|---|---|
+| `/health` | Liveness — is the API up? |
+| `/ready` | Readiness — db / embedding / llm (one-shot) |
+| `/status` | Per-service status: db / embedding / llm + resolved model & URL |
+| `/docs` | Swagger UI — interactive API explorer |
+| `/classify` | POST — classify one ticket |
+| `/incidents` | GET — list incidents |
+| `/api/reports/daily` | GET — clustered report (dashboard data) |
+| `/api/v1/incidents` | POST — integration ingest (async, needs token) |
+| `/api/v1/incidents/dry-run` | POST — integration dry-run (persists nothing) |
+| `/api/v1/backfill` | POST — batch ingest |
+
+### What the ticketing-system team needs
+
+Just two things:
+1. **Base URL**: `http://<VM-IP>:8000` (or whatever `API_PORT` is set to)
+2. **Auth token**: `INTEGRATION_API_TOKEN` from `.env` — every `/api/v1/*`
+   call needs `Authorization: Bearer <token>`
+
+Full contract (payload shapes, error codes, retry semantics, curl example
+per endpoint) is in `docs/INTEGRATION_GUIDE.md`.
+
+### Quick checks after deploy
+
+```bash
+curl http://<VM-IP>:8000/status        # all services ok?
+curl http://<VM-IP>:8082/              # dashboard loads?
+curl http://<VM-IP>:8000/docs          # API explorer
+```
+
 ## Classification Flow
 
 1. **ID-based dedupe** — exact match on source_ticket_id prevents double-counting; text similarity is informational only
