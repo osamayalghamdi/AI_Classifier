@@ -1016,6 +1016,11 @@ async def lifespan(app: FastAPI):
     from ..core.grouping import start_rebuild_loop
     start_rebuild_loop()
 
+    # Service status monitor — loud logging when any service (esp. the LLM
+    # endpoint) is unreachable; state exposed via GET /status.
+    from ..core.status_monitor import monitor
+    monitor.start()
+
     # E1-E9 integration worker (async ingest queue) — gated so tests can
     # drive the queue synchronously (INTEGRATION_WORKER_ENABLED=0).
     if settings.integration_worker_enabled:
