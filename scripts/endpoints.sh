@@ -18,8 +18,10 @@ echo "curl -s $BASE/status"
 echo "curl -s $BASE/docs"          # Swagger UI (open in browser)
 echo
 
-# ── 2. LLM test — ask the model anything ────────────────────────────────────
-echo "# 2. LLM test"
+# ── 2. LLM & full system test ─────────────────────────────────────────────
+echo "# 2. LLM & full system test"
+echo "# ONE CALL — runs the whole battery (db/embedding/llm/classify/similar/clusters):"
+echo "curl -s $BASE/test/all"
 echo "curl -s '$BASE/test/llm?question=What%20is%20your%20name%3F&max_tokens=200'"
 echo "curl -s -X POST $BASE/test/llm -H 'Content-Type: application/json' -d '{\"question\": \"Say hello in Arabic in one line.\"}'"
 echo
