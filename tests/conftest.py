@@ -15,6 +15,11 @@ import os
 # (documented convention: INTEGRATION_TOKEN=test-token).
 os.environ.setdefault("INTEGRATION_TOKEN", "test-token")
 os.environ.setdefault("INTEGRATION_WORKER_ENABLED", "0")
+# v2 persistent clustering: Flow A runs as a BACKGROUND thread after every
+# classify_and_store — in tests that would fire real LLM calls from the
+# integration/classify tests. Forced off here; flow tests drive the engine
+# synchronously (production default stays ON: env not set in .env).
+os.environ["CLUSTER_ASSIGN_ON_ARRIVAL"] = "0"
 
 # SAFETY GUARD: integration tests operate on settings.pg_database and can
 # wipe rows. Never let them run against the production DB (ai_incidents) —

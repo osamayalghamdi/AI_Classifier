@@ -820,6 +820,16 @@ def classify_and_store(
     _log.info("Incident %s classified — system=%s, severity=%s, confidence=%s, dupes=%d",
               incident_id, result.affected_system, result.severity, result.confidence, len(matches))
 
+    # ── Flow A (v2 persistent clustering): LLM-decided assignment to an
+    # existing active cluster, in a BACKGROUND task — slow inference must
+    # never delay the classify response (ingestion stays synchronous).
+    if settings.cluster_assign_on_arrival:
+        try:
+            from ai_classification.services.cluster.persistent import assign_in_background
+            assign_in_background(incident_id)
+        except Exception as exc:  # noqa: BLE001 — clustering must not break ingestion
+            _log.warning("Flow A background assignment failed to start: %s", exc)
+
     return ClassifyResponse(
         incident_title=title,
         classification=result,
