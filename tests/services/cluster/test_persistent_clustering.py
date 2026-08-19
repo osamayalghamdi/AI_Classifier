@@ -248,11 +248,20 @@ class TestFlowB:
             _save_incident(f"tst-g{i}", t)
 
         def responder(messages, **kw):
-            # returns an id that was never given + omits one — must be discarded
-            return json.dumps({"groups": [{"member_ids": ["tst-g0", "tst-g1"],
+            body = messages[-1]["content"]
+            if "candidate_clusters" in body:
+                # Flow A phase (if any active cluster leaked from an earlier
+                # test): keep everything in the pool.
+                return json.dumps({"action": "none_fit", "cluster_id": None,
+                                   "confidence": "low", "reason": "x"})
+            # Sweep phase: echo the ACTUAL batch ids, then add an invented id
+            # and omit one — the mismatch must be detected and the batch
+            # discarded, whatever the pool composition.
+            ids = [t["id"] for t in json.loads(body)["tickets"]]
+            return json.dumps({"groups": [{"member_ids": ids[:2],
                                            "name_ar": "مجموعة",
                                            "description": "d"}],
-                               "singletons": ["tst-g2", "tst-INVENTED"]})
+                               "singletons": ids[2:] + ["tst-INVENTED"]})
 
         _fake_llm(monkeypatch, responder)
         stats = pc.sweep_pool()
@@ -380,6 +389,35 @@ class TestFlowC:
 
 
 # ── Invariants + review gate + API shape ─────────────────────────────────
+
+class TestFlowD:
+    def test_arabic_name_short_accepted(self, monkeypatch):
+        _fake_llm(monkeypatch, lambda messages, **kw: "فشل التحويلات المالية")
+        name = pc._arabic_cluster_name([{"id": "x", "title": "t", "description": ""}])
+        assert name == "فشل التحويلات المالية"
+
+    def test_arabic_name_over_9_words_rejected(self, monkeypatch):
+        """User rule: a label longer than 9 words is rejected — the fallback
+        (first member title) is used so no cluster ever gets a long name."""
+        _save_incident("tst-q1", "عنوان قصير", service="Nusuk Masar Haj.Service Unavailability")
+        _save_incident("tst-q2", "عنوان آخر", service="Nusuk Masar Haj.Service Unavailability")
+        long_name = "هذا اسم طويل جدا جدا جدا جدا جدا جدا جدا جدا جدا جدا جدا جدا جدا"  # >9 words, <60 chars
+        _fake_llm(monkeypatch, lambda messages, **kw: long_name)
+        name = pc._arabic_cluster_name(
+            [{"id": "tst-q1", "title": "عنوان قصير", "description": ""}])
+        assert name == "عنوان قصير"  # fell back, long label rejected
+
+    def test_regenerate_name_stores_on_row_and_is_short(self, monkeypatch):
+        _save_incident("tst-q3", "تحويل فاشل", service="Nusuk Masar Haj.Bill Payment")
+        _save_incident("tst-q4", "تحويلات لا تصل", service="Nusuk Masar Haj.Bill Payment")
+        _seed_cluster("cl_tst_name1", "اسم قديم طويل جدا جدا جدا جدا جدا",
+                      "d", ["tst-q3", "tst-q4"])
+        _fake_llm(monkeypatch, lambda messages, **kw: "فشل التحويلات المالية")
+        name = pc.regenerate_name("cl_tst_name1")
+        assert name == "فشل التحويلات المالية"
+        assert store.get_cluster("cl_tst_name1")["name_ar"] == "فشل التحويلات المالية"
+        assert len(name.split()) <= pc._AR_NAME_MAX_WORDS
+
 
 class TestInvariantsAndGate:
     def test_one_cluster_per_incident_enforced(self):
