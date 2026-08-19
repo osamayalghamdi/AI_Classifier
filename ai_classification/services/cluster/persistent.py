@@ -9,8 +9,10 @@ start_rebuild_loop). Core principles:
 3. Cross-offering retrieval — the offering is a FEATURE the LLM sees, not a wall.
 4. The LLM decides membership; embeddings only shortlist candidates.
 5. Every LLM decision is logged to `assignment_log` (the audit trail).
-6. Human review gates cluster creation: proposals -> approve -> active.
-   Assignment to an existing ACTIVE cluster is automatic.
+6. Human review gates cluster creation (proposals -> approve -> active).
+   USER OVERRIDE (2026-08): CLUSTER_AUTO_ACTIVATE defaults ON — sweep groups
+   mint straight to active; the nightly audit is the purity backstop. Set
+   CLUSTER_AUTO_ACTIVATE=0 to restore the review gate.
 
 Flows:
   Flow A — assign_incident(): per new classified ticket. Embed -> retrieve top-5
@@ -395,12 +397,16 @@ def sweep_pool(*, dry_run: bool = False) -> dict:
             cid = _cluster_id(name_ar or "مقترح جديد", members)
             if store.get_cluster(cid) is not None:
                 continue  # id collision — a cluster for these members exists
+            # Human gate (spec default): mint as 'proposed' for review.
+            # CLUSTER_AUTO_ACTIVATE=1 (user's choice): mint straight to
+            # 'active' — the nightly audit is the purity backstop.
+            status = "active" if getattr(settings, "cluster_auto_activate", False) else "proposed"
             store.create_cluster(cid, name_ar or "مقترح جديد", description,
-                                 status="proposed")
+                                 status=status)
             for m in members:
                 store.add_cluster_member(cid, m, assigned_by="llm", confidence="proposed")
             stats["proposals_created"] += 1
-            _log.info("Flow B proposal %s — %d members: %s", cid, len(members), name_ar)
+            _log.info("Flow B %s %s — %d members: %s", status, cid, len(members), name_ar)
 
     stats["pool_after"] = len(store.unassigned_incident_ids())
     return stats

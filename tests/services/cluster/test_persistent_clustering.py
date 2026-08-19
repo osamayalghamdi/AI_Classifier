@@ -18,6 +18,7 @@ import os
 
 os.environ.setdefault("PG_DATABASE", "ai_incidents_test")
 os.environ["CLUSTER_ASSIGN_ON_ARRIVAL"] = "0"  # tests drive flows explicitly
+os.environ["CLUSTER_AUTO_ACTIVATE"] = "0"      # gate path by default; auto-activate tested separately
 
 import pytest
 
@@ -260,6 +261,33 @@ class TestFlowB:
         assert stats["proposals_created"] == 0
         assert store.list_clusters(status="proposed") == []
         assert store.list_assignment_log(incident_id="__sweep_batch__")[0]["verdict"]["action"] == "discarded"
+
+    def test_sweep_auto_activate_mints_active_clusters(self, monkeypatch):
+        """CLUSTER_AUTO_ACTIVATE=1 (user override): the sweep skips the human
+        gate and mints groups as ACTIVE clusters directly."""
+        from types import SimpleNamespace
+
+        for i, t in enumerate(["payment gateway down", "payment gateway failing"]):
+            _save_incident(f"tst-p{i}", t, service="Nusuk Masar Haj.Bill Payment")
+
+        def responder(messages, **kw):
+            return json.dumps({
+                "groups": [{"member_ids": ["tst-p0", "tst-p1"],
+                            "name_ar": "تعطل بوابة الدفع",
+                            "description": "payment gateway failures"}],
+                "singletons": [],
+            })
+
+        monkeypatch.setattr(pc, "settings", SimpleNamespace(
+            cluster_auto_activate=True, llm_model="test-model"))
+        _fake_llm(monkeypatch, responder)
+        stats = pc.sweep_pool()
+
+        assert stats["proposals_created"] == 1
+        assert store.list_clusters(status="proposed") == []  # gate skipped
+        actives = store.list_clusters(status="active")
+        assert len(actives) == 1 and actives[0]["name_ar"] == "تعطل بوابة الدفع"
+        assert set(store.cluster_member_ids(actives[0]["id"])) == {"tst-p0", "tst-p1"}
 
     def test_sweep_reruns_flow_a_first(self, monkeypatch):
         # A ticket that now matches a new active cluster is assigned by Flow A
