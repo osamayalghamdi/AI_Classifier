@@ -28,12 +28,13 @@ _log = logging.getLogger(__name__)
 
 VECTOR_DIM = 1024  # BAAI/bge-m3 output dim
 
-# Column names for the common incident SELECT (15 cols, 0-indexed).
+# Column names for the common incident SELECT (17 cols, 0-indexed).
 # Used by _row_to_incident to map DB rows → dicts.
 _INCIDENT_COLS: tuple[str, ...] = (
     "id", "title", "description", "extracted_text", "classification_json",
     "status", "created_at", "documents", "assign_group", "assignee", "priority",
     "notes", "discussion_history", "escalation_info", "completion_code",
+    "ticket_kind", "classification_status",
 )
 
 
@@ -121,11 +122,48 @@ class IncidentStore:
                         "ALTER TABLE incidents ADD COLUMN IF NOT EXISTS first_seen TIMESTAMPTZ",
                         "ALTER TABLE incidents ADD COLUMN IF NOT EXISTS last_seen TIMESTAMPTZ",
                         "ALTER TABLE incidents ADD COLUMN IF NOT EXISTS source_ticket_ids JSONB NOT NULL DEFAULT '[]'",
+                        "ALTER TABLE incidents ADD COLUMN IF NOT EXISTS ticket_kind TEXT NOT NULL DEFAULT 'incident'",
+                        "ALTER TABLE incidents ADD COLUMN IF NOT EXISTS classification_status TEXT NOT NULL DEFAULT 'ok'",
                     ]:
                         try:
                             cur.execute(col_sql)
                         except Exception:
                             pass
+
+                    # ── Classifier v3 tables ───────────────────────────────
+                    # taxonomy_gaps: abstentions made visible — the classifier
+                    # found no offering for a service and recorded a suggested
+                    # name; aggregated per (service, suggested_offering).
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS taxonomy_gaps (
+                            id TEXT PRIMARY KEY,
+                            service TEXT NOT NULL,
+                            suggested_offering TEXT NOT NULL,
+                            incident_refs JSONB NOT NULL DEFAULT '[]',
+                            count INTEGER NOT NULL DEFAULT 1,
+                            first_seen TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                            last_seen TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                            UNIQUE (service, suggested_offering)
+                        )
+                    """)
+                    # classification_log: append-only audit trail of every LLM
+                    # decision (triage / cascade stages / verification).
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS classification_log (
+                            id BIGSERIAL PRIMARY KEY,
+                            incident_ref TEXT NOT NULL,
+                            stage TEXT NOT NULL,
+                            prompt_version TEXT NOT NULL DEFAULT '',
+                            model TEXT NOT NULL DEFAULT '',
+                            raw_verdict TEXT NOT NULL,
+                            extra JSONB NOT NULL DEFAULT '{}',
+                            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                        )
+                    """)
+                    cur.execute("""
+                        CREATE INDEX IF NOT EXISTS idx_classification_log_ref
+                        ON classification_log (incident_ref, stage)
+                    """)
 
                     # ── Sub-offering engine tables (Phase 2) ────────────────
                     cur.execute("""
@@ -250,22 +288,184 @@ class IncidentStore:
 
     # ── Persist ────────────────────────────────────────────────────
 
-    def update_classification(self, incident_id: str, classification_json: str) -> None:
+    def update_classification(
+        self, incident_id: str, classification_json: str, *,
+        ticket_kind: str | None = None,
+        classification_status: str | None = None,
+    ) -> None:
         """Re-classification update (retry worker): replace the stored
         classification on an existing row without touching its identity,
-        status, or occurrence bookkeeping."""
+        status, or occurrence bookkeeping.
+
+        v3: optionally persists the ticket_kind / classification_status
+        columns when the caller passes them (the v3 classify path passes
+        result.ticket_kind.value and result.classification_status); legacy
+        callers omit them and the columns stay untouched."""
+        if not self._ready or self._pool is None:
+            return
+        sets = ["classification_json = %s"]
+        args: list = [classification_json]
+        if ticket_kind is not None:
+            sets.append("ticket_kind = %s")
+            args.append(ticket_kind)
+        if classification_status is not None:
+            sets.append("classification_status = %s")
+            args.append(classification_status)
+        args.append(incident_id)
+        conn = self._getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"UPDATE incidents SET {', '.join(sets)} WHERE id = %s",
+                    args)
+            conn.commit()  # psycopg2 opens a txn implicitly — must commit or the write is rolled back on putconn
+        finally:
+            self._putconn(conn)
+        self._invalidate_cluster_caches(incident_id)
+
+    # ── Classification log + taxonomy gaps (classifier v3) ──────────────
+
+    def log_classification(
+        self, incident_ref: str, stage: str, prompt_version: str,
+        model: str, raw_verdict: str, extra: dict | None = None,
+    ) -> None:
+        """Append one LLM decision to classification_log (v3 audit trail).
+
+        Every triage / cascade / verification LLM call logs its raw verdict
+        here. Append-only — the pipeline never reads it back."""
         if not self._ready or self._pool is None:
             return
         conn = self._getconn()
         try:
             with conn.cursor() as cur:
                 cur.execute(
-                    "UPDATE incidents SET classification_json = %s WHERE id = %s",
-                    (classification_json, incident_id))
-            conn.commit()  # psycopg2 opens a txn implicitly — must commit or the write is rolled back on putconn
+                    "INSERT INTO classification_log "
+                    "(incident_ref, stage, prompt_version, model, raw_verdict, extra) "
+                    "VALUES (%s, %s, %s, %s, %s, %s::jsonb)",
+                    (incident_ref, stage, prompt_version, model, raw_verdict,
+                     json.dumps(extra or {})),
+                )
+            conn.commit()
         finally:
             self._putconn(conn)
-        self._invalidate_cluster_caches(incident_id)
+
+    def record_taxonomy_gap(
+        self, service: str, suggested_offering: str, incident_ref: str,
+    ) -> None:
+        """Record (or aggregate) a taxonomy gap: the classifier found no
+        offering for `service` and suggests `suggested_offering`.
+
+        Upserts on UNIQUE(service, suggested_offering): count+1, appends
+        the incident ref to incident_refs, bumps last_seen."""
+        if not self._ready or self._pool is None:
+            return
+        conn = self._getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO taxonomy_gaps "
+                    "(id, service, suggested_offering, incident_refs, count) "
+                    "VALUES (%s, %s, %s, %s::jsonb, 1) "
+                    "ON CONFLICT (service, suggested_offering) DO UPDATE SET "
+                    "  count = taxonomy_gaps.count + 1, "
+                    "  incident_refs = taxonomy_gaps.incident_refs || excluded.incident_refs, "
+                    "  last_seen = NOW()",
+                    (self.generate_id(), service, suggested_offering,
+                     json.dumps([incident_ref])),
+                )
+            conn.commit()
+        finally:
+            self._putconn(conn)
+
+    def list_taxonomy_gaps(self) -> list[dict]:
+        """All taxonomy gaps, most-reported first."""
+        if not self._ready or self._pool is None:
+            return []
+        conn = self._getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id, service, suggested_offering, incident_refs, count, "
+                    "first_seen, last_seen FROM taxonomy_gaps ORDER BY count DESC"
+                )
+                out = []
+                for r in cur.fetchall():
+                    out.append({
+                        "id": r[0],
+                        "service": r[1],
+                        "suggested_offering": r[2],
+                        "incident_refs": r[3] if isinstance(r[3], list) else (json.loads(r[3]) if r[3] else []),
+                        "count": r[4],
+                        "first_seen": r[5].isoformat() if r[5] else "",
+                        "last_seen": r[6].isoformat() if r[6] else "",
+                    })
+                return out
+        finally:
+            self._putconn(conn)
+
+    def list_classification_log(
+        self, incident_ref: str | None = None, limit: int = 500,
+    ) -> list[dict]:
+        """Classification-log entries, newest first, optionally filtered by
+        incident ref (capped at `limit`)."""
+        if not self._ready or self._pool is None:
+            return []
+        conn = self._getconn()
+        try:
+            with conn.cursor() as cur:
+                if incident_ref is not None:
+                    cur.execute(
+                        "SELECT id, incident_ref, stage, prompt_version, model, "
+                        "raw_verdict, extra, created_at FROM classification_log "
+                        "WHERE incident_ref = %s ORDER BY created_at DESC, id DESC LIMIT %s",
+                        (incident_ref, limit),
+                    )
+                else:
+                    cur.execute(
+                        "SELECT id, incident_ref, stage, prompt_version, model, "
+                        "raw_verdict, extra, created_at FROM classification_log "
+                        "ORDER BY created_at DESC, id DESC LIMIT %s",
+                        (limit,),
+                    )
+                out = []
+                for r in cur.fetchall():
+                    out.append({
+                        "id": r[0],
+                        "incident_ref": r[1],
+                        "stage": r[2],
+                        "prompt_version": r[3],
+                        "model": r[4],
+                        "raw_verdict": r[5],
+                        "extra": r[6] if isinstance(r[6], (dict, list)) else (json.loads(r[6]) if r[6] else {}),
+                        "created_at": r[7].isoformat() if r[7] else "",
+                    })
+                return out
+        finally:
+            self._putconn(conn)
+
+    def _failed_classifications(self, limit: int = 10) -> list[dict]:
+        """Active incidents whose classification FAILED — v3 status column
+        ('failed', either the column or the classification_json field) OR
+        the legacy fallback marker in reasoning (pre-v3 rows). These are
+        the heal / recovery candidates."""
+        if not self._ready or self._pool is None:
+            return []
+        conn = self._getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id, title, description, extracted_text FROM incidents "
+                    "WHERE status = 'active' "
+                    "AND (classification_status = 'failed' "
+                    "     OR classification_json::jsonb->>'classification_status' = 'failed' "
+                    "     OR classification_json::jsonb->>'reasoning' LIKE %s) "
+                    "LIMIT %s",
+                    ("Classification failed after%", limit),
+                )
+                cols = ("id", "title", "description", "extracted_text")
+                return [dict(zip(cols, r)) for r in cur.fetchall()]
+        finally:
+            self._putconn(conn)
 
     @staticmethod
     def _invalidate_cluster_caches(incident_id: str) -> None:
@@ -293,6 +493,8 @@ class IncidentStore:
         completion_code: str | None = None,
         content_hash: str | None = None,
         source_ticket_ids: list[str] | None = None,
+        ticket_kind: str = "incident",
+        classification_status: str = "ok",
     ) -> None:
         if not self._ready or self._pool is None:
             return
@@ -312,9 +514,11 @@ class IncidentStore:
                     "(id, title, description, extracted_text, embedding, classification_json, "
                     "status, created_at, documents, assign_group, assignee, priority, notes, "
                     "discussion_history, escalation_info, completion_code, "
+                    "ticket_kind, classification_status, "
                     "content_hash, occurrence_count, first_seen, last_seen, source_ticket_ids) "
                     "VALUES (%s, %s, %s, %s, %s::vector, %s, %s, %s, "
                     "%s::jsonb, %s, %s, %s, %s, %s::jsonb, %s, %s, "
+                    "%s, %s, "
                     "%s, 1, %s, %s, %s::jsonb) "
                     "ON CONFLICT (id) DO UPDATE SET "
                     "  title=EXCLUDED.title, description=EXCLUDED.description, "
@@ -326,6 +530,8 @@ class IncidentStore:
                     "  notes=EXCLUDED.notes, discussion_history=EXCLUDED.discussion_history, "
                     "  escalation_info=EXCLUDED.escalation_info, "
                     "  completion_code=EXCLUDED.completion_code, "
+                    "  ticket_kind=EXCLUDED.ticket_kind, "
+                    "  classification_status=EXCLUDED.classification_status, "
                     "  content_hash=EXCLUDED.content_hash",
                     (
                         incident_id, title, description, extracted_text,
@@ -341,6 +547,8 @@ class IncidentStore:
                         json.dumps(discussion_history or []),
                         escalation_info,
                         completion_code,
+                        ticket_kind,
+                        classification_status,
                         content_hash,
                         datetime.now(timezone.utc),
                         datetime.now(timezone.utc),
@@ -413,7 +621,9 @@ class IncidentStore:
                     "SELECT id, title, description, extracted_text FROM incidents "
                     "WHERE status = 'active' "
                     "AND classification_json::jsonb->>'confidence' = 'low' "
-                    "AND classification_json::jsonb->>'reasoning' LIKE %s "
+                    "AND (classification_json::jsonb->>'reasoning' LIKE %s "
+                    "     OR classification_status = 'failed' "
+                    "     OR classification_json::jsonb->>'classification_status' = 'failed') "
                     "LIMIT %s",
                     ("Classification failed after%", limit),
                 )
@@ -557,6 +767,7 @@ class IncidentStore:
                     "SELECT id, title, description, extracted_text, classification_json, "
                     "status, created_at, documents, assign_group, assignee, priority, notes, "
                     "discussion_history, escalation_info, completion_code, "
+                    "ticket_kind, classification_status, "
                     "content_hash, occurrence_count, first_seen, last_seen, source_ticket_ids "
                     "FROM incidents WHERE source_ticket_ids @> %s::jsonb "
                     "ORDER BY created_at DESC LIMIT 1",
@@ -581,6 +792,7 @@ class IncidentStore:
                     "SELECT id, title, description, extracted_text, classification_json, "
                     "status, created_at, documents, assign_group, assignee, priority, notes, "
                     "discussion_history, escalation_info, completion_code, "
+                    "ticket_kind, classification_status, "
                     "content_hash, occurrence_count, first_seen, last_seen, source_ticket_ids "
                     "FROM incidents WHERE id = %s",
                     (incident_id,),
@@ -600,7 +812,8 @@ class IncidentStore:
             with conn.cursor() as cur:
                 cols = ("id, title, description, extracted_text, classification_json, "
                         "status, created_at, documents, assign_group, assignee, priority, "
-                        "notes, discussion_history, escalation_info, completion_code")
+                        "notes, discussion_history, escalation_info, completion_code, "
+                        "ticket_kind, classification_status")
                 if status:
                     cur.execute(
                         f"SELECT {cols} FROM incidents WHERE status = %s ORDER BY created_at DESC",
@@ -625,6 +838,7 @@ class IncidentStore:
                     "SELECT id, title, description, extracted_text, classification_json, "
                     "status, created_at, documents, assign_group, assignee, "
                     "priority, notes, discussion_history, escalation_info, completion_code, "
+                    "ticket_kind, classification_status, "
                     "embedding::text "
                     "FROM incidents "
                     "ORDER BY created_at DESC"
@@ -632,7 +846,7 @@ class IncidentStore:
                 rows = cur.fetchall()
             result = []
             for r in rows:
-                emb_str = r[15]
+                emb_str = r[17]
                 emb = None
                 if emb_str:
                     emb = np.array([float(x) for x in emb_str.strip("[]").split(",")], dtype=np.float32)
@@ -1044,12 +1258,12 @@ class IncidentStore:
         """Convert a DB row to an incident dict.
 
         Handles three query shapes:
-          - Base (15 cols): list_incidents
-          - Extended (20 cols, extended=True): get_incident
-          - Embedding (16 cols, embedding_str set): list_incidents_with_embeddings
+          - Base (17 cols): list_incidents
+          - Extended (22 cols, extended=True): get_incident
+          - Embedding (18 cols, embedding_str set): list_incidents_with_embeddings
 
-        The 15 base columns are always at indices 0–14.
-        Extended fields are at 15–19.
+        The 17 base columns are always at indices 0–16.
+        Extended fields are at 17–21.
         Embedding text is passed separately (appended to SELECT as last col).
         """
         d = {
@@ -1068,6 +1282,8 @@ class IncidentStore:
             "discussion_history": row[12] if isinstance(row[12], list) else (json.loads(row[12]) if row[12] else []),
             "escalation_info": row[13],
             "completion_code": row[14],
+            "ticket_kind": row[15],
+            "classification_status": row[16],
         }
         # Parse classification_json once → classification_dict
         raw = row[4]
@@ -1080,11 +1296,11 @@ class IncidentStore:
             d["classification_dict"] = raw or {}
         if extended:
             d.update({
-                "content_hash": row[15],
-                "occurrence_count": row[16] or 1,
-                "first_seen": row[17].isoformat() if row[17] else "",
-                "last_seen": row[18].isoformat() if row[18] else "",
-                "source_ticket_ids": row[19] if isinstance(row[19], list) else (json.loads(row[19]) if row[19] else []),
+                "content_hash": row[17],
+                "occurrence_count": row[18] or 1,
+                "first_seen": row[19].isoformat() if row[19] else "",
+                "last_seen": row[20].isoformat() if row[20] else "",
+                "source_ticket_ids": row[21] if isinstance(row[21], list) else (json.loads(row[21]) if row[21] else []),
             })
         if embedding_str is not None:
             d["_embedding_raw"] = embedding_str

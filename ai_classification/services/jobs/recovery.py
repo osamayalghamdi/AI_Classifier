@@ -32,7 +32,11 @@ def recovery_candidates() -> list[dict]:
             continue  # exhausted — manual review owns it now
         cj = inc.get("classification_dict") or {}
         reason = cj.get("reasoning") or ""
-        if (not cj) or ("Classification failed" in reason) or ("failed after" in reason):
+        failed_status = (
+            inc.get("classification_status") == "failed"
+            or cj.get("classification_status") == "failed"
+        )
+        if (not cj) or failed_status or ("Classification failed" in reason) or ("failed after" in reason):
             out.append(inc)
     return out
 

@@ -40,6 +40,25 @@ from ai_classification.services.match.suboffering import (
 
 _log = logging.getLogger(__name__)
 
+# ── v3 ticket-kind filter ──────────────────────────────────────────────
+# Only incident / service_request tickets feed clustering input — BOTH the
+# embedding clustering and the subsystem rollup. Everything else
+# (administrative, inquiry, feature_request, test, content_thin) is
+# classified for routing only (system+service, no severity/incident_type)
+# and must never pollute duplicate-detection or subsystem rollups.
+# The `ticket_kind` COLUMN wins when present; fall back to the value inside
+# classification_dict (pre-column rows); absent entirely (legacy rows /
+# test fixtures) → treat as incident, the pre-v3 behavior.
+_CLUSTER_TICKET_KINDS = ("incident", "service_request")
+
+
+def _kind_of(inc: dict) -> str:
+    kind = inc.get("ticket_kind")
+    if not kind:
+        kind = (inc.get("classification_dict") or {}).get("ticket_kind")
+    return kind or "incident"
+
+
 # ── Tunable parameters ──────────────────────────────────────────────────
 
 # Phase-2 (embedding) clustering base values. These are the *middle-of-the-
@@ -322,8 +341,15 @@ def _build_clusters(period: str = "daily") -> dict:
     if not raw:
         return {"total_incidents": 0, "clusters": [], "subsystem_summary": subsystem_summary}
 
+    # v3: only incident/service_request tickets are clustering input.
+    filtered = [(inc, emb) for inc, emb in raw if _kind_of(inc) in _CLUSTER_TICKET_KINDS]
+    excluded = len(raw) - len(filtered)
+    if excluded:
+        _log.info("Clustering input: excluded %d ticket(s) with ticket_kind outside %s",
+                  excluded, _CLUSTER_TICKET_KINDS)
+
     # Filter to incidents that actually have embeddings
-    pairs = [(inc, emb) for inc, emb in raw if emb is not None]
+    pairs = [(inc, emb) for inc, emb in filtered if emb is not None]
     if len(pairs) < LOOSE_MIN_CLUSTER:
         return {"total_incidents": len(pairs), "clusters": [], "subsystem_summary": subsystem_summary}
 
@@ -670,11 +696,19 @@ def _cluster_pass(
 # Complements the duplicate-detection clusters above; doesn't replace them.
 def _subsystem_rollup(active_incidents: list[dict]) -> list[dict]:
     buckets: dict[tuple[str, str], list[dict]] = defaultdict(list)
+    excluded = 0
     for inc in active_incidents:
+        if _kind_of(inc) not in _CLUSTER_TICKET_KINDS:
+            excluded += 1
+            continue
         data = inc.get("classification_dict", {})
         system = data.get("affected_system") or "Unknown"
         service = data.get("service") or "Unknown"
         buckets[(system, service)].append(inc)
+
+    if excluded:
+        _log.info("Subsystem rollup: excluded %d ticket(s) with ticket_kind outside %s",
+                  excluded, _CLUSTER_TICKET_KINDS)
 
     rollup = [
         {
