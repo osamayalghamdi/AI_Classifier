@@ -83,7 +83,7 @@ async function loadData() {
       fetch(`${API}/incidents`, { headers: apiHeaders() }).then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); }),
     ]);
     const clusters = (rep.clusters || []).map((c) => ({
-      cluster_id: c.cluster_id, name: c.failure_mode_desc || c.name || c.summary?.slice(0, 60) || "Cluster",
+      cluster_id: c.cluster_id, name: c.description || c.name || c.summary?.slice(0, 60) || "Cluster",
       affected_system: c.affected_system, affected_service: c.affected_service,
       worst_severity: c.worst_severity, count: c.count, summary: c.summary,
       incidents: (c.incidents || []).map((i) => {
@@ -736,7 +736,6 @@ async function searchIncidentById() {
 function renderIncidentDetail(inc) {
   let cls = inc.classification || inc.classification_json || {};
   if (typeof cls === "string") try { cls = JSON.parse(cls); } catch {}
-  const fm = cls.failure_mode || "—";
   const conf = cls.confidence || "—";
   const confClass = conf === "high" ? "conf-high" : conf === "medium" ? "conf-medium" : conf === "low" ? "conf-low" : "";
   const severity = cls.severity || "—";
@@ -780,7 +779,7 @@ function renderIncidentDetail(inc) {
     : "";
 
   return `<div class="t-detail-inner">
-    <div class="dd-row"><span class="dd-label">Failure Mode</span><span class="dd-value"><span class="fm-badge">${esc(fm)}</span> ${sevBadge}</span></div>
+    <div class="dd-row"><span class="dd-label">Severity</span><span class="dd-value">${sevBadge}</span></div>
     <div class="dd-row"><span class="dd-label">Confidence</span><span class="dd-value"><span class="${confClass}">${esc(conf)}</span></span></div>
     <div class="dd-row"><span class="dd-label">System</span><span class="dd-value">${esc(system)}</span></div>
     <div class="dd-row"><span class="dd-label">Service</span><span class="dd-value">${serviceName}</span></div>

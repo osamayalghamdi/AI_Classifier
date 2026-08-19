@@ -66,7 +66,6 @@ def to_smax_suggestion(result) -> dict:
         "classification": {
             "affected_system": result.classification.get("affected_system") if result.classification else None,
             "service": result.classification.get("service") if result.classification else None,
-            "failure_mode": result.classification.get("failure_mode") if result.classification else None,
             "severity": result.classification.get("severity") if result.classification else None,
         },
         "similar_ticket_ids": [t.get("id") for t in (result.similar_tickets or [])],

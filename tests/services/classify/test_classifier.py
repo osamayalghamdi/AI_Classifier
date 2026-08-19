@@ -109,7 +109,6 @@ class TestClassifyHappyPath:
             "confidence": "high",
             "reasoning": "CRM portal slow under load",
             "signature": "test signature",
-            "failure_mode": "FM-000",
             "canonical_statement": "CRM portal responds slowly under load.",
         }))
         result = classify("CRM slow", "Portal is crawling")
@@ -133,7 +132,6 @@ class TestClassifyHappyPath:
             "category": "Network Issue",
             "confidence": "high",
             "signature": "test signature",
-            "failure_mode": "FM-000",
             "canonical_statement": "All DNS queries fail.",
         }))
         result = classify("DNS down", "All DNS queries failing")
@@ -145,7 +143,7 @@ class TestClassifyHappyPath:
             '"incident_type": "Unavailability", "severity": "Major",'
             '"urgency": "High", "category": "Software",'
             '"confidence": "medium", "reasoning": "SMTP relay unreachable",'
-            '"signature": "test signature", "failure_mode": "FM-000",'
+            '"signature": "test signature",'
             '"canonical_statement": "SMTP relay is unreachable, outgoing email fails."}\n```'
         )
         result = classify("Email down", "Cannot send emails")
@@ -176,7 +174,6 @@ class TestClassifyValidationErrors:
             "category": "Software",
             "confidence": "high",
             "signature": "test signature",
-            "failure_mode": "FM-000",
             "canonical_statement": "Test incident.",
         })
         _patch_completion.append(bad)
@@ -191,7 +188,6 @@ class TestClassifyValidationErrors:
             "affected_system": "Other",
             # missing service, incident_type, severity, urgency, category, confidence, canonical_statement
             "signature": "test signature",
-            "failure_mode": "FM-000",
         })
         _patch_completion.append(bad)
         _patch_completion.append(bad)
@@ -209,7 +205,6 @@ class TestClassifyValidationErrors:
             "category": "Software",
             "confidence": "very high",          # not in pattern
             "signature": "test signature",
-            "failure_mode": "FM-000",
             "canonical_statement": "Test incident.",
         })
         _patch_completion.append(bad)
@@ -242,7 +237,6 @@ class TestEnumStrictness:
             "category": "Software",
             "confidence": "high",
             "signature": "test signature",
-            "failure_mode": "FM-000",
         })
         _patch_completion.append(bad)
         _patch_completion.append(bad)
@@ -267,7 +261,6 @@ class TestClassifyRetry:
             "category": "Software",
             "confidence": "high",
             "signature": "test signature",
-            "failure_mode": "FM-000",
             "canonical_statement": "Test incident.",
         })
         _patch_completion.append(bad)

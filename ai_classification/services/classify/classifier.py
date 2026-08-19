@@ -48,7 +48,6 @@ FEW_SHOT_EXAMPLES = [
             "reasoning": "SMS OTP delivery failure across multiple attempts suggests an issue with the Login service's SMS integration.",
             "canonical_statement": "SMS OTP not delivered after 5 resend attempts; 2FA login blocked on Nusuk Application.",
             "signature": "User can't receive SMS OTP for 2FA login",
-            "failure_mode": "FM-000",
         },
     },
     {
@@ -65,7 +64,6 @@ FEW_SHOT_EXAMPLES = [
             "reasoning": "Regional checkout timeouts point to a performance degradation in the payment integration.",
             "canonical_statement": "KSA users experiencing checkout timeouts at payment step in Nusuk Application.",
             "signature": "User can't complete checkout due to timeout at payment step",
-            "failure_mode": "FM-000",
         },
     },
     {
@@ -82,7 +80,6 @@ FEW_SHOT_EXAMPLES = [
             "reasoning": "Blank page on registration suggests a front-end deployment issue affecting the Registration service.",
             "canonical_statement": "Service providers see blank page; pilgrim group submission blocked in Nusuk Masar Haj Registration.",
             "signature": "Provider can't submit pilgrim groups due to blank registration page",
-            "failure_mode": "FM-000",
         },
     },
     {
@@ -99,7 +96,6 @@ FEW_SHOT_EXAMPLES = [
             "reasoning": "Post-update crash on all devices indicates a software regression in the Inspector App.",
             "canonical_statement": "Inspector App crash on launch for all field inspectors after v2.4 update.",
             "signature": "Inspector app crashing on launch after update",
-            "failure_mode": "FM-000",
         },
     },
     {
@@ -116,7 +112,6 @@ FEW_SHOT_EXAMPLES = [
             "reasoning": "New batch of cards failing at scanners suggests an encoding or configuration mismatch.",
             "canonical_statement": "QR codes not scanning at entry gates for newly issued Hajj Nusuk Cards.",
             "signature": "Nusuk Card QR code not scanning at entry gate",
-            "failure_mode": "FM-000",
         },
     },
     {
@@ -133,23 +128,12 @@ FEW_SHOT_EXAMPLES = [
             "reasoning": "Post-migration empty results suggest data not properly migrated or query broken.",
             "canonical_statement": "Empty results since database migration in Umrah Companies Inquiry portal.",
             "signature": "Inquiry returning empty results after database migration",
-            "failure_mode": "FM-000",
         },
     },
 ]
 
 
 # ── Prompt builders ───────────────────────────────────────────────────
-
-# Build examples block with failure mode codes from the taxonomy
-def _build_fm_taxonomy_block() -> str:
-    from ai_classification.core.failure_modes import FAILURE_MODES
-    lines = []
-    for code, fm in sorted(FAILURE_MODES.items()):
-        name, system, service, severity = fm[0], fm[1], fm[2], fm[3]
-        lines.append(f"  {code}: {name} [{system}/{service}, {severity}]")
-    return "\n".join(lines)
-
 
 def _build_examples_block() -> str:
     blocks = []
@@ -186,7 +170,6 @@ def _build_system_prompt() -> str:
   "reasoning": "short explanation of your choices",
   "canonical_statement": "detailed description for human reading. Include component, symptoms, scope.",
   "signature": "short problem signature for grouping: 5-8 words, start with the failing action (not actor), ban error message as the head phrase. No names, IDs, dates, or numbers.",
-  "failure_mode": "FM-XXX — pick the best matching code from the failure-mode taxonomy below. Use FM-000 if none fits."
 }}
 
 ## Key Rules
@@ -218,12 +201,7 @@ urgency (pick one):
 category — WHY IT HAPPENED (root cause type, pick one):
 {categories}
 
-canonical_statement: Include component name first, describe symptoms and scope. English only. Facts only — no inferred causes.
-
-## Failure-Mode Taxonomy
-Pick the best-matching failure_mode code. If no code fits, use FM-000.
-
-{_build_fm_taxonomy_block()}
+- If unsure, pick the closest match and set confidence "low".
 """
 
 
@@ -238,8 +216,7 @@ def _build_stage_system_prompt(stage_rules: str, allowed_values: str) -> str:
     """Build a stage system prompt: full JSON contract + the stage's short option list."""
     return (
         "You classify IT support tickets into structured categories. Return ONLY valid JSON.\n\n"
-        f"{_CASCADE_JSON_SCHEMA}\n"
-        f"{_build_fm_taxonomy_block()}\n\n"
+        f"{_CASCADE_JSON_SCHEMA}\n\n"
         f"## Stage Rules\n{stage_rules}\n\n"
         f"## Allowed Values\n{allowed_values}"
     )
@@ -493,7 +470,6 @@ _CASCADE_JSON_SCHEMA = """\
   "reasoning": "short explanation of your choices",
   "canonical_statement": "detailed description for human reading. Include component, symptoms, scope.",
   "signature": "short problem signature for grouping: 5-8 words, start with the failing action (not actor), ban error message as the head phrase. No names, IDs, dates, or numbers.",
-  "failure_mode": "FM-XXX — pick the best matching code from the failure-mode taxonomy below. Use FM-000 if none fits."
 }
 
 ## Key Rules
@@ -501,9 +477,7 @@ _CASCADE_JSON_SCHEMA = """\
 - service MUST be one of the allowed values EXACTLY as written — never invent, never rephrase, never shorten a service or offering name.
 - Respond with JSON only — no markdown, no commentary.
 - If unsure, pick the closest match and set confidence "low".
-
-## Failure-Mode Taxonomy
-Pick the best-matching failure_mode code. If no code fits, use FM-000."""
+"""
 
 
 def _resolve_system_deterministic(title: str, description: str) -> AffectedSystem | None:

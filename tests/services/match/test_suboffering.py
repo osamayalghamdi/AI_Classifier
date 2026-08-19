@@ -204,33 +204,33 @@ class TestProposalAPI:
 # ── member-level purity rule (manager decision, cad886 class) ─────────
 class TestMemberPurity:
     def test_cad886_class_flagged(self):
-        # 20-member cluster: FM-018 x18, FM-012 x1, FM-009 x1 (the pilgrim-groups
-        # Rawdah proposal). Top-2 by count = {FM-018} (2nd/3rd tie at 1 -> both
-        # minority). cad886 (FM-012) and 390a79 (FM-009) must be flagged.
-        fm_codes = ["FM-018"] * 18 + ["FM-012"] + ["FM-009"]
+        # 20-member cluster: 18 same-service, 2 different (the pilgrim-groups
+        # Rawdah proposal). Top-2 by count = {svc-a} (2nd/3rd tie at 1 -> both
+        # minority). Members with svc-b / svc-c must be flagged.
+        fm_codes = ["svc-a"] * 18 + ["svc-b"] + ["svc-c"]
         flags = compute_member_flags(fm_codes)
-        assert flags[18]["failure_mode"] == "FM-012"
+        assert flags[18]["service"] == "svc-b"
         assert flags[18]["needs_review"] is True       # cad886 class
-        assert flags[19]["failure_mode"] == "FM-009"
+        assert flags[19]["service"] == "svc-c"
         assert flags[19]["needs_review"] is True       # tied 2nd-place minority
         assert all(flags[i]["needs_review"] is False for i in range(18))  # majority clean
 
     def test_clean_cluster_no_flags(self):
-        fm_codes = ["FM-018"] * 10 + ["FM-018"] * 9 + ["FM-018"]  # homogeneous
+        fm_codes = ["svc-a"] * 10 + ["svc-a"] * 9 + ["svc-a"]  # homogeneous
         flags = compute_member_flags(fm_codes)
         assert all(not f["needs_review"] for f in flags.values())
 
     def test_three_code_cluster_minority_flagged(self):
-        # FM-007 x6, FM-005 x2, FM-004 x1: top-2 = {FM-007, FM-005}; FM-004 minority
-        fm_codes = ["FM-007"] * 6 + ["FM-005"] * 2 + ["FM-004"]
+        # svc-a x6, svc-b x2, svc-c x1: top-2 = {svc-a, svc-b}; svc-c minority
+        fm_codes = ["svc-a"] * 6 + ["svc-b"] * 2 + ["svc-c"]
         flags = compute_member_flags(fm_codes)
-        assert flags[8]["failure_mode"] == "FM-004"
+        assert flags[8]["service"] == "svc-c"
         assert flags[8]["needs_review"] is True
         assert all(not flags[i]["needs_review"] for i in range(8))
 
     def test_two_code_cluster_is_all_top2(self):
         # spec: member FM NOT in top-2 -> flag; with <=2 codes nobody is flagged
-        fm_codes = ["FM-007"] * 6 + ["FM-005"] * 2
+        fm_codes = ["svc-a"] * 6 + ["svc-b"] * 2
         flags = compute_member_flags(fm_codes)
         assert all(not f["needs_review"] for f in flags.values())
 
@@ -246,7 +246,7 @@ class TestMemberPurity:
                     "VALUES (%s, %s, %s, %s::jsonb, 'active', NOW())",
                     ("audit-i1", "فضلا اصدار الاعتماد",
                      "تم دخول وقت صدور الاعتماد فضلا اصداره 135230",
-                     '{"failure_mode": "FM-012", "service": "x.y"}'))
+                     '{"service": "x.y"}'))
             conn.commit()
         finally:
             s._putconn(conn)
@@ -256,7 +256,7 @@ class TestMemberPurity:
         assert got["members"] == [{
             "id": "audit-i1", "title": "فضلا اصدار الاعتماد",
             "description": "تم دخول وقت صدور الاعتماد فضلا اصداره 135230",
-            "failure_mode": "FM-012"}]
+            "service": "x.y"}]
         api_r = api.get(f"/proposals/{prop['id']}")
         assert api_r.status_code == 200
         assert api_r.json()["members"][0]["title"] == "فضلا اصدار الاعتماد"

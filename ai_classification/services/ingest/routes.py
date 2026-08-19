@@ -183,7 +183,7 @@ def test_all():
     def _classify():
         from ai_classification.services.classify.classifier import classify
         r = classify("Rawdah permit booking fails on date selection", "error on the done button")
-        return f"{r.affected_system} / {r.failure_mode} / {r.severity}"
+        return f"{r.affected_system} / {r.service} / {r.severity}"
 
     # 5. Similar-ticket retrieval — nearest neighbours for a sample
     def _similar():

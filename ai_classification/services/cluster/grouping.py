@@ -7,7 +7,7 @@ same offering (first segment of the service string, e.g. "System/Application
 - Nusuk Masar Haj") form guaranteed clusters. No similarity threshold or LLM
 validation needed — the classification already determined they are the same
 root cause. Tickets without a resolvable offering (OFFERING-000) fall to
-Phase 2. (The legacy failure_mode code is NOT a grouping key anymore.)
+Phase 2. Grouping keys on offering/sub-offering only.
 
 Phase 2 — Embedding + LLM: The remaining OFFERING-000 incidents are
 clustered by cosine similarity over bge-m3 embeddings, using an
@@ -347,7 +347,7 @@ def _build_clusters(period: str = "daily") -> dict:
     # Phase 1: Exact-match grouping by OFFERING (coarse service bucket)
     # Tickets sharing an offering (service first segment, e.g. "System/
     # Application - Nusuk Masar Haj") form guaranteed clusters. This is the
-    # product taxonomy (offerings/sub-offerings) — the legacy failure_mode
+    # product taxonomy (offerings/sub-offerings)
     # code is NOT used as a grouping key anymore. Tickets without a
     # resolvable offering (OFFERING-000) fall through to Phase 2.
     offering_buckets: dict[str, list[int]] = defaultdict(list)
@@ -363,7 +363,7 @@ def _build_clusters(period: str = "daily") -> dict:
     used: set[int] = set()
 
     # Sub-offering membership (READ-ONLY): ACTIVE sub-offerings + their
-    # exemplars, so phase-1 emits FM-equivalent sub-clusters (named by
+    # exemplars, so phase-1 emits sub-clusters (named by
     # sub-offering) whenever the engine has minted them.
     _subs = store.list_sub_offerings(status="active")
     _subs_by_offering: dict[str, list[dict]] = defaultdict(list)
@@ -412,7 +412,7 @@ def _build_clusters(period: str = "daily") -> dict:
         return {
             "cluster_id": cid,
             "name": name,
-            "failure_mode_desc": name,
+            "description": name,
             "affected_system": top_sys,
             "affected_service": top_svc,
             "worst_severity": worst_sev,
@@ -426,7 +426,7 @@ def _build_clusters(period: str = "daily") -> dict:
     for offering, indices in offering_buckets.items():
         if offering == OFFERING_000 or len(indices) < adaptive_min_size:
             continue
-        # 1) Sub-offering split — FM-equivalent granularity via read-only
+        # 1) Sub-offering split — read-only
         #    exemplar matching. Unmatched members fall through to the
         #    offering-level residual cluster.
         sub_groups: dict[str, list[int]] = {}

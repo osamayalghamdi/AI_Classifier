@@ -27,7 +27,7 @@ AUTO_ACCEPT = 0.90
 OVERSIZE_THRESHOLD = 20
 MIN_CLUSTER_SIZE = 3
 PURITY_MIN_SIM = 0.45
-PURITY_MAX_FM = 6
+PURITY_MAX_SERVICES = 6
 DRIFT_CHUNK = 25
 OFFERING000_MAX_MEMBERS = 10  # W3 guard: cross-domain pool proposals cap
 
@@ -133,17 +133,18 @@ def label_proposals(verifier, incidents, proposals):
         return {}
 
 
-def compute_member_flags(fm_codes: list[str]) -> dict:
-    """Member-level purity rule: member FM not in the cluster's top-2 FM codes ->
-    member NEEDS_REVIEW. Deterministic: count DESC, code ASC. When the 2nd and 3rd
-    counts tie, both tied codes are treated as minority (conservative — catches a
-    lone wrong member whose FM happens to tie the 2nd place, e.g. the cad886 class)."""
-    fm_counts = Counter(fm_codes)
-    codes_sorted = sorted(fm_counts, key=lambda k: (-fm_counts[k], k))
-    third = fm_counts[codes_sorted[2]] if len(codes_sorted) > 2 else 0
-    top2_codes = {k for k in codes_sorted if fm_counts[k] > third}
-    return {mid: {"needs_review": fm not in top2_codes, "failure_mode": fm}
-            for mid, fm in enumerate(fm_codes)}
+def compute_member_flags(services: list[str]) -> dict:
+    """Member-level purity rule: member service not in the cluster's top-2
+    service values -> member NEEDS_REVIEW. Deterministic: count DESC, code
+    ASC. When the 2nd and 3rd counts tie, both tied values are treated as
+    minority (conservative — catches a lone wrong member whose service
+    happens to tie the 2nd place)."""
+    svc_counts = Counter(services)
+    codes_sorted = sorted(svc_counts, key=lambda k: (-svc_counts[k], k))
+    third = svc_counts[codes_sorted[2]] if len(codes_sorted) > 2 else 0
+    top2_codes = {k for k in codes_sorted if svc_counts[k] > third}
+    return {mid: {"needs_review": svc not in top2_codes, "service": svc}
+            for mid, svc in enumerate(services)}
 
 
 def run_pool(offering_id: str, incidents: list[dict], verifier: Verifier | None = None,
@@ -236,8 +237,8 @@ def run_pool(offering_id: str, incidents: list[dict], verifier: Verifier | None 
     for c in post_drift:
         if len(c) < MIN_CLUSTER_SIZE:
             continue
-        fm_codes = [incidents[i].get("classification_dict", {}).get("failure_mode", "?") for i in c]
-        flags_by_idx = compute_member_flags(fm_codes)
+        svc_codes = [incidents[i].get("classification_dict", {}).get("service", "?") for i in c]
+        flags_by_idx = compute_member_flags(svc_codes)
         # map member index -> incident id
         member_flags = {incidents[i]["id"]: flags_by_idx[k]
                         for k, i in enumerate(c)}
@@ -248,9 +249,9 @@ def run_pool(offering_id: str, incidents: list[dict], verifier: Verifier | None 
         # OR the cross-domain member cap trips (auto-NEEDS_REVIEW, regardless of
         # cohesion — W3 guard for OFFERING-000 contamination risk).
         excluded = (n_flagged >= max(1, len(c) // 3)
-                    or cohesion < PURITY_MIN_SIM or len(set(fm_codes)) > PURITY_MAX_FM
+                    or cohesion < PURITY_MIN_SIM or len(set(svc_codes)) > PURITY_MAX_SERVICES
                     or oversized)
-        flags = {"mean_sim": round(cohesion, 4), "n_fm_codes": len(set(fm_codes)),
+        flags = {"mean_sim": round(cohesion, 4), "n_services": len(set(svc_codes)),
                  "needs_review": excluded, "oversized": oversized, "members": member_flags}
         block = {"members": c, "flags": flags,
                  "reasons": {f"{incidents[i]['id'][:6]}~{incidents[j]['id'][:6]}": r

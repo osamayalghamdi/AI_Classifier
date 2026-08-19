@@ -56,7 +56,7 @@ FAKE_CLASSIFICATION = json.dumps({
     "reasoning": "integration test",
     "canonical_statement": "Permit issuance fails when selecting a date for the group.",
     "signature": "permit issuance fails on date selection",
-    "failure_mode": "FM-018",
+    
 })
 
 PAYLOAD = {
@@ -140,7 +140,7 @@ def test_e1_ingest_returns_immediately_then_processes(client):
     assert job["status"] == "succeeded"
     assert job["result"]["is_new"] is True
     assert job["result"]["incident_id"]
-    assert job["result"]["classification"]["failure_mode"] == "FM-018"
+    assert job["result"]["classification"]["service"]
     assert job["result"]["write_back"]["mode"] in ("suggestions", "none", "full")
 
 
@@ -217,7 +217,7 @@ def test_e5_dry_run_writes_nothing(client):
     body = r.json()
     assert body["reference"] == "TKT-1001"
     assert body["is_new"] is True
-    assert body["classification"]["failure_mode"] == "FM-018"
+    assert body["classification"]["service"]
     assert body["would_write"]["dry_run"] is True
     assert body["write_back"]["applied"] is False
 

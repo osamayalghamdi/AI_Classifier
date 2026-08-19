@@ -43,8 +43,8 @@ def main() -> int:
     print(f"OFFERING-000 pool: {len(pool)} tickets of {len(incidents)} total")
     for inc in pool:
         svc = (inc.get("classification_dict") or {}).get("service", "?")
-        fm = (inc.get("classification_dict") or {}).get("failure_mode", "?")
-        print(f"  {inc['id']}  FM={fm:8} svc='{svc}'  {inc['title'][:60]}")
+        svc = (inc.get("classification_dict") or {}).get("service", "?")
+        print(f"  {inc['id']}  svc='{svc}'  {inc['title'][:60]}")
 
     if args.shuffle_seed is not None:
         random.Random(args.shuffle_seed).shuffle(pool)
@@ -71,8 +71,8 @@ def main() -> int:
         print("  flags:", json.dumps(p["purity_flags"], ensure_ascii=False))
         for mid in members:
             inc = by_id.get(mid, {})
-            fm = (inc.get("classification_dict") or {}).get("failure_mode", "?")
-            print(f"    {mid}  FM={fm}  | {inc.get('title', '')[:60]} | {inc.get('description', '')[:100]}")
+            svc = (inc.get("classification_dict") or {}).get("service", "?")
+            print(f"    {mid}  svc={svc}  | {inc.get('title', '')[:60]} | {inc.get('description', '')[:100]}")
         for edge, reason in (p.get("verifier_reasons") or {}).items():
             a, b = edge.split("~")
             ia = by_id.get(next((m for m in members if m.startswith(a)), ""), {})

@@ -111,7 +111,6 @@
         var sevEl = el("resSev");
         sevEl.textContent = sev;
         sevEl.className = "sev-pill sev-" + sev;
-        el("resFm").textContent = c.failure_mode || "—";
         el("resConf").textContent = c.confidence || "—";
         if (payload.extracted_text) {
           el("resOcrText").textContent = payload.extracted_text;

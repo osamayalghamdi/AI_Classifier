@@ -32,12 +32,12 @@ def main(cache_path: str, shuffle_seed: int | None = None):
     verdicts = verifier.verify_pairs(pairs)
     yes = 0
     for (i, j, s), (a, b), v in zip(cands, pairs, verdicts):
-        fm_a = (a.get("classification_dict") or {}).get("failure_mode", "?")
-        fm_b = (b.get("classification_dict") or {}).get("failure_mode", "?")
+        svc_a = (a.get("classification_dict") or {}).get("service", "?")
+        svc_b = (b.get("classification_dict") or {}).get("service", "?")
         flag = " <== YES" if v["decision"] == "YES" else ""
         if v["decision"] == "YES":
             yes += 1
-        print(f"\nPAIR {a['id'][:6]}~{b['id'][:6]}  sim={s:.3f}  FM {fm_a}/{fm_b}"
+        print(f"\nPAIR {a['id'][:6]}~{b['id'][:6]}  sim={s:.3f}  svc {svc_a}/{svc_b}"
               f"  -> {v['decision']}{flag}")
         print(f"  reason: {v['reason']}")
         print(f"  A: {a['title'][:55]} | {a['description'][:90]}")
