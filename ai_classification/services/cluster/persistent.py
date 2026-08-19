@@ -99,7 +99,7 @@ underlying problem. A group needs >= 2 tickets. Tickets that match nothing stay 
 
 Return JSON only:
 {{"groups": [{{"member_ids": [...], "name_ar": "<short clear Arabic title for the group — max 9 words, uniform with other cluster names>",
-"description": "what this problem is, and what it is NOT"}}],
+"description": "<ONE short clear sentence, max 25 words: what this problem is>"}}],
  "singletons": ["<ids that match no group>"]}}
 Never invent IDs. Every input ID appears exactly once across groups and singletons."""
 
@@ -117,7 +117,7 @@ Tickets:
 Return JSON only:
 {{"keep": ["<ids that belong>"],
  "remove": [{{"id": "<id>", "reason": "<one sentence — what makes it different>"}}],
- "description": "<optionally refined cluster description, or the original>"}}
+ "description": "<optionally refined cluster description — ONE short clear sentence, max 25 words — or the original>"}}
 Rules: Every input ID appears in exactly one of keep or remove. Never invent or
 omit an ID. Be precise: same feature + different failure = remove."""
 
@@ -144,7 +144,14 @@ Tickets:
 {tickets}"""
 
 _AR_NAME_MAX_TICKETS = 15
-_AR_NAME_MAX_WORDS = 9  # hard cap — user rule
+_AR_NAME_MAX_WORDS = 9     # hard cap — user rule
+_DESC_MAX_WORDS = 25       # hard cap — user rule: descriptions are ONE short sentence
+
+
+def _cap_description(text: str) -> str:
+    """Enforce the short-description user rule: max 25 words, no paragraphs."""
+    words = (text or "").split()
+    return " ".join(words[:_DESC_MAX_WORDS])
 
 
 # ── Small helpers ─────────────────────────────────────────────────────────
@@ -400,7 +407,7 @@ def sweep_pool(*, dry_run: bool = False) -> dict:
             if len(members) < PROPOSAL_MIN_SIZE:
                 continue
             name_ar = (g.get("name_ar") or "").strip()[:120]
-            description = (g.get("description") or "").strip()[:1000]
+            description = _cap_description(g.get("description") or "")[:1000]
             cid = _cluster_id(name_ar or "مقترح جديد", members)
             if store.get_cluster(cid) is not None:
                 continue  # id collision — a cluster for these members exists
@@ -499,8 +506,8 @@ def audit_cluster(cluster_id: str) -> dict:
 
     changed = bool(removed)
     refined = verdict.get("description")
-    if isinstance(refined, str) and refined.strip() \
-            and refined.strip() != (cluster.get("description") or ""):
+    refined = _cap_description(refined) if isinstance(refined, str) else None
+    if refined and refined.strip() and refined.strip() != (cluster.get("description") or ""):
         store.update_cluster_fields(cluster_id, description=refined.strip())
         changed = True
 
