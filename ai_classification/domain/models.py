@@ -1,12 +1,29 @@
 """Internal domain models — the LLM classification contract and derived types.
 Pipeline position: 15_models — domain types (ClassificationResult, …)."""
 
+from typing import Literal
+
 from pydantic import BaseModel, Field, model_validator
 
-from .taxonomy import AffectedSystem, IncidentType, Severity, Urgency, Category, SERVICES_BY_SYSTEM, flatten_services
+from .taxonomy import (
+    AffectedSystem,
+    IncidentType,
+    Severity,
+    Urgency,
+    Category,
+    TicketKind,
+    SERVICES_BY_SYSTEM,
+    flatten_services,
+)
 
 # Flat service list derived from the hierarchy (built once at import time)
 _FLAT_SERVICES = flatten_services()
+
+# Abstention sentinel (classifier v3): when the ticket's problem genuinely
+# matches no listed offering, stage 3 stores "<Service>.OFFERING-GAP" and
+# records a taxonomy_gap row. The validator accepts this LITERAL sentinel
+# and nothing else outside the taxonomy.
+OFFERING_GAP_SENTINEL = ".OFFERING-GAP"
 
 
 class ClassificationResult(BaseModel):
@@ -14,9 +31,9 @@ class ClassificationResult(BaseModel):
 
     affected_system: AffectedSystem
     service: str
-    incident_type: IncidentType
-    severity: Severity
-    urgency: Urgency
+    incident_type: IncidentType | None = None
+    severity: Severity | None = None
+    urgency: Urgency | None = None
     category: Category
     confidence: str = Field(pattern=r"^(low|medium|high)$")
     reasoning: str | None = None
@@ -33,6 +50,12 @@ class ClassificationResult(BaseModel):
         "No company names, no ticket IDs, no dates, no numbers, no counts. "
         "English only. This is used for embedding/grouping, not display."
     )
+    # ── Stage-0 triage (classifier v3) ────────────────────────────────
+    ticket_kind: TicketKind = TicketKind.incident
+    # ── Persistence status: 'ok' | 'failed' (genuine LLM failure only) ──
+    classification_status: Literal["ok", "failed"] = "ok"
+    # ── Set by the (OFF-by-default) self-consistency pass ─────────────
+    needs_review: bool = False
     # ── Provenance (set by the seams pipeline; empty for direct callers) ──
     model_version: str = Field(default="", description="Model identity that produced this classification.")
     prompt_version: str = Field(default="", description="System-prompt version identity that produced this classification.")
@@ -56,6 +79,20 @@ class ClassificationResult(BaseModel):
             if self.service in services:
                 self.affected_system = system
                 return self
+        # Abstention sentinel (classifier v3): "<Service>.OFFERING-GAP" is the
+        # ONLY literal outside the taxonomy the validator accepts — the prefix
+        # must be a real service key. Anything else still raises.
+        if self.service.endswith(OFFERING_GAP_SENTINEL):
+            key = self.service[: -len(OFFERING_GAP_SENTINEL)]
+            for system, services in SERVICES_BY_SYSTEM.items():
+                if key in services:
+                    self.affected_system = system
+                    return self
+            raise ValueError(
+                f"service '{self.service}' is not valid for "
+                f"affected_system '{self.affected_system}': OFFERING-GAP "
+                f"prefix '{key}' is not a service of any system"
+            )
         # Dot-path form (cascade): "Service.Offering"
         if "." in self.service:
             own = SERVICES_BY_SYSTEM.get(self.affected_system, {})
