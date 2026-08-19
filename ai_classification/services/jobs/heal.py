@@ -55,6 +55,8 @@ def reclassify_fallback_incidents(limit: int | None = None) -> dict:
         store.reclassify_incident(
             row["id"], row["title"], row["description"],
             row.get("extracted_text", ""), cls,
+            ticket_kind=cls.ticket_kind.value if hasattr(cls.ticket_kind, "value") else cls.ticket_kind,
+            classification_status=cls.classification_status,
         )
         healed += 1
         _log.info("Heal: reclassified %s — %s / %s (%s)",

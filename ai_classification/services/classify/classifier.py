@@ -582,11 +582,14 @@ def _record_taxonomy_gap(
 
 
 # Public API: classify an incident, retry once on failure, fallback to low-confidence
-def classify(title: str, description: str, *, incident_ref: str | None = None) -> ClassificationResult:
+def classify(title: str, description: str, *, incident_ref: str | None = None,
+             affected_system: str | None = None) -> ClassificationResult:
     """Classify an incident. Always returns — falls back to low-confidence on LLM failure.
 
     incident_ref: stable ticket id recorded on every classification_log entry.
     Direct callers without one get "anon-<content-hash-prefix>".
+    affected_system: supplied by the ticketing system (when present) — it is
+    validated and PINNED, skipping stage-1 system resolution entirely.
     """
     _log.info("Classifying — title='%s'", title[:60])
     ref = incident_ref or f"anon-{content_hash(title, description)[:8]}"
@@ -594,7 +597,7 @@ def classify(title: str, description: str, *, incident_ref: str | None = None) -
     # CASCADE_CLASSIFICATION gate (default TRUE). The Settings field is added
     # by the config commit; getattr keeps this worktree importable until then.
     if getattr(settings, "cascade_classification", True):
-        return _classify_v3(title, description, incident_ref=ref)
+        return _classify_v3(title, description, incident_ref=ref, affected_system=affected_system)
 
     return _classify_single_shot(title, description, incident_ref=ref)
 
@@ -949,12 +952,14 @@ def _run_cascade(
     temperature: float = 0.0,
     log_stage: str | None = None,
     log_extra: dict | None = None,
+    pinned_system: AffectedSystem | None = None,
 ) -> ClassificationResult:
     """Coarse-to-fine cascade: system → service → offering. Never raises.
 
     LLM calls per ticket (guaranteed by construction):
-      - deterministic system hit: 2 (service + offering), 1 when the offering
-        stage is skipped (empty/single offering list);
+      - pinned system (payload) / deterministic system hit: 2 (service +
+        offering), 1 when the offering stage is skipped (empty/single
+        offering list);
       - LLM system fallback:      3 (system + service + offering), 2 when the
         offering stage is skipped.
     log_stage overrides the per-call classification_log stage label (e.g.
@@ -962,21 +967,25 @@ def _run_cascade(
     carried in log_extra["cascade_stage"].
     """
     try:
-        # ── Stage 1 — system resolution (deterministic first, 0 LLM calls) ──
-        system = _resolve_system_deterministic(title, description)
+        # ── Stage 1 — system resolution (pinned > deterministic > LLM) ──
+        system = pinned_system
         if system is not None:
-            _log.debug("Cascade stage 1/3 (system) deterministic — %s", system.value)
+            _log.debug("Cascade stage 1/3 (system) pinned from payload — %s", system.value)
         else:
-            result = _stage_system_llm(
-                title, description,
-                incident_ref=incident_ref, temperature=temperature,
-                log_stage=log_stage or "stage1",
-                log_extra={**(log_extra or {}), "cascade_stage": "stage1"},
-            )
-            if result is None:
-                _log.warning("Cascade stage 1/3 (system) failed — generic fallback")
-                return _cascade_fallback(title, "system resolution failed", kind=kind)
-            system = result.affected_system
+            system = _resolve_system_deterministic(title, description)
+            if system is not None:
+                _log.debug("Cascade stage 1/3 (system) deterministic — %s", system.value)
+            else:
+                result = _stage_system_llm(
+                    title, description,
+                    incident_ref=incident_ref, temperature=temperature,
+                    log_stage=log_stage or "stage1",
+                    log_extra={**(log_extra or {}), "cascade_stage": "stage1"},
+                )
+                if result is None:
+                    _log.warning("Cascade stage 1/3 (system) failed — generic fallback")
+                    return _cascade_fallback(title, "system resolution failed", kind=kind)
+                system = result.affected_system
 
         # ── Stage 2 — service selection (1 LLM call, short list) ──
         result = _stage_service_llm(
@@ -998,6 +1007,8 @@ def _run_cascade(
         if result is None:
             return _cascade_fallback(title, "offering selection failed", kind=kind)
         result.ticket_kind = kind
+        if pinned_system is not None:
+            result.affected_system = pinned_system
         result.canonical_statement = _normalize_canonical(result.canonical_statement)
         _log.info("Cascade classification succeeded — system=%s, service=%s, severity=%s, confidence=%s",
                   result.affected_system, result.service, result.severity, result.confidence)
@@ -1013,6 +1024,7 @@ def _classify_routed(
     kind: TicketKind,
     *,
     incident_ref: str | None = None,
+    pinned_system: AffectedSystem | None = None,
 ) -> ClassificationResult:
     """Non-incident kinds — system + service ONLY (stages 1-2).
 
@@ -1021,16 +1033,20 @@ def _classify_routed(
     pass. category stays required — filled by the stage-2 LLM (best guess).
     """
     try:
-        # ── Stage 1 — system resolution (deterministic first, 0 LLM calls) ──
-        system = _resolve_system_deterministic(title, description)
+        # ── Stage 1 — system resolution (pinned > deterministic > LLM) ──
+        system = pinned_system
         if system is not None:
-            _log.debug("Routed stage 1/2 (system) deterministic — %s", system.value)
+            _log.debug("Routed stage 1/2 (system) pinned from payload — %s", system.value)
         else:
-            result = _stage_system_llm(title, description, incident_ref=incident_ref)
-            if result is None:
-                _log.warning("Routed stage 1/2 (system) failed — generic fallback")
-                return _cascade_fallback(title, "system resolution failed", kind=kind)
-            system = result.affected_system
+            system = _resolve_system_deterministic(title, description)
+            if system is not None:
+                _log.debug("Routed stage 1/2 (system) deterministic — %s", system.value)
+            else:
+                result = _stage_system_llm(title, description, incident_ref=incident_ref)
+                if result is None:
+                    _log.warning("Routed stage 1/2 (system) failed — generic fallback")
+                    return _cascade_fallback(title, "system resolution failed", kind=kind)
+                system = result.affected_system
 
         # ── Stage 2 — service selection (1 LLM call, short list) ──
         result = _stage_service_llm(title, description, system, incident_ref=incident_ref)
@@ -1064,18 +1080,52 @@ def _classify_routed(
         return _cascade_fallback(title, str(e), kind=kind)
 
 
-def _classify_v3(title: str, description: str, *, incident_ref: str | None = None) -> ClassificationResult:
+def _resolve_pinned_system(affected_system: str | None) -> AffectedSystem | None:
+    """Validate a payload-supplied affected system (ticketing system sends it).
+
+    Valid → the system is PINNED and stage 1 (deterministic/LLM resolution)
+    is skipped. Invalid → logged and None (fall back to the normal
+    resolution). Never invents a system.
+    """
+    if not affected_system or not str(affected_system).strip():
+        return None
+    try:
+        system = AffectedSystem(str(affected_system).strip())
+    except (ValueError, TypeError):
+        _log.warning(
+            "Payload affected_system %r is not a known system — falling back to LLM resolution",
+            affected_system,
+        )
+        return None
+    _log.info("Affected system pinned from payload: %s", system.value)
+    return system
+
+
+def _classify_v3(
+    title: str,
+    description: str,
+    *,
+    incident_ref: str | None = None,
+    affected_system: str | None = None,
+) -> ClassificationResult:
     """Classifier v3 pipeline: triage (stage 0) → cascade (stages 1-3) → verification (stage 4).
 
     Routing: incident/service_request get the FULL cascade (severity/urgency/
     incident_type filled) + verification; every other kind gets system+service
     only, with incident fields null and no verification. Never raises.
+    affected_system (from the ticketing payload, when present) pins the
+    system — stage 1 resolution is skipped entirely.
     """
+    pinned = _resolve_pinned_system(affected_system)
     kind = _triage(title, description, incident_ref=incident_ref)
     if kind not in (TicketKind.incident, TicketKind.service_request):
-        return _classify_routed(title, description, kind, incident_ref=incident_ref)
+        return _classify_routed(
+            title, description, kind, incident_ref=incident_ref, pinned_system=pinned
+        )
 
-    result = _run_cascade(title, description, kind=kind, incident_ref=incident_ref)
+    result = _run_cascade(
+        title, description, kind=kind, incident_ref=incident_ref, pinned_system=pinned
+    )
     if result.classification_status == "failed":
         return result  # honest failure — nothing to verify
     result = _verify_classification(title, description, result, incident_ref=incident_ref)
@@ -1406,6 +1456,7 @@ def classify_and_store(
     completion_code: str | None = None,
     source_ticket_id: str = "",
     precomputed: ClassificationResult | None = None,
+    affected_system: str | None = None,
 ) -> ClassifyResponse:
     _log.info("Classifying incident — title='%s', group='%s', priority=%s, ticket_id='%s'",
               title[:60], assign_group, priority, source_ticket_id)
@@ -1480,7 +1531,9 @@ def classify_and_store(
     # classification_log entry (triage, stages, verification) carries it.
     incident_id = store.generate_id()
 
-    result = precomputed if precomputed is not None else classify(title, description, incident_ref=incident_id)
+    result = precomputed if precomputed is not None else classify(
+        title, description, incident_ref=incident_id, affected_system=affected_system
+    )
 
     # ── Severity→priority mapping (only when the caller did not supply one) ──
     _priority_map = {"Critical": "critical", "Major": "high", "Minor": "medium", "Cosmetic": "low"}
@@ -1567,6 +1620,7 @@ def classify_batch(incidents: list[dict]) -> ClassifyBatchResponse:
                 discussion_history=inc.get("discussion_history"),
                 escalation_info=inc.get("escalation_info"),
                 completion_code=inc.get("completion_code"),
+                affected_system=inc.get("affected_system"),
             )
             results.append(r)
         except Exception as e:

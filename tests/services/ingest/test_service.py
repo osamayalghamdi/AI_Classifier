@@ -36,7 +36,7 @@ def _make_result(**overrides) -> ClassificationResult:
 class TestClassifyAndStore:
     def test_saves_incident_and_returns_id(self, monkeypatch):
         result_cls = _make_result()
-        monkeypatch.setattr(classifier, "classify", lambda title, desc, incident_ref=None: result_cls)
+        monkeypatch.setattr(classifier, "classify", lambda title, desc, incident_ref=None, affected_system=None: result_cls)
         monkeypatch.setattr(store, "find_similar", lambda *a, **k: [])
         saved = {}
         monkeypatch.setattr(
@@ -53,7 +53,7 @@ class TestClassifyAndStore:
 
     def test_maps_similar_matches_to_response(self, monkeypatch):
         result_cls = _make_result()
-        monkeypatch.setattr(classifier, "classify", lambda title, desc, incident_ref=None: result_cls)
+        monkeypatch.setattr(classifier, "classify", lambda title, desc, incident_ref=None, affected_system=None: result_cls)
         monkeypatch.setattr(store, "save_incident", lambda *a, **k: None)
         monkeypatch.setattr(store, "generate_id", lambda: "new-id")
         match = SimilarMatch(id="dup-1", title="Similar incident", similarity=0.91, classification=result_cls)
@@ -68,7 +68,7 @@ class TestClassifyAndStore:
 
     def test_no_similar_incidents_returns_empty_list(self, monkeypatch):
         result_cls = _make_result()
-        monkeypatch.setattr(classifier, "classify", lambda title, desc, incident_ref=None: result_cls)
+        monkeypatch.setattr(classifier, "classify", lambda title, desc, incident_ref=None, affected_system=None: result_cls)
         monkeypatch.setattr(store, "save_incident", lambda *a, **k: None)
         monkeypatch.setattr(store, "generate_id", lambda: "new-id")
         monkeypatch.setattr(store, "find_similar", lambda *a, **k: [])
@@ -134,7 +134,7 @@ class TestDedupe:
         monkeypatch.setattr(store, "generate_id", lambda: "fresh-id")
         saved = []
         monkeypatch.setattr(store, "save_incident", lambda iid, title, desc, cls, extracted_text="", **k: saved.append(iid))
-        monkeypatch.setattr(classifier, "classify", lambda title, desc, incident_ref=None: _make_result())
+        monkeypatch.setattr(classifier, "classify", lambda title, desc, incident_ref=None, affected_system=None: _make_result())
         incremented = []
         monkeypatch.setattr(store, "increment_occurrence", lambda iid: incremented.append(iid))
 
