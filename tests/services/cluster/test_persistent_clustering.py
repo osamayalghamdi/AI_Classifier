@@ -298,6 +298,26 @@ class TestFlowB:
         assert len(actives) == 1 and actives[0]["name_ar"] == "تعطل بوابة الدفع"
         assert set(store.cluster_member_ids(actives[0]["id"])) == {"tst-p0", "tst-p1"}
 
+    def test_sweep_description_capped_at_25_words(self, monkeypatch):
+        """User rule: descriptions are ONE short sentence — a longer LLM
+        description is truncated to 25 words at mint time."""
+        for i, t in enumerate(["payment gateway down", "payment gateway failing"]):
+            _save_incident(f"tst-r{i}", t, service="Nusuk Masar Haj.Bill Payment")
+
+        long_desc = " ".join(["كلمة"] * 40)
+
+        def responder(messages, **kw):
+            return json.dumps({"groups": [{"member_ids": ["tst-r0", "tst-r1"],
+                                           "name_ar": "تعطل بوابة الدفع",
+                                           "description": long_desc}],
+                               "singletons": []})
+
+        _fake_llm(monkeypatch, responder)
+        pc.sweep_pool()
+
+        c = store.list_clusters(status="proposed")[0]
+        assert len(c["description"].split()) <= pc._DESC_MAX_WORDS
+
     def test_sweep_reruns_flow_a_first(self, monkeypatch):
         # A ticket that now matches a new active cluster is assigned by Flow A
         # before the grouping call ever runs.
