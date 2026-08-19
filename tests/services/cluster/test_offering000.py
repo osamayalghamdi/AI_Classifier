@@ -51,10 +51,9 @@ class FakeVerifier:
         return "{}"  # drift remove-none / labels-empty
 
 
-def _ticket(iid: str, text: str, fm: str) -> dict:
+def _ticket(iid: str, text: str, svc: str) -> dict:
     return {"id": iid, "title": text, "description": text,
-            "classification_dict": {"service": "General / Unspecified",
-                                    "failure_mode": fm}}
+            "classification_dict": {"service": svc}}
 
 
 @pytest.fixture
@@ -98,9 +97,9 @@ class TestF4ContaminationGuard:
     def test_unrelated_pair_not_merged(self, engine_store, monkeypatch):
         """F4-A: strict verifier NO on the unrelated pairs -> no merge."""
         _patch_stores(monkeypatch, engine_store)
-        related = [_ticket(f"t-{i}", "rawdah permit date selection fails", "FM-018")
+        related = [_ticket(f"t-{i}", "rawdah permit date selection fails", "pilgrim groups.Nusuk.Issue Permits")
                    for i in range(3)]
-        x = _ticket("t-x", "company evaluation icon missing from interface", "FM-007")  # unrelated
+        x = _ticket("t-x", "company evaluation icon missing from interface", "System/Application.Nusuk.Service Unavailability")  # unrelated
         incidents = related + [x]
         # related triple sim 0.70 mutual; unrelated at 0.60 to everyone (all >= floor)
         pairs = {("t-0", "t-1"): 0.70, ("t-0", "t-2"): 0.70, ("t-1", "t-2"): 0.70,
@@ -128,9 +127,9 @@ class TestF4ContaminationGuard:
         _patch_stores(monkeypatch, engine_store)
         # 3 same-problem Rawdah tickets + 2 unrelated with distinct FMs (the
         # cad886 class: minority FM members)
-        related = [_ticket(f"t-r{i}", "rawdah permit date selection fails", "FM-018") for i in range(3)]
-        odd1 = _ticket("t-x", "approval issuance expedite request", "FM-012")
-        odd2 = _ticket("t-y", "external pilgrim permit follow-up complaint", "FM-009")
+        related = [_ticket(f"t-r{i}", "rawdah permit date selection fails", "pilgrim groups.Nusuk.Issue Permits") for i in range(3)]
+        odd1 = _ticket("t-x", "approval issuance expedite request", "pilgrim groups.Nusuk.Expedite")
+        odd2 = _ticket("t-y", "external pilgrim permit follow-up complaint", "pilgrim groups.Nusuk.Follow-up")
         incidents = related + [odd1, odd2]
         # identical text -> identical vectors -> sim 1.0 -> AUTO-ACCEPT all pairs
         # (bypasses the verifier entirely; the guard must catch the pollution)
@@ -162,7 +161,7 @@ class TestDecisionMintNewOffering:
         for iid in ("i1", "i2", "i3"):
             _insert_raw(s, iid, f"title {iid}", f"desc {iid}", "",
                         np.zeros(1024, dtype=np.float32),
-                        _make_result(failure_mode="FM-000"), status="active")
+                        _make_result(), status="active")
         prop = s.create_proposal("OFFERING-000", ["i1", "i2", "i3"], 0.6, {},
                                  {"needs_review": False}, proposed_label="License number workflow")
         client = TestClient(app)
@@ -201,7 +200,7 @@ class TestF3OrderIndependence:
         """F3 (mocked verifier): shuffled input order -> identical proposal membership."""
         _patch_stores(monkeypatch, engine_store)
         tickets = [_ticket(f"t-{i}", f"problem text number {i} in the system",
-                           "FM-01" if i < 3 else f"FM-0{(i % 5) + 1}")
+                           "svc-a" if i < 3 else f"svc-{(i % 5) + 1}")
                    for i in range(8)]
         # triangle 0.50 on the 0-1-2 clique (cohesion 0.50 >= 0.45 floor) +
         # chain 0.50 onward; verifier YES only on the clique edges

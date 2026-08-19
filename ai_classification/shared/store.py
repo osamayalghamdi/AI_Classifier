@@ -913,7 +913,7 @@ class IncidentStore:
             self._putconn(conn)
 
     def _enrich_proposal_members(self, proposals: list[dict]) -> list[dict]:
-        """Attach member ticket texts (id, title, description, failure_mode) so a
+        """Attach member ticket texts (id, title, description) so a
         human reviewer can check each member's real text against the verifier
         reasons — the gate that makes the proposal queue honest."""
         if not proposals or not self._ready or self._pool is None:
@@ -933,11 +933,11 @@ class IncidentStore:
         by_id = {}
         for rid, title, desc, cj in rows:
             try:
-                fm = json.loads(cj).get("failure_mode", "")
+                svc = json.loads(cj).get("service", "")
             except Exception:
-                fm = ""
+                svc = ""
             by_id[rid] = {"id": rid, "title": title, "description": desc,
-                          "failure_mode": fm}
+                          "service": svc}
         for p in proposals:
             p["members"] = [by_id[mid] for mid in p["member_ids"] if mid in by_id]
         return proposals

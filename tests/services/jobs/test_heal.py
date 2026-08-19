@@ -29,7 +29,6 @@ FALLBACK = json.dumps({
     "reasoning": "Classification failed after 2 attempts. Last error: Connection error.",
     "canonical_statement": "Incident reported: test",
     "signature": "Generic/Unknown",
-    "failure_mode": "FM-000",
 })
 
 GOOD = json.dumps({
@@ -43,7 +42,7 @@ GOOD = json.dumps({
     "reasoning": "ok",
     "canonical_statement": "Permit issuance fails when selecting a date for the group.",
     "signature": "permit issuance fails on date selection",
-    "failure_mode": "FM-018",
+    
 })
 
 

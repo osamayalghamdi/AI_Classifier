@@ -84,12 +84,12 @@ def _fake_verdict(monkeypatch, verdict=None):
     monkeypatch.setattr(g, "validate_group", _fake)
 
 
-def _mk_inc(i: int, fm: str = "FM-000", title: str = "") -> dict:
+def _mk_inc(i: int, svc: str = "", title: str = "") -> dict:
     return {
         "id": f"inc{i:04d}",
         "title": title or f"Incident {i}",
         "description": f"description {i}",
-        "classification_dict": {"failure_mode": fm},
+        "classification_dict": {"service": svc},
         "status": "active",
     }
 
@@ -245,7 +245,7 @@ class TestBuildClustersAdaptive:
         _fake_verdict(monkeypatch)
         # One offering with 5 members at high intra-similarity; empty
         # sub-offering catalog → residual cluster must emit fine.
-        incs = tuple(_mk_inc(i, fm="FM-018",
+        incs = tuple(_mk_inc(i, svc="pilgrim groups - Nusuk Masar Haj.Issue Permits",
                              title="Rawdah permit fails") for i in range(5))
         for i, inc in enumerate(incs):
             inc["classification_dict"]["service"] = (

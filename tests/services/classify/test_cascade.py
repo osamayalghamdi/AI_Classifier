@@ -95,7 +95,6 @@ def _full_result(**overrides) -> dict:
         "reasoning": "test",
         "canonical_statement": "Test incident.",
         "signature": "Test incident signature for grouping",
-        "failure_mode": "FM-000",
     }
     out.update(overrides)
     return out
