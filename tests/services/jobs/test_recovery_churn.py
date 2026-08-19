@@ -18,7 +18,8 @@ class FakeStore:
     def list_incidents(self):
         return list(self._incidents.values())
 
-    def update_classification(self, incident_id, classification_json):
+    def update_classification(self, incident_id, classification_json, *,
+                              ticket_kind=None, classification_status=None):
         self.calls.append(incident_id)
         import json
         self._incidents[incident_id]["classification_dict"] = json.loads(classification_json)
