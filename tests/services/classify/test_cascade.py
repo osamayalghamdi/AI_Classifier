@@ -3,9 +3,12 @@
 Verifies the spec §3/§5/§8 contract:
 - Stage option counts: system=4, service=that system's service count, offering=that
   service's offering count (never the flat 193).
-- LLM calls per ticket: 2 (deterministic system) / 3 (LLM system fallback),
-  minus 1 when the offering stage is skipped (empty/singular offering list).
-- Stage failure -> generic fallback, never raise, never flat-list fallback.
+- v3 pipeline LLM calls per ticket: 1 (triage) + 2 (deterministic system) / 3
+  (LLM system fallback), minus 1 when the offering stage is skipped
+  (empty/singular offering list), plus 1 verification for incident/service_request.
+- Stage failure -> generic fallback (classification_status="failed"), never
+  raise, never flat-list fallback; stage-3 retry failure -> BARE service key
+  (repair-to-first-offering deleted in v3).
 - Dot-path service validation in ClassificationResult (base service key match,
   affected_system auto-correct).
 - Flag OFF -> single-shot path unchanged (byte-identical contract).
@@ -104,6 +107,16 @@ def _full_result_json(**overrides) -> str:
     return json.dumps(_full_result(**overrides))
 
 
+def _triage_json(kind: str = "incident") -> str:
+    """Stage-0 triage response — every cascade ticket is triaged first (1 LLM call)."""
+    return json.dumps({"kind": kind, "reason": "test"})
+
+
+def _verify_json(verdict: str = "approve", corrections=None, reason: str = "ok") -> str:
+    """Stage-4 verification response — incident tickets get one audit call."""
+    return json.dumps({"verdict": verdict, "corrections": corrections, "reason": reason})
+
+
 # ── §8.1 Prompt-size proof (per-stage option counts) ───────────────────
 
 
@@ -134,18 +147,21 @@ class TestStageOptionCounts:
 
 
 class TestCascadeCalls:
-    def test_deterministic_system_two_calls(self, fake_completion):
+    def test_deterministic_system_four_calls(self, fake_completion):
         outputs, calls = fake_completion
-        # Stage 2 (service) + stage 3 (offering) responses; system resolved deterministically
+        # Triage + stage 2 (service) + stage 3 (offering) + verification;
+        # system resolved deterministically
+        outputs.append(_triage_json())
         outputs.append(_full_result_json(service="Registration - Nusuk Masar Haj"))
         outputs.append(_full_result_json(
             service="Registration - Nusuk Masar Haj.Create Registration Request (SPC)"
         ))
+        outputs.append(_verify_json())
         result = classifier_mod.classify(
             "Nusuk Masar Haj registration form fails",
             "SPC cannot create registration request on Nusuk Masar Haj",
         )
-        assert len(calls) == 2
+        assert len(calls) == 4
         assert result.service == (
             "Registration - Nusuk Masar Haj.Create Registration Request (SPC)"
         )
@@ -154,48 +170,56 @@ class TestCascadeCalls:
         outputs, calls = fake_completion
         # 'hajj B2C local resrevation - Nusuk Masar Haj' has exactly 1 offering
         # -> offering stage skipped, deterministic 'Service.Offering'
+        outputs.append(_triage_json())
         outputs.append(_full_result_json(service="hajj B2C local resrevation - Nusuk Masar Haj"))
+        outputs.append(_verify_json())
         result = classifier_mod.classify(
             "Nusuk Masar Haj permit booking error",
             "B2C reservation permit issuance broken on Nusuk Masar Haj",
         )
-        assert len(calls) == 1
+        assert len(calls) == 3
         assert result.service == "hajj B2C local resrevation - Nusuk Masar Haj.Permits Issuance"
 
     def test_offering_empty_keeps_bare_service(self, fake_completion):
         outputs, calls = fake_completion
         # 'Housing Preference Services' has 0 offerings -> bare service, no stage 3
+        outputs.append(_triage_json())
         outputs.append(_full_result_json(service="Housing Preference Services"))
+        outputs.append(_verify_json())
         result = classifier_mod.classify(
             "Nusuk Masar Haj housing preference",
             "housing preference services broken on Nusuk Masar Haj",
         )
-        assert len(calls) == 1
+        assert len(calls) == 3
         assert result.service == "Housing Preference Services"
 
-    def test_llm_system_fallback_three_calls(self, fake_completion):
+    def test_llm_system_fallback_five_calls(self, fake_completion):
         outputs, calls = fake_completion
         # Ambiguous ticket (both 'haj' and 'umrah' aliases) -> stage 1 LLM call
+        outputs.append(_triage_json())
         outputs.append(_full_result_json(affected_system="Nusuk Masar Haj"))
         outputs.append(_full_result_json(service="System/Application - Nusuk Masar Haj"))
         outputs.append(_full_result_json(
             service="System/Application - Nusuk Masar Haj.Service Unavailability"
         ))
+        outputs.append(_verify_json())
         result = classifier_mod.classify(
             "Hajj and umrah portal down",
             "Both haj and umrah systems unreachable",
         )
-        assert len(calls) == 3
+        assert len(calls) == 5
         assert result.service == "System/Application - Nusuk Masar Haj.Service Unavailability"
 
     def test_stage_calls_use_temperature_zero_and_seed(self, fake_completion):
         outputs, calls = fake_completion
+        outputs.append(_triage_json())
         outputs.append(_full_result_json(service="Registration - Nusuk Masar Haj"))
         outputs.append(_full_result_json(
             service="Registration - Nusuk Masar Haj.Create Registration Request (SPC)"
         ))
+        outputs.append(_verify_json())
         classifier_mod.classify("Nusuk Masar Haj x", "registration issue on nusuk masar haj")
-        assert len(calls) == 2
+        assert len(calls) == 4
         for c in calls:
             assert c.get("temperature") == 0.0
             assert c.get("seed") == 42
@@ -207,32 +231,36 @@ class TestCascadeCalls:
 class TestCascadeFallback:
     def test_system_stage_failure_returns_generic_fallback(self, fake_completion):
         outputs, calls = fake_completion
+        outputs.append(_triage_json())
         outputs.append("not json at all")  # stage 1 fails
         result = classifier_mod.classify("random ticket", "no system hints here")
         assert isinstance(result, ClassificationResult)
         assert result.confidence == "low"
         assert result.affected_system == AffectedSystem.other
         assert result.service == "General / Unspecified"
-        assert len(calls) == 1  # no further stages after system failure
+        assert result.classification_status == "failed"
+        assert len(calls) == 2  # triage + stage 1; no further stages after system failure
 
-    def test_service_stage_failure_repairs_to_first_offering(self, fake_completion):
+    def test_service_stage_failure_stores_bare_service(self, fake_completion):
         outputs, calls = fake_completion
+        outputs.append(_triage_json())
         outputs.append(_full_result_json())  # stage 2 ok
         outputs.append("garbage")            # stage 3 first attempt fails
-        # retry also fails (empty queue -> "{}") -> deterministic repair
+        # retry also fails (empty queue -> "{}") -> honest bare-service degradation
+        outputs.append(_verify_json())       # verification still audits the degraded result
         result = classifier_mod.classify("Nusuk Masar Haj x", "nusuk masar haj issue")
         assert isinstance(result, ClassificationResult)
-        # repaired to a REAL taxonomy value, never Generic/Unknown
-        assert result.service == (
-            "System/Application - Nusuk Masar Haj.Backend Latency"
-        )  # first offering of the stage-2 service
+        # repair-to-first-offering deleted (v3): BARE service key, low confidence,
+        # reasoning suffix — NOT a fake offering pick, NOT a taxonomy violation
+        assert result.service == "System/Application - Nusuk Masar Haj"
         assert result.confidence == "low"
+        assert "offering selection failed after retry; stored at service level." in (result.reasoning or "")
         assert result.affected_system == AffectedSystem.nusuk_masar_haj
-        assert len(calls) == 3  # stage 2 + stage 3 + retry
+        assert len(calls) == 5  # triage + stage 2 + stage 3 + retry + verification
 
     def test_never_raises(self, fake_completion):
         outputs, calls = fake_completion
-        outputs.append("garbage")
+        outputs.append(_triage_json())
         outputs.append("garbage")
         outputs.append("garbage")
         result = classifier_mod.classify("anything", "at all")  # must not raise
@@ -295,17 +323,19 @@ class TestStage1LenientParse:
 
     def test_classify_survives_stage1_with_provisional_service(self, fake_completion):
         outputs, calls = fake_completion
-        # ambiguous ticket -> stage 1 LLM call returns a provisional service
+        # ambiguous ticket -> triage + stage 1 LLM call returns a provisional service
+        outputs.append(_triage_json())
         outputs.append(self.PROVISIONAL)
         outputs.append(_full_result_json(service="Registration - Nusuk Masar Haj"))
         outputs.append(_full_result_json(
             service="Registration - Nusuk Masar Haj.Create Registration Request (SPC)"
         ))
+        outputs.append(_verify_json())
         result = classifier_mod.classify(
             "Hajj and umrah permit booking error",
             "User cannot book a permit on either the hajj or umrah portal",
         )
-        assert len(calls) == 3  # all three stages ran — stage 1 did NOT fail
+        assert len(calls) == 5  # triage + all three stages + verification — stage 1 did NOT fail
         assert result.affected_system == AffectedSystem.nusuk_masar_haj
         assert result.confidence == "high"  # not the low-confidence fallback
         assert result.service == (
