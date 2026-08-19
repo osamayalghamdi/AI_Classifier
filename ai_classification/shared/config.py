@@ -107,5 +107,13 @@ class Settings:
     reclassify_interval_s: int = int(getenv("RECLASSIFY_INTERVAL_S", "600"))
     reclassify_max_per_tick: int = int(getenv("RECLASSIFY_MAX_PER_TICK", "10"))
 
+    # ── Persistent clustering (v2 LLM-first) ────────────────────────────
+    # Flow A runs in the classify path's BACKGROUND task; slow inference
+    # must not delay the classify response. Flow C audit cadence (nightly).
+    cluster_assign_on_arrival: bool = getenv(
+        "CLUSTER_ASSIGN_ON_ARRIVAL", "1"
+    ).lower() in ("1", "true", "yes", "on")
+    cluster_audit_interval_s: int = int(getenv("CLUSTER_AUDIT_INTERVAL_S", "86400"))
+
 
 settings = Settings()

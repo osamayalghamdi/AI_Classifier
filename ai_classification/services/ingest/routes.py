@@ -12,9 +12,10 @@ from ai_classification.shared.store import (
 )
 from ai_classification.services.classify.classifier import classify_and_store, classify_batch
 from ai_classification.shared.config import settings
-from ai_classification.services.cluster.grouping import build_clusters, invalidate_cache, request_rebuild
+from ai_classification.services.cluster.persistent import build_clusters, sweep_pool
 from ai_classification.services.ingest.import_service import import_incidents_from_file, import_incidents_from_body
 from ai_classification.services.review.proposal_routes import router as proposal_router
+from ai_classification.services.review.cluster_proposal_routes import router as cluster_proposal_router
 
 _log = logging.getLogger(__name__)
 
@@ -65,6 +66,8 @@ async def _http_error_handler(_request, exc: _HTTPException):
 
 # Proposal review API (sub-offering engine, Phase 2)
 app.include_router(proposal_router)
+# Cluster-proposal review API (v2 persistent clustering — human gate)
+app.include_router(cluster_proposal_router)
 from ai_classification.services.ingest.integration_routes import router as integration_router, ready_router
 app.include_router(integration_router)
 app.include_router(ready_router)
@@ -193,9 +196,8 @@ def test_all():
         hits = store.find_similar("Rawdah permit booking fails on date selection", top_k=3)
         return f"{len(hits)} similar found"
 
-    # 6. Clusters — build the current report
+    # 6. Clusters — report from the persistent cluster tables
     def _clusters():
-        from ai_classification.services.cluster.grouping import build_clusters
         rep = build_clusters("daily")
         return f"{rep.get('total_incidents')} incidents, {len(rep.get('clusters', []))} clusters"
 
@@ -278,6 +280,48 @@ def get_one(incident_id: str):
     return inc
 
 
+# ── Clean read endpoints ──────────────────────────────────────────────
+# GET /all-incidents — every incident, no clusters, no rollup.
+# GET /clusters — the clusters ONLY (names, counts, severity, member ids);
+#                 no subsystem rollup, no per-member incident dumps.
+
+
+@app.get("/all-incidents")
+def all_incidents(status: str | None = Query(None, description="Filter by status (e.g. 'active', 'resolved')")):
+    """Every incident as stored (classification included). Minimal wrapper
+    over the store — handy for exports and integrations that want the raw
+    list without cluster/report structure."""
+    _log.info("GET /all-incidents — status=%s", status)
+    incs = list_incidents(status)
+    return {"total": len(incs), "incidents": incs}
+
+
+@app.get("/clusters")
+def clusters_only(period: str = "daily"):
+    """The clusters only: name, count, worst severity, member incident IDs.
+    Lightweight — the dashboard report (/api/reports/{period}) carries the
+    same clusters plus subsystem rollup and full member details; this
+    endpoint returns just the grouping summary."""
+    _log.info("GET /clusters — period=%s", period)
+    result = build_clusters(period)
+    clusters = []
+    for c in result.get("clusters", []):
+        clusters.append({
+            "cluster_id": c.get("cluster_id"),
+            "name": c.get("name"),
+            "description": c.get("description") or c.get("name"),
+            "affected_system": c.get("affected_system"),
+            "affected_service": c.get("affected_service"),
+            "worst_severity": c.get("worst_severity"),
+            "count": c.get("count"),
+            "member_ids": [i.get("id") for i in c.get("incidents", [])],
+        })
+    return {
+        "total_incidents": result.get("total_incidents", 0),
+        "clusters": clusters,
+    }
+
+
 # ── Grouping / Reports (frontend-facing) ────────────────────────────
 
 
@@ -332,7 +376,13 @@ def import_bulk_from_body(req: BulkImportRequest):
 @app.post("/reset")
 def reset_all():
     count = delete_all_incidents()
-    invalidate_cache()
-    request_rebuild()
     _log.warning("Reset complete — %d incidents deleted", count)
     return {"status": "reset", "deleted": count}
+
+
+# Manually trigger a Flow B pool sweep (v2 persistent clustering). Returns
+# the sweep stats; proposals land in /cluster-proposals for the human gate.
+@app.post("/cluster/sweep")
+def trigger_sweep(dry_run: bool = False):
+    _log.info("POST /cluster/sweep — dry_run=%s", dry_run)
+    return sweep_pool(dry_run=dry_run)

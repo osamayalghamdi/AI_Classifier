@@ -42,8 +42,8 @@ button:disabled{opacity:.45;cursor:default}
 <body>
 <div class="top">
   <div>
-    <h1>Sub-offering proposals — review gate</h1>
-    <div class="sub">Minting happens ONLY here. Approve = the proposal becomes an ACTIVE sub-offering.</div>
+    <h1>Cluster proposals — review gate</h1>
+    <div class="sub">Minting happens ONLY here. Approve = the proposal becomes an ACTIVE cluster.</div>
   </div>
   <div class="right">
     <input id="tok" type="password" placeholder="API token">
@@ -78,24 +78,22 @@ async function load(){
            <div class="members">${q.items.map(i => `<span class="member" title="${esc(i.incident_id)} · attempts ${i.attempts}">${esc(i.title) || i.incident_id}</span>`).join("")}</div>
            <div class="offer">Exhausted retries — classify by hand, then re-import or edit the incident.</div>
          </div>` : "";
-    const d = await api("/proposals?status=pending");
+    const d = await api("/cluster-proposals?status=proposed");
     msg.textContent = d.proposals.length + " pending proposal(s) waiting for review.";
     if (!d.proposals.length){ list.innerHTML = '<div id="empty">No pending proposals — the gate is clear.</div>'; return; }
     list.innerHTML = d.proposals.map(p => `
       <div class="prop">
-        <h3>${esc(p.proposed_label) || "(unnamed)"}</h3>
-        <div class="offer">${esc(p.offering_id)}</div>
+        <h3>${esc(p.name_ar) || "(unnamed)"}</h3>
+        <div class="offer">${esc(p.description) || "—"}</div>
         <div class="meta">
-          <span class="badge pending">pending</span>
+          <span class="badge pending">proposed</span>
           <span class="badge">${p.member_ids.length} members</span>
-          <span class="badge">mean_sim ${p.mean_sim}</span>
         </div>
         <div class="members">${(p.members || []).map(m => `<span class="member" title="${esc(m.id)}">${esc(m.title) || "—"}</span>`).join("")}</div>
         <div class="note"><input id="note-${p.id}" placeholder="Review note (optional)"></div>
         <div class="actions">
-          <button class="ok" onclick="decide('${p.id}','approve')">✓ Approve & mint</button>
+          <button class="ok" onclick="decide('${p.id}','approve')">✓ Approve & activate</button>
           <button class="bad" onclick="decide('${p.id}','reject')">✕ Reject</button>
-          <button class="ghost" onclick="decide('${p.id}','merge')">⇄ Merge</button>
         </div>
       </div>`).join("");
   } catch(e){ msg.textContent = "Error: " + e.message; }
@@ -105,7 +103,7 @@ async function decide(id, decision){
   const msg = document.getElementById("msg");
   msg.textContent = "Submitting " + decision + "…";
   try {
-    const d = await api("/proposals/" + id + "/decision", { method: "POST", body: JSON.stringify({ decision, note }) });
+    const d = await api("/cluster-proposals/" + id + "/decision", { method: "POST", body: JSON.stringify({ decision, note }) });
     msg.textContent = decision + " OK — " + (d.message || JSON.stringify(d).slice(0, 80));
     load();
   } catch(e){ msg.textContent = "Decision failed: " + e.message; }
