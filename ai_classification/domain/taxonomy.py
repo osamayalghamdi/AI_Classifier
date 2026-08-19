@@ -23,6 +23,25 @@ class AffectedSystem(StrEnum):
     other = "Other"
 
 
+class TicketKind(StrEnum):
+    """Stage-0 triage result — what KIND of ticket this is.
+
+    Only ``incident`` (and ``service_request`` when it describes a system
+    blocking the request) proceeds through the full cascade with
+    severity/urgency/incident_type and into clustering input. Everything
+    else is classified for system+service only (routing) with
+    incident_type=null and is excluded from clustering.
+    """
+
+    incident = "incident"
+    service_request = "service_request"
+    administrative = "administrative"
+    inquiry = "inquiry"
+    feature_request = "feature_request"
+    test = "test"
+    content_thin = "content_thin"
+
+
 class IncidentType(StrEnum):
     spike = "Spike"
     degradation = "Degradation"

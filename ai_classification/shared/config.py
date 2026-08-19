@@ -42,6 +42,14 @@ class Settings:
         "CASCADE_CLASSIFICATION", "true"
     ).lower() in ("1", "true", "yes", "on")
 
+    # Classifier v3 self-consistency pass (DEFAULT OFF — measure before
+    # enabling): when true, tickets that end confidence=low are re-run 3× at
+    # temperature 0.7 and majority-voted per field; no majority → the
+    # low-confidence result is kept and flagged needs_review=true.
+    classify_self_consistency: bool = getenv(
+        "CLASSIFY_SELF_CONSISTENCY", "false"
+    ).lower() in ("1", "true", "yes", "on")
+
     # ── Intake field mapping ─────────────────────────────────────────────
     # Payload keys tried in order when mapping a raw ticket to title /
     # description. Comma-separated env vars; whitespace stripped; empties dropped.
@@ -106,6 +114,14 @@ class Settings:
     ).lower() in ("1", "true", "yes", "on")
     reclassify_interval_s: int = int(getenv("RECLASSIFY_INTERVAL_S", "600"))
     reclassify_max_per_tick: int = int(getenv("RECLASSIFY_MAX_PER_TICK", "10"))
+
+    # ── Persistent clustering (v2 LLM-first) ────────────────────────────
+    # Flow A runs in the classify path's BACKGROUND task; slow inference
+    # must not delay the classify response. Flow C audit cadence (nightly).
+    cluster_assign_on_arrival: bool = getenv(
+        "CLUSTER_ASSIGN_ON_ARRIVAL", "1"
+    ).lower() in ("1", "true", "yes", "on")
+    cluster_audit_interval_s: int = int(getenv("CLUSTER_AUDIT_INTERVAL_S", "86400"))
 
 
 settings = Settings()
