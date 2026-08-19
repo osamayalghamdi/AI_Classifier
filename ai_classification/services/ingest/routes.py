@@ -5,7 +5,11 @@ import logging
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
-from ai_classification.api.schemas import ClassifyRequest, ClassifyResponse, ClassifyBatchRequest, ClassifyBatchResponse, ResolveResponse, BulkImportRequest
+from ai_classification.api.schemas import (
+    ClassifyRequest, ClassifyResponse, ClassifyBatchRequest, ClassifyBatchResponse,
+    ResolveResponse, BulkImportRequest, IncidentResponse, IncidentListResponse,
+)
+from ai_classification.domain.models import ClassificationResult
 from ai_classification.shared.store import (
     lifespan, get_health, resolve_incident, get_incident, list_incidents, delete_all_incidents,
     store,
@@ -274,14 +278,31 @@ def list_all(status: str | None = Query(None, description="Filter by status (e.g
 
 
 # Get a single incident by ID
-@app.get("/incidents/{incident_id}")
+@app.get("/incidents/{incident_id}", response_model=IncidentResponse)
 def get_one(incident_id: str):
     _log.debug("GET /incidents/%s", incident_id)
     inc = get_incident(incident_id)
     if inc is None:
         _log.warning("Incident %s not found", incident_id)
         raise HTTPException(status_code=404, detail="Incident not found")
-    return inc
+    return _to_incident_response(inc)
+
+
+def _to_incident_response(inc: dict) -> IncidentResponse:
+    """Map a store row dict → typed IncidentResponse. classification_dict is
+    validated through the ClassificationResult Pydantic model; unparseable
+    or absent classifications become None instead of 500ing the endpoint."""
+    data = dict(inc)
+    raw = data.get("classification_dict") or {}
+    cls = None
+    if raw:
+        try:
+            cls = ClassificationResult.model_validate(raw)
+        except Exception as exc:  # noqa: BLE001 — one bad row must not kill the read path
+            _log.warning("Incident %s has an invalid classification: %s", inc.get("id"), exc)
+            cls = None
+    data["classification"] = cls
+    return IncidentResponse(**data)
 
 
 # ── Clean read endpoints ──────────────────────────────────────────────
@@ -290,14 +311,14 @@ def get_one(incident_id: str):
 #                 no subsystem rollup, no per-member incident dumps.
 
 
-@app.get("/all-incidents")
+@app.get("/all-incidents", response_model=IncidentListResponse)
 def all_incidents(status: str | None = Query(None, description="Filter by status (e.g. 'active', 'resolved')")):
     """Every incident as stored (classification included). Minimal wrapper
     over the store — handy for exports and integrations that want the raw
     list without cluster/report structure."""
     _log.info("GET /all-incidents — status=%s", status)
     incs = list_incidents(status)
-    return {"total": len(incs), "incidents": incs}
+    return {"total": len(incs), "incidents": [_to_incident_response(i) for i in incs]}
 
 
 @app.get("/clusters")
