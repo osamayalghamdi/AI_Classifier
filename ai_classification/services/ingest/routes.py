@@ -16,6 +16,7 @@ from ai_classification.services.cluster.persistent import build_clusters, sweep_
 from ai_classification.services.ingest.import_service import import_incidents_from_file, import_incidents_from_body
 from ai_classification.services.review.proposal_routes import router as proposal_router
 from ai_classification.services.review.cluster_proposal_routes import router as cluster_proposal_router
+from ai_classification.services.review.taxonomy_gaps_routes import router as taxonomy_gaps_router
 
 _log = logging.getLogger(__name__)
 
@@ -68,6 +69,8 @@ async def _http_error_handler(_request, exc: _HTTPException):
 app.include_router(proposal_router)
 # Cluster-proposal review API (v2 persistent clustering — human gate)
 app.include_router(cluster_proposal_router)
+# Taxonomy gaps review API (classifier v3 OFFERING-GAP surface)
+app.include_router(taxonomy_gaps_router)
 from ai_classification.services.ingest.integration_routes import router as integration_router, ready_router
 app.include_router(integration_router)
 app.include_router(ready_router)
@@ -234,6 +237,7 @@ def classify_incident(req: ClassifyRequest):
         escalation_info=req.escalation_info,
         completion_code=req.completion_code,
         source_ticket_id=req.source_ticket_id,
+        affected_system=req.affected_system,
     )
 
 

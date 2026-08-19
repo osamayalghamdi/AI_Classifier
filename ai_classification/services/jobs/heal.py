@@ -45,12 +45,18 @@ def reclassify_fallback_incidents(limit: int | None = None) -> dict:
                          row["id"][:8], exc)
             break  # LLM down → stop the tick, don't hammer the endpoint
         reasoning = cls.reasoning or ""
-        if cls.confidence == "low" and reasoning.startswith("Classification failed after"):
+        # v3 honest failure: classification_status='failed' (with the marker
+        # kept in reasoning); legacy rows: low confidence + marker only.
+        if cls.classification_status == "failed" or (
+            cls.confidence == "low" and reasoning.startswith("Classification failed after")
+        ):
             still += 1
             continue
         store.reclassify_incident(
             row["id"], row["title"], row["description"],
             row.get("extracted_text", ""), cls,
+            ticket_kind=cls.ticket_kind.value if hasattr(cls.ticket_kind, "value") else cls.ticket_kind,
+            classification_status=cls.classification_status,
         )
         healed += 1
         _log.info("Heal: reclassified %s — %s / %s (%s)",

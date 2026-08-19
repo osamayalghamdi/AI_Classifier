@@ -53,6 +53,12 @@ for svc in sorted(values):
         continue
     system, svc_key = matched
     offering = svc[len(svc_key) + 1:]
+    if offering == "OFFERING-GAP":
+        # Literal v3 sentinel: "Key.OFFERING-GAP" means the classifier
+        # abstained (no listed offering fit; gap recorded in taxonomy_gaps).
+        # A valid service-key prefix + the literal sentinel is legitimate.
+        print(f"{svc:<80} {'OK-gap':<12} literal OFFERING-GAP sentinel (abstention)")
+        continue
     valid = valid_offerings[(system, svc_key)]
     if offering in valid:
         print(f"{svc:<80} {'OK-offering':<12}")

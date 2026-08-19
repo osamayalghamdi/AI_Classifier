@@ -3,24 +3,42 @@
 Plus classify-and-persist orchestration: calls the classifier, checks for
 duplicates by ticket ID (not text), saves the result.
 
-Pipeline position: 20_classify — classification + persistence orchestration."""
+Pipeline position: 20_classify — classification + persistence orchestration.
 
+Classifier v3 (PROMPT_VERSION 2026-08-v3): stage-0 triage routes every
+ticket by kind — incident/service_request get the full cascade
+(system → service → offering) plus a stage-4 verification audit; every other
+kind (administrative, inquiry, feature_request, test, content_thin) is
+classified for system+service only, with incident fields null and no
+verification. Stage 3 may abstain (NONE_OF_THE_ABOVE → ".OFFERING-GAP"
+sentinel + taxonomy_gap row) and never fakes an offering pick on failure.
+Every LLM decision is recorded to classification_log; genuine LLM failure
+marks classification_status="failed" with the E5 reasoning marker intact.
+"""
+
+import inspect
 import json
 import logging
 import re
 
+from collections import Counter
 from datetime import datetime, timezone
 
 from pydantic import TypeAdapter
 
 from ai_classification.shared.config import settings
-from ai_classification.domain.models import ClassificationResult, SimilarOpenIncident
+from ai_classification.domain.models import (
+    ClassificationResult,
+    SimilarOpenIncident,
+    OFFERING_GAP_SENTINEL,
+)
 from ai_classification.domain.taxonomy import (
     AffectedSystem,
     IncidentType,
     Severity,
     Urgency,
     Category,
+    TicketKind,
     SERVICES_BY_SYSTEM,
     flatten_services,
 )
@@ -210,6 +228,140 @@ def _build_user_prompt(title: str, description: str) -> str:
     return json.dumps({"title": title, "description": description}, ensure_ascii=False)
 
 
+# ── Stage-0 triage ────────────────────────────────────────────────────
+# One LLM call per ticket, always first. Decides the ticket KIND; only
+# incident/service_request proceed through the full cascade + verification.
+
+# Real-ticket examples drawn from the live ai_incidents database (read-only
+# pull, 2026-08-19) — exact titles and faithful description excerpts.
+TRIAGE_EXAMPLES = [
+    {
+        "kind": "administrative",
+        "title": "إغلاق بلاغ",
+        "description": "الموضوع: طلب إغلاق البلاغ رقم (202620734484). نود إفادتكم بأنه بخصوص البلاغ رقم (202620734484) المسجل باسم الحاج/ بن راشد المري.",
+        "reason": "Closing an existing report — housekeeping, not a system problem.",
+    },
+    {
+        "kind": "test",
+        "title": "Final gate test",
+        "description": "verify ingest after restructure",
+        "reason": "Engineer verification ticket.",
+    },
+    {
+        "kind": "test",
+        "title": "Service restructure test",
+        "description": "verifying ingest after the move",
+        "reason": "Engineer verification ticket.",
+    },
+    {
+        "kind": "test",
+        "title": "Review test ticket",
+        "description": "testing E1-E9 end to end",
+        "reason": "Engineer verification ticket.",
+    },
+    {
+        "kind": "content_thin",
+        "title": "x",
+        "description": "y",
+        "reason": "No meaningful content — placeholder text only.",
+    },
+    {
+        "kind": "feature_request",
+        "title": "مقترح إضافة مؤشر أداء للوكلاء الخارجيين ضمن شاشة المؤشرات التشغيلية",
+        "description": "نقترح إضافة مؤشر أداء خاص بالوكلاء الخارجيين ضمن شاشة المؤشرات التشغيلية في منصة الشركة السعودية، بما يتيح لشركات العمرة متابعة أداء الوكلاء بشكل دوري.",
+        "reason": "Proposes a new KPI to an existing dashboard — an enhancement.",
+    },
+    {
+        "kind": "incident",
+        "title": "Rawdah permit fails on date selection",
+        "description": "error on done button",
+        "reason": "A broken flow — the permit cannot be issued.",
+    },
+    {
+        "kind": "incident",
+        "title": "ERROR (10036015) IN ISSUING RAWDAH PERMITS",
+        "description": "PLEASE FIND ENCLOSED SCREENSHOT OF ERROR WHILE SAVING PILGRIMS IN RAWDAH PERMIT. IT IS SHOWING ERROR NUMBER 10036015.",
+        "reason": "An error blocks permit issuance — something is broken.",
+    },
+]
+
+
+def _build_triage_system_prompt() -> str:
+    examples = []
+    for ex in TRIAGE_EXAMPLES:
+        inp = json.dumps({"title": ex["title"], "description": ex["description"]}, ensure_ascii=False)
+        examples.append(f"Input:\n{inp}\nKind: \"{ex['kind']}\" — {ex['reason']}")
+    examples_block = "\n\n".join(examples)
+    return f"""You triage IT support tickets into exactly one of 7 kinds. Return ONLY valid JSON: {{"kind": "...", "reason": "one sentence"}}.
+
+## Kinds
+- "incident": something is BROKEN — a system, service, or feature is failing, erroring, unavailable, or degrading. The ticket reports a problem happening NOW.
+- "service_request": the ticket asks for something to be provisioned or changed (access, a new user, a modification) and the system is NOT broken. If a system failure is BLOCKING the request, choose "incident" instead.
+- "administrative": housekeeping — closing an existing report, approvals, user administration, non-technical follow-up.
+- "inquiry": a question about a service, process, or status. No failure, no action beyond an answer.
+- "feature_request": proposes a NEW feature or enhancement to an existing system.
+- "test": verification/testing of the system or pipeline — created by engineers to validate behavior, not a real user problem.
+- "content_thin": the ticket has no meaningful content — placeholder titles/descriptions, gibberish, or near-empty text.
+
+## Examples (drawn from real tickets)
+{examples_block}
+
+## Rules
+- If the ticket describes anything broken, choose "incident" even if it also asks for something.
+- Respond with JSON only: {{"kind": "<one of the 7 kinds>", "reason": "<one sentence>"}}.
+"""
+
+
+_TRIAGE_SYSTEM_PROMPT = _build_triage_system_prompt()
+
+_TICKET_KIND_VALUES = {k.value for k in TicketKind}
+
+
+def _parse_triage(raw: str) -> TicketKind | None:
+    """Lenient stage-0 parse — recover the kind even from truncated JSON."""
+    try:
+        data = json.loads(strip_json_fences(raw))
+        if isinstance(data, dict):
+            kind = data.get("kind")
+            if kind in _TICKET_KIND_VALUES:
+                return TicketKind(kind)
+    except Exception:
+        pass
+    # Truncation recovery: "kind" appears early in the JSON.
+    m = re.search(r'"kind"\s*:\s*"([^"]+)"', raw)
+    if m and m.group(1) in _TICKET_KIND_VALUES:
+        return TicketKind(m.group(1))
+    return None
+
+
+def _triage(title: str, description: str, *, incident_ref: str | None = None) -> TicketKind:
+    """Stage 0 — one LLM call deciding the ticket kind. Never raises.
+
+    LLM/parse failure → kind=incident (conservative), logged, and the
+    pipeline continues.
+    """
+    try:
+        raw = call_llm([
+            {"role": "system", "content": _TRIAGE_SYSTEM_PROMPT},
+            {"role": "user", "content": _build_user_prompt(title, description)},
+        ], max_tokens=600, temperature=0.0)
+    except Exception as e:
+        _log.warning("Triage LLM call failed: %s — defaulting to incident", e)
+        _log_classification(incident_ref, "triage", f"<triage call failed: {e}>",
+                            extra={"fallback": "incident"})
+        return TicketKind.incident
+    _log_classification(incident_ref, "triage", raw)
+    kind = _parse_triage(raw)
+    if kind is not None:
+        _log.debug("Triage kind=%s", kind.value)
+        return kind
+    _log.warning("Triage response unrecognized — defaulting to incident")
+    _log_classification(incident_ref, "triage", f"<unparseable triage response: {raw[:200]}>",
+                        extra={"fallback": "incident"})
+    return TicketKind.incident
+
+
+# ── Stage prompt scaffolding ──────────────────────────────────────────
 
 
 def _build_stage_system_prompt(stage_rules: str, allowed_values: str) -> str:
@@ -280,13 +432,37 @@ def _parse_stage_system(raw: str) -> ClassificationResult | None:
         return None
 
 
+def _parse_stage_offering(raw: str, key: str) -> tuple[ClassificationResult, str | None]:
+    """Parse a stage-3 response.
+
+    Extracts the optional ``suggested_offering`` key BEFORE the strict
+    ClassificationResult validation (it is not part of the result schema),
+    and rewrites a NONE_OF_THE_ABOVE pick to the OFFERING-GAP sentinel
+    (service="<key>.OFFERING-GAP", confidence="low"). Raises on invalid JSON
+    or an invented offering — the caller retries once.
+    """
+    data = json.loads(strip_json_fences(raw))
+    if not isinstance(data, dict):
+        raise ValueError("stage-3 response is not a JSON object")
+    suggested = data.pop("suggested_offering", None)
+    if not isinstance(suggested, str) or not suggested.strip():
+        suggested = None
+    else:
+        suggested = suggested.strip()
+    svc = str(data.get("service", ""))
+    if svc == "NONE_OF_THE_ABOVE" or svc == f"{key}.NONE_OF_THE_ABOVE" or svc.endswith(".NONE_OF_THE_ABOVE"):
+        data["service"] = f"{key}{OFFERING_GAP_SENTINEL}"
+        data["confidence"] = "low"
+    return ClassificationResult.model_validate(data), suggested
+
+
 # ── Cached prompt (built once at import time) ─────────────────────────
 
 _SYSTEM_PROMPT = _build_system_prompt()
 
 # Identity of _SYSTEM_PROMPT — recorded on persisted classifications by the
 # seams pipeline (provenance). Bump when the prompt content changes.
-PROMPT_VERSION = "2026-08-v2"  # v2: Spike definition + offering verbatim rules + stage-3 retry/repair
+PROMPT_VERSION = "2026-08-v3"  # v3: stage-0 triage + kind routing + OFFERING-GAP abstention + stage-4 verification
 def _stage_system_from_partial(raw: str) -> ClassificationResult | None:
     """Recover affected_system from a truncated stage-1 response.
 
@@ -363,27 +539,88 @@ def _build_retry_prompt(user_prompt: str, last_error: str) -> str:
     )
 
 
+# ── classification_log / taxonomy-gap store hooks ─────────────────────
+# Worker B implements the store methods in parallel (signatures fixed in the
+# v3 contract). getattr-style calls keep this worktree importable until the
+# merge; failures are logged, never raised.
+
+
+def _log_classification(
+    incident_ref: str | None,
+    stage: str,
+    raw: str,
+    extra: dict | None = None,
+) -> None:
+    """Record an LLM decision to classification_log (best-effort)."""
+    try:
+        fn = getattr(store, "log_classification", None)
+        if fn is None:
+            _log.debug("store.log_classification not available — skipping log (stage=%s)", stage)
+            return
+        fn(incident_ref, stage, PROMPT_VERSION, settings.llm_model, raw, extra=extra)
+    except Exception as e:
+        _log.warning("log_classification failed (stage=%s): %s", stage, e)
+
+
+def _record_taxonomy_gap(
+    service: str,
+    suggested_offering: str,
+    incident_ref: str | None,
+) -> None:
+    """Record a taxonomy-gap row for a NONE_OF_THE_ABOVE abstention (best-effort)."""
+    try:
+        fn = getattr(store, "record_taxonomy_gap", None)
+        if fn is None:
+            _log.debug("store.record_taxonomy_gap not available — skipping gap record")
+            return
+        fn(service=service, suggested_offering=suggested_offering, incident_ref=incident_ref)
+    except Exception as e:
+        _log.warning("record_taxonomy_gap failed: %s", e)
+
+
 # ── Public API ────────────────────────────────────────────────────────
 
 
 # Public API: classify an incident, retry once on failure, fallback to low-confidence
-def classify(title: str, description: str) -> ClassificationResult:
-    """Classify an incident. Always returns — falls back to low-confidence on LLM failure."""
+def classify(title: str, description: str, *, incident_ref: str | None = None,
+             affected_system: str | None = None) -> ClassificationResult:
+    """Classify an incident. Always returns — falls back to low-confidence on LLM failure.
+
+    incident_ref: stable ticket id recorded on every classification_log entry.
+    Direct callers without one get "anon-<content-hash-prefix>".
+    affected_system: supplied by the ticketing system (when present) — it is
+    validated and PINNED, skipping stage-1 system resolution entirely.
+    """
     _log.info("Classifying — title='%s'", title[:60])
+    ref = incident_ref or f"anon-{content_hash(title, description)[:8]}"
 
     # CASCADE_CLASSIFICATION gate (default TRUE). The Settings field is added
     # by the config commit; getattr keeps this worktree importable until then.
     if getattr(settings, "cascade_classification", True):
-        return _classify_cascade(title, description)
+        return _classify_v3(title, description, incident_ref=ref, affected_system=affected_system)
 
+    return _classify_single_shot(title, description, incident_ref=ref)
+
+
+def _classify_single_shot(title: str, description: str, *, incident_ref: str | None = None) -> ClassificationResult:
+    """Legacy single-shot path (CASCADE_CLASSIFICATION=false).
+
+    Byte-identical to the pre-cascade contract except: the canonical_statement
+    (not the signature) is normalized, every LLM decision is logged, and the
+    fallback marks classification_status="failed" with incident fields null
+    (the "Classification failed after 2 attempts" marker is unchanged — E5,
+    heal, and recovery depend on it).
+    """
     user_prompt = _build_user_prompt(title, description)
 
     try:
-        result = _parse_and_validate(call_llm([
+        raw = call_llm([
             {"role": "system", "content": _SYSTEM_PROMPT},
             {"role": "user", "content": user_prompt},
-        ], max_tokens=600, temperature=0.0))
-        result.signature = _normalize_canonical(result.signature)
+        ], max_tokens=600, temperature=0.0)
+        _log_classification(incident_ref, "stage1", raw, extra={"path": "single-shot", "attempt": 1})
+        result = _parse_and_validate(raw)
+        result.canonical_statement = _normalize_canonical(result.canonical_statement)
         _log.info("Classification succeeded — system=%s, severity=%s, confidence=%s",
                   result.affected_system, result.severity, result.confidence)
         return result
@@ -392,11 +629,13 @@ def classify(title: str, description: str) -> ClassificationResult:
         _log.warning("First classification attempt failed: %s", last_error)
 
     try:
-        result = _parse_and_validate(call_llm([
+        raw = call_llm([
             {"role": "system", "content": _SYSTEM_PROMPT},
             {"role": "user", "content": _build_retry_prompt(user_prompt, last_error)},
-        ], max_tokens=600, temperature=0.0))
-        result.signature = _normalize_canonical(result.signature)
+        ], max_tokens=600, temperature=0.0)
+        _log_classification(incident_ref, "stage1", raw, extra={"path": "single-shot", "attempt": 2})
+        result = _parse_and_validate(raw)
+        result.canonical_statement = _normalize_canonical(result.canonical_statement)
         _log.info("Classification succeeded on retry — system=%s, severity=%s",
                   result.affected_system, result.severity)
         return result
@@ -408,14 +647,15 @@ def classify(title: str, description: str) -> ClassificationResult:
     return ClassificationResult(
         affected_system=AffectedSystem.other,
         service="General / Unspecified",
-        incident_type=IncidentType.degradation,
-        severity=Severity.minor,
-        urgency=Urgency.low,
+        incident_type=None,
+        severity=None,
+        urgency=None,
         category=Category.other,
         confidence="low",
         signature="Generic/Unknown",
         reasoning=f"Classification failed after 2 attempts. Last error: {last_error}",
         canonical_statement=f"Incident reported: {title[:120]}",
+        classification_status="failed",
     )
 
 
@@ -440,19 +680,26 @@ _SYSTEM_ALIASES = {
 # rebuilt in this path.
 
 
-def _cascade_fallback(title: str, err: str) -> ClassificationResult:
-    """Generic low-confidence fallback — same shape as the legacy fallback."""
+def _cascade_fallback(title: str, err: str, kind: TicketKind = TicketKind.incident) -> ClassificationResult:
+    """Generic low-confidence fallback — same shape as the legacy fallback.
+
+    Honest failure (v3): incident fields are null and classification_status is
+    "failed"; the reasoning marker "Classification failed after 2 attempts" is
+    kept exactly (E5 — integration worker, heal, and recovery depend on it).
+    """
     return ClassificationResult(
         affected_system=AffectedSystem.other,
         service="General / Unspecified",
-        incident_type=IncidentType.degradation,
-        severity=Severity.minor,
-        urgency=Urgency.low,
+        incident_type=None,
+        severity=None,
+        urgency=None,
         category=Category.other,
         confidence="low",
         signature="Generic/Unknown",
         reasoning=f"Classification failed after 2 attempts. Last error: {err}",
         canonical_statement=f"Incident reported: {title[:120]}",
+        ticket_kind=kind,
+        classification_status="failed",
     )
 
 
@@ -501,7 +748,15 @@ def _resolve_system_deterministic(title: str, description: str) -> AffectedSyste
     return None
 
 
-def _stage_system_llm(title: str, description: str) -> ClassificationResult | None:
+def _stage_system_llm(
+    title: str,
+    description: str,
+    *,
+    incident_ref: str | None = None,
+    temperature: float = 0.0,
+    log_stage: str = "stage1",
+    log_extra: dict | None = None,
+) -> ClassificationResult | None:
     """Stage 1 LLM fallback — option list is ONLY the 4 AffectedSystem values.
 
     Returns None on any LLM/parse failure (the caller returns the generic
@@ -524,14 +779,25 @@ def _stage_system_llm(title: str, description: str) -> ClassificationResult | No
         raw = call_llm([
             {"role": "system", "content": _build_stage_system_prompt(rules, allowed)},
             {"role": "user", "content": _build_user_prompt(title, description)},
-        ], max_tokens=600, temperature=0.0)
+        ], max_tokens=600, temperature=temperature)
     except Exception as e:
         _log.warning("Cascade stage 1/3 (system) LLM call failed: %s", e)
+        _log_classification(incident_ref, log_stage, f"<stage call failed: {e}>", extra=log_extra)
         return None
+    _log_classification(incident_ref, log_stage, raw, extra=log_extra)
     return _parse_stage_system(raw)
 
 
-def _stage_service_llm(title: str, description: str, system: AffectedSystem) -> ClassificationResult | None:
+def _stage_service_llm(
+    title: str,
+    description: str,
+    system: AffectedSystem,
+    *,
+    incident_ref: str | None = None,
+    temperature: float = 0.0,
+    log_stage: str = "stage2",
+    log_extra: dict | None = None,
+) -> ClassificationResult | None:
     """Stage 2 — option list is ONLY the resolved system's services.
 
     Returns None on any LLM/parse failure.
@@ -549,34 +815,59 @@ def _stage_service_llm(title: str, description: str, system: AffectedSystem) -> 
     )
     _log.debug("Cascade stage 2/3 (service) — system='%s', %d options", system.value, len(services))
     try:
-        return _parse_and_validate(call_llm([
+        raw = call_llm([
             {"role": "system", "content": _build_stage_system_prompt(rules, allowed)},
             {"role": "user", "content": _build_user_prompt(title, description)},
-        ], max_tokens=600, temperature=0.0))
+        ], max_tokens=600, temperature=temperature)
+    except Exception as e:
+        _log.warning("Cascade stage 2/3 (service) failed for system '%s': %s", system.value, e)
+        _log_classification(incident_ref, log_stage, f"<stage call failed: {e}>", extra=log_extra)
+        return None
+    _log_classification(incident_ref, log_stage, raw, extra=log_extra)
+    try:
+        return _parse_and_validate(raw)
     except Exception as e:
         _log.warning("Cascade stage 2/3 (service) failed for system '%s': %s", system.value, e)
         return None
 
 
-def _stage_offering_llm(title: str, description: str, result: ClassificationResult) -> ClassificationResult | None:
+def _stage_offering_llm(
+    title: str,
+    description: str,
+    result: ClassificationResult,
+    *,
+    service_key: str | None = None,
+    incident_ref: str | None = None,
+    temperature: float = 0.0,
+    log_stage: str = "stage3",
+    log_extra: dict | None = None,
+) -> tuple[ClassificationResult | None, str | None]:
     """Stage 3 — option list is ONLY the chosen service's offering list.
 
     Empty or single-offering lists SKIP the LLM call (deterministic):
     empty → bare service name, single → "Service.Offering".
+    The option list includes NONE_OF_THE_ABOVE: picking it stores the
+    OFFERING-GAP sentinel (service="<key>.OFFERING-GAP", confidence="low")
+    and records a taxonomy gap with the optional suggested_offering.
     On LLM/parse failure (incl. an invented offering rejected by the
     taxonomy validator): retries ONCE with the validation error, then
-    repairs deterministically to the service's first valid offering with
-    confidence "low" — never nukes to Generic/Unknown. May raise only if
-    the service cannot be resolved to an offering list (the caller
-    degrades to fallback).
+    degrades honestly to the BARE service key with confidence "low" — never
+    a deterministic fake offering pick. May raise only if the service cannot
+    be resolved to an offering list (the caller degrades to fallback).
+
+    Returns (result, suggested_offering) — suggested_offering is the
+    optional extra JSON key carried by NONE_OF_THE_ABOVE abstentions.
     """
     system = result.affected_system
     services = SERVICES_BY_SYSTEM.get(system, {})
     # Defensive: stage 2 may have returned a dot-path, or the validator may
     # have auto-corrected the system — resolve the bare service key.
-    key = result.service if result.service in services else next(
-        (k for k in services if result.service.startswith(k + ".")), None
-    )
+    if service_key is not None:
+        key = service_key
+    else:
+        key = result.service if result.service in services else next(
+            (k for k in services if result.service.startswith(k + ".")), None
+        )
     if key is None:
         raise ValueError(
             f"service '{result.service}' not found in system '{system.value}'"
@@ -586,95 +877,550 @@ def _stage_offering_llm(title: str, description: str, result: ClassificationResu
     if not offerings:
         _log.debug("Cascade stage 3/3 (offering) skipped — 0 offerings for '%s'", key)
         result.service = key
-        return result
+        return result, None
     if len(offerings) == 1:
         _log.debug("Cascade stage 3/3 (offering) skipped — 1 offering for '%s'", key)
         result.service = f"{key}.{offerings[0]}"
-        return result
+        return result, None
 
     options = "\n".join(f"  - {o}" for o in offerings)
     rules = (
-        f"affected_system is FIXED to '{system.value}'. service is FIXED to '{key}'.\\n"
-        "- Pick the offering that best matches the ticket.\\n"
-        "- The offering MUST be one of the listed options EXACTLY as written — copy it verbatim.\\n"
-        "- NEVER invent a new offering, NEVER rephrase/shorten/translate one, NEVER use the service name as the offering.\\n"
-        "- 'Error Spikes' is ONLY for tickets that explicitly report a sudden increase in errors/alerts/spikes. If the ticket mentions no spike of errors, do NOT pick it — pick the closest other option or set confidence low.\\n"
+        f"affected_system is FIXED to '{system.value}'. service is FIXED to '{key}'.\n"
+        "- Pick the offering that best matches the ticket.\n"
+        "- The offering MUST be one of the listed options EXACTLY as written — copy it verbatim.\n"
+        "- NEVER invent a new offering, NEVER rephrase/shorten/translate one, NEVER use the service name as the offering.\n"
+        "- 'Error Spikes' is ONLY for tickets that explicitly report a sudden increase in errors/alerts/spikes. If the ticket mentions no spike of errors, do NOT pick it — pick the closest other option or set confidence low.\n"
+        "- NONE_OF_THE_ABOVE — use when the ticket's problem genuinely matches no listed offering. If you pick this, also return \"suggested_offering\": a short name for the missing offering.\n"
         f"- Set the service field to '{key}.<offering>' — the service name, a dot, then the chosen offering."
     )
     allowed = (
-        f"service (pick one — ONLY these {len(offerings)} offerings, respond as '{key}.<offering>'):\n{options}"
+        f"service (pick one — ONLY these {len(offerings)} offerings, respond as '{key}.<offering>'):\n{options}\n"
+        f"  - NONE_OF_THE_ABOVE"
     )
     _log.debug("Cascade stage 3/3 (offering) — service='%s', %d options", key, len(offerings))
     user_prompt = _build_user_prompt(title, description)
-    try:
-        return _parse_and_validate(call_llm([
-            {"role": "system", "content": _build_stage_system_prompt(rules, allowed)},
-            {"role": "user", "content": user_prompt},
-        ], max_tokens=600, temperature=0.0))
-    except Exception as e:
-        last_error = str(e)
-        _log.warning("Cascade stage 3/3 (offering) failed for service '%s': %s", key, last_error)
+    extra = dict(log_extra or {})
+    last_error = ""
+    for attempt in (1, 2):
+        try:
+            raw = call_llm([
+                {"role": "system", "content": _build_stage_system_prompt(rules, allowed)},
+                {"role": "user", "content": user_prompt if attempt == 1 else _build_retry_prompt(user_prompt, last_error)},
+            ], max_tokens=600, temperature=temperature)
+        except Exception as e:
+            last_error = str(e)
+            _log.warning("Cascade stage 3/3 (offering) LLM call failed for service '%s': %s", key, last_error)
+            _log_classification(incident_ref, log_stage, f"<stage call failed: {last_error}>",
+                                extra={**extra, "attempt": attempt})
+            continue
+        _log_classification(incident_ref, log_stage, raw, extra={**extra, "attempt": attempt})
+        try:
+            parsed, suggested = _parse_stage_offering(raw, key)
+        except Exception as e:
+            last_error = str(e)
+            _log.warning("Cascade stage 3/3 (offering) invalid for service '%s': %s", key, last_error)
+            continue
+        if parsed.service.endswith(OFFERING_GAP_SENTINEL):
+            parsed.confidence = "low"
+            _record_taxonomy_gap(key, suggested or "(unspecified)", incident_ref)
+            _log.info(
+                "Cascade stage 3/3 (offering) — NONE_OF_THE_ABOVE for '%s'; stored OFFERING-GAP sentinel",
+                key,
+            )
+        return parsed, suggested
 
-    # Retry once with the validation error — the LLM usually fixes an invented
-    # offering when told exactly which values are allowed.
-    try:
-        return _parse_and_validate(call_llm([
-            {"role": "system", "content": _build_stage_system_prompt(rules, allowed)},
-            {"role": "user", "content": _build_retry_prompt(user_prompt, last_error)},
-        ], max_tokens=600, temperature=0.0))
-    except Exception as e:
-        _log.warning("Cascade stage 3/3 (offering) retry failed for service '%s': %s", key, e)
-
-    # Deterministic repair: attach the service's FIRST valid offering so the
-    # stored value is a REAL taxonomy value and the ticket stays in the
-    # service's pool (offering_of = service name). Confidence drops to low —
-    # this is a fallback, not a confident pick. Never nukes to Generic/Unknown.
-    result.service = f"{key}.{offerings[0]}"
+    # Both attempts failed — honest degradation to the BARE service key,
+    # never a deterministic fake offering pick.
+    _log.warning(
+        "Cascade stage 3/3 (offering) retry failed for service '%s' — storing bare service key",
+        key,
+    )
+    result.service = key
     result.confidence = "low"
     result.reasoning = (result.reasoning or "") + (
-        " Offering selection failed after retry; repaired to first valid offering."
+        " offering selection failed after retry; stored at service level."
     )
-    return result
+    return result, None
 
 
-def _classify_cascade(title: str, description: str) -> ClassificationResult:
+def _run_cascade(
+    title: str,
+    description: str,
+    *,
+    kind: TicketKind = TicketKind.incident,
+    incident_ref: str | None = None,
+    temperature: float = 0.0,
+    log_stage: str | None = None,
+    log_extra: dict | None = None,
+    pinned_system: AffectedSystem | None = None,
+) -> ClassificationResult:
     """Coarse-to-fine cascade: system → service → offering. Never raises.
 
     LLM calls per ticket (guaranteed by construction):
-      - deterministic system hit: 2 (service + offering), 1 when the offering
-        stage is skipped (empty/single offering list);
+      - pinned system (payload) / deterministic system hit: 2 (service +
+        offering), 1 when the offering stage is skipped (empty/single
+        offering list);
       - LLM system fallback:      3 (system + service + offering), 2 when the
         offering stage is skipped.
+    log_stage overrides the per-call classification_log stage label (e.g.
+    "self-consistency" for consistency re-runs); the natural cascade stage is
+    carried in log_extra["cascade_stage"].
     """
     try:
-        # ── Stage 1 — system resolution (deterministic first, 0 LLM calls) ──
-        system = _resolve_system_deterministic(title, description)
+        # ── Stage 1 — system resolution (pinned > deterministic > LLM) ──
+        system = pinned_system
         if system is not None:
-            _log.debug("Cascade stage 1/3 (system) deterministic — %s", system.value)
+            _log.debug("Cascade stage 1/3 (system) pinned from payload — %s", system.value)
         else:
-            result = _stage_system_llm(title, description)
-            if result is None:
-                _log.warning("Cascade stage 1/3 (system) failed — generic fallback")
-                return _cascade_fallback(title, "system resolution failed")
-            system = result.affected_system
+            system = _resolve_system_deterministic(title, description)
+            if system is not None:
+                _log.debug("Cascade stage 1/3 (system) deterministic — %s", system.value)
+            else:
+                result = _stage_system_llm(
+                    title, description,
+                    incident_ref=incident_ref, temperature=temperature,
+                    log_stage=log_stage or "stage1",
+                    log_extra={**(log_extra or {}), "cascade_stage": "stage1"},
+                )
+                if result is None:
+                    _log.warning("Cascade stage 1/3 (system) failed — generic fallback")
+                    return _cascade_fallback(title, "system resolution failed", kind=kind)
+                system = result.affected_system
 
         # ── Stage 2 — service selection (1 LLM call, short list) ──
-        result = _stage_service_llm(title, description, system)
+        result = _stage_service_llm(
+            title, description, system,
+            incident_ref=incident_ref, temperature=temperature,
+            log_stage=log_stage or "stage2",
+            log_extra={**(log_extra or {}), "cascade_stage": "stage2"},
+        )
         if result is None:
-            return _cascade_fallback(title, "service selection failed")
+            return _cascade_fallback(title, "service selection failed", kind=kind)
 
         # ── Stage 3 — offering selection (1 LLM call unless skipped) ──
-        result = _stage_offering_llm(title, description, result)
+        result, _suggested = _stage_offering_llm(
+            title, description, result,
+            incident_ref=incident_ref, temperature=temperature,
+            log_stage=log_stage or "stage3",
+            log_extra={**(log_extra or {}), "cascade_stage": "stage3"},
+        )
         if result is None:
-            return _cascade_fallback(title, "offering selection failed")
-
-        result.signature = _normalize_canonical(result.signature)
+            return _cascade_fallback(title, "offering selection failed", kind=kind)
+        result.ticket_kind = kind
+        if pinned_system is not None:
+            result.affected_system = pinned_system
+        result.canonical_statement = _normalize_canonical(result.canonical_statement)
         _log.info("Cascade classification succeeded — system=%s, service=%s, severity=%s, confidence=%s",
                   result.affected_system, result.service, result.severity, result.confidence)
         return result
     except Exception as e:
         _log.error("Cascade classification failed: %s", e)
-        return _cascade_fallback(title, str(e))
+        return _cascade_fallback(title, str(e), kind=kind)
+
+
+def _classify_routed(
+    title: str,
+    description: str,
+    kind: TicketKind,
+    *,
+    incident_ref: str | None = None,
+    pinned_system: AffectedSystem | None = None,
+) -> ClassificationResult:
+    """Non-incident kinds — system + service ONLY (stages 1-2).
+
+    Stage 3 (offering) is skipped entirely; the BARE service key is stored
+    (no dot-path); incident_type/severity/urgency are None; no verification
+    pass. category stays required — filled by the stage-2 LLM (best guess).
+    """
+    try:
+        # ── Stage 1 — system resolution (pinned > deterministic > LLM) ──
+        system = pinned_system
+        if system is not None:
+            _log.debug("Routed stage 1/2 (system) pinned from payload — %s", system.value)
+        else:
+            system = _resolve_system_deterministic(title, description)
+            if system is not None:
+                _log.debug("Routed stage 1/2 (system) deterministic — %s", system.value)
+            else:
+                result = _stage_system_llm(title, description, incident_ref=incident_ref)
+                if result is None:
+                    _log.warning("Routed stage 1/2 (system) failed — generic fallback")
+                    return _cascade_fallback(title, "system resolution failed", kind=kind)
+                system = result.affected_system
+
+        # ── Stage 2 — service selection (1 LLM call, short list) ──
+        result = _stage_service_llm(title, description, system, incident_ref=incident_ref)
+        if result is None:
+            return _cascade_fallback(title, "service selection failed", kind=kind)
+
+        # Routing contract: no incident fields, bare service key, no offering.
+        result.incident_type = None
+        result.severity = None
+        result.urgency = None
+        services = SERVICES_BY_SYSTEM.get(system, {})
+        key = result.service if result.service in services else next(
+            (k for k in services if result.service.startswith(k + ".")), None
+        )
+        if key is None:
+            _log.warning(
+                "Routed classification: service '%s' not in system '%s'",
+                result.service, system.value,
+            )
+            return _cascade_fallback(
+                title, f"service '{result.service}' not found in system '{system.value}'", kind=kind
+            )
+        result.service = key
+        result.ticket_kind = kind
+        result.canonical_statement = _normalize_canonical(result.canonical_statement)
+        _log.info("Routed classification (kind=%s) — system=%s, service=%s, confidence=%s",
+                  kind.value, result.affected_system, result.service, result.confidence)
+        return result
+    except Exception as e:
+        _log.error("Routed classification failed: %s", e)
+        return _cascade_fallback(title, str(e), kind=kind)
+
+
+def _resolve_pinned_system(affected_system: str | None) -> AffectedSystem | None:
+    """Validate a payload-supplied affected system (ticketing system sends it).
+
+    Valid → the system is PINNED and stage 1 (deterministic/LLM resolution)
+    is skipped. Invalid → logged and None (fall back to the normal
+    resolution). Never invents a system.
+    """
+    if not affected_system or not str(affected_system).strip():
+        return None
+    try:
+        system = AffectedSystem(str(affected_system).strip())
+    except (ValueError, TypeError):
+        _log.warning(
+            "Payload affected_system %r is not a known system — falling back to LLM resolution",
+            affected_system,
+        )
+        return None
+    _log.info("Affected system pinned from payload: %s", system.value)
+    return system
+
+
+def _classify_v3(
+    title: str,
+    description: str,
+    *,
+    incident_ref: str | None = None,
+    affected_system: str | None = None,
+) -> ClassificationResult:
+    """Classifier v3 pipeline: triage (stage 0) → cascade (stages 1-3) → verification (stage 4).
+
+    Routing: incident/service_request get the FULL cascade (severity/urgency/
+    incident_type filled) + verification; every other kind gets system+service
+    only, with incident fields null and no verification. Never raises.
+    affected_system (from the ticketing payload, when present) pins the
+    system — stage 1 resolution is skipped entirely.
+    """
+    pinned = _resolve_pinned_system(affected_system)
+    kind = _triage(title, description, incident_ref=incident_ref)
+    if kind not in (TicketKind.incident, TicketKind.service_request):
+        return _classify_routed(
+            title, description, kind, incident_ref=incident_ref, pinned_system=pinned
+        )
+
+    result = _run_cascade(
+        title, description, kind=kind, incident_ref=incident_ref, pinned_system=pinned
+    )
+    if result.classification_status == "failed":
+        return result  # honest failure — nothing to verify
+    result = _verify_classification(title, description, result, incident_ref=incident_ref)
+    if getattr(settings, "classify_self_consistency", False) and result.confidence == "low":
+        result = _self_consistency(title, description, result, incident_ref=incident_ref)
+    return result
+
+
+# ── Stage 4 verification ──────────────────────────────────────────────
+# One fresh LLM call after the cascade (incident/service_request kinds ONLY).
+# The auditor NEVER sees the cascade reasoning — only the ticket text and the
+# final verdict fields. Corrections go through the STRICT validator; invalid
+# ones are discarded + logged. Verifier failure never fails the ticket.
+
+_VERIFIABLE_FIELDS = ("affected_system", "service", "incident_type", "severity")
+
+
+def _bare_service_key(result: ClassificationResult) -> str | None:
+    """Resolve the BARE service key of a (possibly dot-path / OFFERING-GAP) value."""
+    services = SERVICES_BY_SYSTEM.get(result.affected_system, {})
+    svc = result.service
+    if svc in services:
+        return svc
+    for key in services:
+        if svc.startswith(key + "."):
+            return key
+    return None
+
+
+def _build_verification_prompt(title: str, description: str, result: ClassificationResult) -> str:
+    """Stage-4 auditor prompt — ticket text + final verdict fields only."""
+    key = _bare_service_key(result)
+    if key:
+        offering_options = "\n".join(
+            f"  - {key}.{o}"
+            for o in SERVICES_BY_SYSTEM.get(result.affected_system, {}).get(key, [])
+        )
+    else:
+        offering_options = f"  - {result.service}"
+    types = "\n".join(f"  - {t.value}" for t in IncidentType)
+    severities = "\n".join(f"  - {s.value}" for s in Severity)
+    return f"""A ticket was classified. Check the classification against the ticket text.
+
+Ticket:
+Title: {title}
+Description: {description}
+
+Classification:
+- affected_system: {result.affected_system.value}
+- service: {result.service}
+- incident_type: {result.incident_type.value if result.incident_type else "none"}
+- severity: {result.severity.value if result.severity else "none"}
+
+Check:
+1. Does the offering describe the ticket's actual problem (not just its general area)?
+2. Is incident_type the SYMPTOM (what happened), not the cause?
+3. Is severity proportionate?
+
+Return JSON: {{"verdict": "approve" | "correct", "corrections": {{field: new_value, ...}} | null, "reason": "one sentence"}}
+
+Corrections must use only these allowed taxonomy values:
+- service (offerings of the current service):
+{offering_options}
+  - NONE_OF_THE_ABOVE
+- incident_type:
+{types}
+- severity:
+{severities}
+"""
+
+
+def _verify_classification(
+    title: str,
+    description: str,
+    result: ClassificationResult,
+    *,
+    incident_ref: str | None = None,
+) -> ClassificationResult:
+    """Stage 4 — audit the final verdict with a fresh LLM call.
+
+    Verifier LLM/parse failure → keep the cascade result, log it, never fail
+    the ticket.
+    """
+    try:
+        raw = call_llm([
+            {"role": "system", "content": _build_verification_prompt(title, description, result)},
+            {"role": "user", "content": _build_user_prompt(title, description)},
+        ], max_tokens=600, temperature=0.0)
+    except Exception as e:
+        _log.warning("Verification LLM call failed: %s", e)
+        _log_classification(incident_ref, "verification", f"<verification call failed: {e}>",
+                            extra={"verdict": "error"})
+        return result
+    try:
+        data = json.loads(strip_json_fences(raw))
+        verdict = data.get("verdict", "approve")
+        corrections = data.get("corrections")
+        reason = data.get("reason", "")
+    except Exception as e:
+        _log.warning("Verification response unparseable: %s", e)
+        _log_classification(incident_ref, "verification", raw, extra={"verdict": "parse-error"})
+        return result
+    _log_classification(incident_ref, "verification", raw,
+                        extra={"verdict": verdict, "reason": reason})
+    _log.info("Verification verdict=%s corrections=%s reason=%s", verdict, corrections, reason)
+    if corrections:
+        result = _apply_verification_corrections(
+            title, description, result, corrections, incident_ref=incident_ref
+        )
+    return result
+
+
+def _apply_verification_corrections(
+    title: str,
+    description: str,
+    result: ClassificationResult,
+    corrections: dict,
+    *,
+    incident_ref: str | None = None,
+) -> ClassificationResult:
+    """Apply verifier corrections through the STRICT validator.
+
+    Invalid corrections are DISCARDED + logged; the original value is kept.
+    A valid service correction re-runs stage 3 scoped to the corrected
+    service (or applies the OFFERING-GAP sentinel for NONE_OF_THE_ABOVE).
+    """
+    current = result
+    for field, new_value in (corrections or {}).items():
+        if field not in _VERIFIABLE_FIELDS:
+            _log.warning("Verification: correction for non-verifiable field '%s' ignored", field)
+            continue
+        if field == "service":
+            current = _apply_service_correction(
+                title, description, current, new_value, incident_ref=incident_ref
+            )
+            continue
+        try:
+            data = current.model_dump()
+            data[field] = new_value
+            corrected = ClassificationResult.model_validate(data)
+        except Exception as e:
+            _log.warning(
+                "Verification: correction for '%s' rejected (%s) — keeping original",
+                field, e,
+            )
+            continue
+        _log.info("Verification: %s corrected to '%s'", field, new_value)
+        current = corrected
+    return current
+
+
+def _apply_service_correction(
+    title: str,
+    description: str,
+    result: ClassificationResult,
+    new_value: object,
+    *,
+    incident_ref: str | None = None,
+) -> ClassificationResult:
+    """Apply a service correction: strict-validate, then abstain or re-run stage 3."""
+    raw_svc = str(new_value).strip()
+
+    # Abstention: the auditor says no listed offering fits.
+    if raw_svc == "NONE_OF_THE_ABOVE" or raw_svc.endswith(".NONE_OF_THE_ABOVE"):
+        key = _bare_service_key(result)
+        if key is None:
+            _log.warning(
+                "Verification: service correction NONE_OF_THE_ABOVE has no resolvable service key — ignored"
+            )
+            return result
+        try:
+            data = result.model_dump()
+            data["service"] = f"{key}{OFFERING_GAP_SENTINEL}"
+            data["confidence"] = "low"
+            corrected = ClassificationResult.model_validate(data)
+        except Exception as e:
+            _log.warning("Verification: service correction NONE_OF_THE_ABOVE rejected (%s)", e)
+            return result
+        _record_taxonomy_gap(key, "(unspecified)", incident_ref)
+        _log.info("Verification: service corrected to OFFERING-GAP for '%s'", key)
+        return corrected
+
+    # Normal path — strict validator gate first.
+    try:
+        data = result.model_dump()
+        data["service"] = raw_svc
+        corrected = ClassificationResult.model_validate(data)
+    except Exception as e:
+        _log.warning(
+            "Verification: service correction '%s' rejected (%s) — keeping original",
+            raw_svc, e,
+        )
+        return result
+
+    key = _bare_service_key(corrected)
+    if key is None:
+        _log.warning(
+            "Verification: service correction '%s' has no resolvable service key — keeping original",
+            raw_svc,
+        )
+        return result
+    if corrected.service == key:
+        # Bare service correction: re-run stage 3 scoped to the corrected service.
+        try:
+            rerun, _suggested = _stage_offering_llm(
+                title, description, corrected, service_key=key, incident_ref=incident_ref
+            )
+            if rerun is not None:
+                _log.info("Verification: service corrected to '%s' (stage-3 re-run)", rerun.service)
+                return rerun
+        except Exception as e:
+            _log.warning(
+                "Verification: stage-3 re-run for corrected service '%s' failed (%s)",
+                key, e,
+            )
+        corrected.service = key
+        corrected.confidence = "low"
+    _log.info("Verification: service corrected to '%s'", corrected.service)
+    return corrected
+
+
+# ── Self-consistency (OFF by default) ─────────────────────────────────
+# When enabled, tickets ending confidence=low are re-run 3× at temperature
+# 0.7 (full cascade) and majority-voted per field. No majority → the
+# low-confidence result is kept with needs_review=True.
+
+_SELF_CONSISTENCY_FIELDS = ("affected_system", "service", "incident_type", "severity", "urgency", "category")
+
+
+def _self_consistency(
+    title: str,
+    description: str,
+    result: ClassificationResult,
+    *,
+    incident_ref: str | None = None,
+) -> ClassificationResult:
+    """Re-run the full cascade 3× at temperature 0.7; majority vote per field."""
+    runs: list[ClassificationResult] = []
+    for i in range(3):
+        try:
+            r = _run_cascade(
+                title, description,
+                kind=result.ticket_kind,
+                incident_ref=incident_ref,
+                temperature=0.7,
+                log_stage="self-consistency",
+                log_extra={"run": i},
+            )
+            runs.append(r)
+        except Exception as e:
+            _log.warning("Self-consistency re-run %d failed: %s", i, e)
+    runs = [r for r in runs if r.classification_status == "ok"]
+    if len(runs) < 2:
+        _log.warning("Self-consistency: no usable re-runs — keeping result, needs_review=True")
+        result.needs_review = True
+        _log_classification(
+            incident_ref, "self-consistency",
+            json.dumps({"outcome": "no-usable-runs", "runs": len(runs)}, ensure_ascii=False),
+            extra={"outcome": "no-usable-runs"},
+        )
+        return result
+
+    votes = {
+        field: Counter(getattr(r, field) for r in runs)
+        for field in _SELF_CONSISTENCY_FIELDS
+    }
+    majority = {}
+    for field, counter in votes.items():
+        value, count = counter.most_common(1)[0]
+        if count >= 2:
+            majority[field] = value
+    _log_classification(
+        incident_ref, "self-consistency",
+        json.dumps({
+            "outcome": "majority" if majority else "no-majority",
+            "majority": {k: (v.value if hasattr(v, "value") else v) for k, v in majority.items()},
+            "runs": len(runs),
+        }, ensure_ascii=False),
+        extra={"outcome": "majority" if majority else "no-majority"},
+    )
+    if not majority:
+        _log.warning("Self-consistency: no field majority — keeping result, needs_review=True")
+        result.needs_review = True
+        return result
+    try:
+        data = result.model_dump()
+        for field, value in majority.items():
+            data[field] = value.value if hasattr(value, "value") else value
+        voted = ClassificationResult.model_validate(data)
+        _log.info("Self-consistency majority applied: %s", {f: data[f] for f in majority})
+        return voted
+    except Exception as e:
+        _log.warning("Self-consistency majority vote failed to validate: %s", e)
+        result.needs_review = True
+        return result
 
 
 # ── Content hash for analytics (not used for dedupe) ─────────────────────
@@ -710,6 +1456,7 @@ def classify_and_store(
     completion_code: str | None = None,
     source_ticket_id: str = "",
     precomputed: ClassificationResult | None = None,
+    affected_system: str | None = None,
 ) -> ClassifyResponse:
     _log.info("Classifying incident — title='%s', group='%s', priority=%s, ticket_id='%s'",
               title[:60], assign_group, priority, source_ticket_id)
@@ -780,7 +1527,13 @@ def classify_and_store(
                 ],
             )
 
-    result = precomputed if precomputed is not None else classify(title, description)
+    # ── v3: the incident id is generated BEFORE classifying so every
+    # classification_log entry (triage, stages, verification) carries it.
+    incident_id = store.generate_id()
+
+    result = precomputed if precomputed is not None else classify(
+        title, description, incident_ref=incident_id, affected_system=affected_system
+    )
 
     # ── Severity→priority mapping (only when the caller did not supply one) ──
     _priority_map = {"Critical": "critical", "Major": "high", "Minor": "medium", "Cosmetic": "low"}
@@ -792,8 +1545,6 @@ def classify_and_store(
 
     matches = store.find_similar(embed_text, extracted_text=extracted_text, classification=result)
 
-    incident_id = store.generate_id()
-
     _log.info("Classify result — id=%s, system=%s, service=%s, severity=%s, confidence=%s, dupes=%d",
               incident_id, result.affected_system, result.service,
               result.severity, result.confidence, len(matches))
@@ -802,8 +1553,8 @@ def classify_and_store(
         _log.info("Similar open incidents found — %d related incidents", len(matches))
         for m in matches:
             _log.debug("  Similar: %s — %.1f%% — %s", m.id, m.similarity * 100, m.title[:60])
-    store.save_incident(
-        incident_id, title, description, result, extracted_text,
+
+    _save_kwargs: dict = dict(
         documents=documents or [],
         assign_group=assign_group,
         assignee=assignee,
@@ -815,6 +1566,19 @@ def classify_and_store(
         completion_code=completion_code,
         content_hash=h,
         source_ticket_ids=[source_ticket_id] if source_ticket_id else [incident_id],
+    )
+    # v3: persist ticket_kind/classification_status to the dedicated columns
+    # (worker B's save_incident accepts them; fall back gracefully when this
+    # worktree snapshot predates that merge).
+    try:
+        _sig = inspect.signature(store.save_incident)
+    except Exception:
+        _sig = None
+    if _sig is not None and "ticket_kind" in _sig.parameters:
+        _save_kwargs["ticket_kind"] = result.ticket_kind.value
+        _save_kwargs["classification_status"] = result.classification_status
+    store.save_incident(
+        incident_id, title, description, result, extracted_text, **_save_kwargs
     )
 
     _log.info("Incident %s classified — system=%s, severity=%s, confidence=%s, dupes=%d",
@@ -866,6 +1630,7 @@ def classify_batch(incidents: list[dict]) -> ClassifyBatchResponse:
                 discussion_history=inc.get("discussion_history"),
                 escalation_info=inc.get("escalation_info"),
                 completion_code=inc.get("completion_code"),
+                affected_system=inc.get("affected_system"),
             )
             results.append(r)
         except Exception as e:

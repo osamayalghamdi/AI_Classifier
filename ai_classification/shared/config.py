@@ -42,6 +42,14 @@ class Settings:
         "CASCADE_CLASSIFICATION", "true"
     ).lower() in ("1", "true", "yes", "on")
 
+    # Classifier v3 self-consistency pass (DEFAULT OFF — measure before
+    # enabling): when true, tickets that end confidence=low are re-run 3× at
+    # temperature 0.7 and majority-voted per field; no majority → the
+    # low-confidence result is kept and flagged needs_review=true.
+    classify_self_consistency: bool = getenv(
+        "CLASSIFY_SELF_CONSISTENCY", "false"
+    ).lower() in ("1", "true", "yes", "on")
+
     # ── Intake field mapping ─────────────────────────────────────────────
     # Payload keys tried in order when mapping a raw ticket to title /
     # description. Comma-separated env vars; whitespace stripped; empties dropped.

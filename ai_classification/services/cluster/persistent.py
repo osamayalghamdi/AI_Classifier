@@ -49,9 +49,11 @@ from ai_classification.services.classify.llm import call_llm, strip_json_fences
 from ai_classification.services.match.suboffering import OFFERING_000, embed_pure, offering_of
 from ai_classification.services.cluster.grouping import (
     _class_field,
+    _CLUSTER_TICKET_KINDS,
     _dominant_labels,
     _extract_canonical_statement,
     _extract_severity,
+    _kind_of,
     _parse_classification,
     _subsystem_rollup,
     _worst_severity,
@@ -697,6 +699,12 @@ def assign_in_background(incident_id: str) -> None:
     delay the classify response (spec: Flow A lives in the ingest path's
     background task)."""
     try:
+        # v3 gate: only incident/service_request tickets are cluster input —
+        # administrative/inquiry/test/feature_request/content_thin must never
+        # join a problem cluster (they're classified for routing only).
+        inc = store.get_incident(incident_id)
+        if inc is None or _kind_of(inc) not in _CLUSTER_TICKET_KINDS:
+            return
         t = threading.Thread(target=assign_incident, args=(incident_id,),
                              name=f"flow-a-{incident_id[:8]}", daemon=True)
         t.start()

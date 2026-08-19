@@ -32,7 +32,11 @@ def recovery_candidates() -> list[dict]:
             continue  # exhausted — manual review owns it now
         cj = inc.get("classification_dict") or {}
         reason = cj.get("reasoning") or ""
-        if (not cj) or ("Classification failed" in reason) or ("failed after" in reason):
+        failed_status = (
+            inc.get("classification_status") == "failed"
+            or cj.get("classification_status") == "failed"
+        )
+        if (not cj) or failed_status or ("Classification failed" in reason) or ("failed after" in reason):
             out.append(inc)
     return out
 
@@ -61,7 +65,12 @@ def run_recovery(*, dry_run: bool = False) -> dict:
             stats["failed"] += 1
             stats["queued"] += 1
             continue
-        store.update_classification(inc["id"], cls.model_dump_json())
+        _kind = getattr(cls, "ticket_kind", "incident")
+        store.update_classification(
+            inc["id"], cls.model_dump_json(),
+            ticket_kind=getattr(_kind, "value", _kind),
+            classification_status=getattr(cls, "classification_status", "ok"),
+        )
         stats["recovered"] += 1
         _log.info("Recovery: recovered %s → service=%s", inc.get("id"),
                   (cls.service or "?")[:60])

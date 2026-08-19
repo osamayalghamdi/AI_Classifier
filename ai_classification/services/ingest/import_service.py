@@ -44,6 +44,9 @@ def _map_incident(inc: dict) -> dict | None:
         "assign_group": _first_non_empty(inc, ["AssignGroup", "assign_group"], default=""),
         "priority": _first_non_empty(inc, ["Priority", "priority"], default="medium"),
         "notes": _first_non_empty(inc, ["Notes", "notes"], default=""),
+        "affected_system": _first_non_empty(
+            inc, ["AffectedSystem", "affected_system", "System", "system"], default=""
+        ),
     }
 
 
