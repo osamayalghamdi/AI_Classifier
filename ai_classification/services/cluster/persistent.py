@@ -96,7 +96,7 @@ SWEEP_PROMPT = """Here are unassigned incident tickets. Group tickets that descr
 underlying problem. A group needs >= 2 tickets. Tickets that match nothing stay alone.
 
 Return JSON only:
-{{"groups": [{{"member_ids": [...], "name_ar": "<short Arabic title for the group, max 6 words>",
+{{"groups": [{{"member_ids": [...], "name_ar": "<short clear Arabic title for the group — max 9 words, uniform with other cluster names>",
 "description": "what this problem is, and what it is NOT"}}],
  "singletons": ["<ids that match no group>"]}}
 Never invent IDs. Every input ID appears exactly once across groups and singletons."""
@@ -121,23 +121,28 @@ omit an ID. Be precise: same feature + different failure = remove."""
 
 # Flow-D naming prompt (kept from the legacy engine — same behavior, the name
 # is now stored on the cluster row; no fingerprint cache for active clusters).
+# USER RULE (2026-08): names are SHORT, uniform, clear problem sentences —
+# max 9 words, prefer 3-6; never a long descriptive phrase.
 AR_NAME_PROMPT = """You are naming an incident cluster on a NOC shift dashboard.
 
 Here are the actual tickets in the cluster (title: description). Read them
-all and identify the ONE shared problem. Give the cluster a short, simple
-ARABIC title (max 6 words) that describes that problem the way an operator
-would say it — e.g. "فشل إصدار تصريح الروضة" (Rawdah permit issuance fails),
-not the system or service name.
+all and identify the ONE shared problem. Give the cluster a short, clear
+ARABIC sentence that describes that problem the way an operator would say
+it — e.g. "فشل إصدار تصريح الروضة" (Rawdah permit issuance fails), not the
+system or service name.
 
 Rules:
 - MUST be in Arabic script (العربية), NOT transliterated.
-- Short and simple — what is broken, not which system.
+- Short and clear — what is broken, not which system.
+- Maximum 9 words. All cluster names should be SIMILAR IN LENGTH (3-6
+  words) — uniform, not a long descriptive phrase.
 - Return ONLY the title — no quotes, no explanation, no English.
 
 Tickets:
 {tickets}"""
 
 _AR_NAME_MAX_TICKETS = 15
+_AR_NAME_MAX_WORDS = 9  # hard cap — user rule
 
 
 # ── Small helpers ─────────────────────────────────────────────────────────
@@ -543,11 +548,14 @@ def _arabic_cluster_name(member_incidents: list[dict]) -> str:
         )
         label = (raw or "").strip().strip('"').strip("'").strip()
         label = label.splitlines()[0].strip() if label else ""
-        if any("\u0600" <= ch <= "\u06FF" for ch in label) and len(label) <= 60:
+        # Guard (user rule): require Arabic script, short, and at most 9 words
+        # — a longer label is rejected and the fallback title is used.
+        if any("\u0600" <= ch <= "\u06FF" for ch in label) \
+                and len(label) <= 60 and len(label.split()) <= _AR_NAME_MAX_WORDS:
             name = label
         else:
-            _log.warning("Arabic title rejected (no Arabic script or too long): %r",
-                         label[:40])
+            _log.warning("Arabic title rejected (no Arabic script / too long / >%d words): %r",
+                         _AR_NAME_MAX_WORDS, label[:60])
     except Exception as exc:  # noqa: BLE001 — naming is best-effort
         _log.warning("Arabic title generation failed: %s", exc)
     return name
