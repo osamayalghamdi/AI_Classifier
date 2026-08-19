@@ -635,11 +635,16 @@ class IncidentStore:
     def reclassify_incident(
         self, incident_id: str, title: str, description: str,
         extracted_text: str, classification,
+        *,
+        ticket_kind: str | None = None,
+        classification_status: str | None = None,
     ) -> bool:
         """Update an incident's classification + embedding in place (heal path).
 
         Embedding is recomputed from the TICKET'S OWN TEXT — same rule as
-        save_incident (the embedding signal must stay the real ticket text)."""
+        save_incident (the embedding signal must stay the real ticket text).
+        ticket_kind/classification_status keep the v3 columns in sync with
+        the new classification (None = column untouched)."""
         if not self._ready or self._pool is None:
             return False
         embed_text = self._build_embedding_text(title, description, extracted_text)
@@ -647,12 +652,19 @@ class IncidentStore:
         conn = self._getconn()
         try:
             with conn.cursor() as cur:
+                set_clause = "classification_json = %s, embedding = %s"
+                params: list = [classification.model_dump_json(),
+                                embedding.tolist() if embedding is not None else None]
+                if ticket_kind is not None:
+                    set_clause += ", ticket_kind = %s"
+                    params.append(ticket_kind)
+                if classification_status is not None:
+                    set_clause += ", classification_status = %s"
+                    params.append(classification_status)
+                params.append(incident_id)
                 cur.execute(
-                    "UPDATE incidents SET classification_json = %s, embedding = %s "
-                    "WHERE id = %s",
-                    (classification.model_dump_json(),
-                     embedding.tolist() if embedding is not None else None,
-                     incident_id),
+                    f"UPDATE incidents SET {set_clause} WHERE id = %s",
+                    params,
                 )
             conn.commit()
             if cur.rowcount > 0:

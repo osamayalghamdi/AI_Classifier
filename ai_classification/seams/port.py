@@ -31,6 +31,9 @@ class Incident:
     created_at: datetime | None = None
     updated_at: datetime | None = None
     status: str = "active"
+    # Affected system supplied by the ticketing system (when available) —
+    # the classifier validates and pins it, skipping LLM system resolution.
+    affected_system: str = ""
 
 
 @dataclass

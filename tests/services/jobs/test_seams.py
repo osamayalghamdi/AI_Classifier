@@ -131,7 +131,7 @@ class TestPipelineResult:
         s = _make_seams_store(monkeypatch)
         before = len(s.list_incidents())
 
-        def _fake_classify(title, description):
+        def _fake_classify(title, description, *, incident_ref=None, affected_system=None):
             return _make_result(
                 canonical_statement=f"CS {title}",
                 signature=f"sig {title}",
@@ -155,7 +155,7 @@ class TestPipelineResult:
         s = _make_seams_store(monkeypatch)
         calls = {"n": 0}
 
-        def _fake_classify(title, description):
+        def _fake_classify(title, description, *, incident_ref=None, affected_system=None):
             calls["n"] += 1
             if calls["n"] > 1:
                 raise AssertionError("classify must NOT be called for seen content")
@@ -178,7 +178,7 @@ class TestIdempotency:
     def test_same_source_reference_twice_no_duplicate(self, monkeypatch):
         s = _make_seams_store(monkeypatch)
 
-        def _fake_classify(title, description):
+        def _fake_classify(title, description, *, incident_ref=None, affected_system=None):
             return _make_result(
                 canonical_statement=f"CS {title}",
                 signature=f"sig {title}",
@@ -208,7 +208,7 @@ class TestIdempotency:
         s = _make_seams_store(monkeypatch)
         inc = Incident(source_reference="EXT-DR", title="T", description="D")
         monkeypatch.setattr("ai_classification.services.classify.classifier.classify",
-                            lambda t, d: _make_result(canonical_statement="CS", signature="sg"))
+                            lambda t, d, *, incident_ref=None, affected_system=None: _make_result(canonical_statement="CS", signature="sg"))
         r = process_incident(inc)
         out = persist_result(r, dry_run=True)
         assert out["dry_run"] is True
@@ -222,7 +222,7 @@ class TestProvenance:
     def test_result_and_persisted_row_carry_model_and_prompt(self, monkeypatch):
         s = _make_seams_store(monkeypatch)
 
-        def _fake_classify(title, description):
+        def _fake_classify(title, description, *, incident_ref=None, affected_system=None):
             return _make_result(canonical_statement="CS", signature="sg")
 
         monkeypatch.setattr("ai_classification.services.classify.classifier.classify", _fake_classify)
@@ -250,7 +250,7 @@ class TestThinCallers:
         s.save_incident("loc0000000003", "M", "N", _make_result(),
                         source_ticket_ids=["EXT-M"])
         monkeypatch.setattr("ai_classification.services.classify.classifier.classify",
-                            lambda t, d: _make_result(canonical_statement="CS", signature="sg"))
+                            lambda t, d, *, incident_ref=None, affected_system=None: _make_result(canonical_statement="CS", signature="sg"))
         src = LocalFakeTicketSource(s)
         out = manual_process("EXT-M", src, persist=False)
         assert out["result"].source_reference == "EXT-M"

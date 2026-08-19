@@ -65,7 +65,11 @@ def run_recovery(*, dry_run: bool = False) -> dict:
             stats["failed"] += 1
             stats["queued"] += 1
             continue
-        store.update_classification(inc["id"], cls.model_dump_json())
+        store.update_classification(
+            inc["id"], cls.model_dump_json(),
+            ticket_kind=cls.ticket_kind.value if hasattr(cls.ticket_kind, "value") else cls.ticket_kind,
+            classification_status=cls.classification_status,
+        )
         stats["recovered"] += 1
         _log.info("Recovery: recovered %s → service=%s", inc.get("id"),
                   (cls.service or "?")[:60])

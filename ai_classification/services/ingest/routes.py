@@ -235,6 +235,7 @@ def classify_incident(req: ClassifyRequest):
         escalation_info=req.escalation_info,
         completion_code=req.completion_code,
         source_ticket_id=req.source_ticket_id,
+        affected_system=req.affected_system,
     )
 
 

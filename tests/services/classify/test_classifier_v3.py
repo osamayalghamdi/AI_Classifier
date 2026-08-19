@@ -324,6 +324,57 @@ class TestVerification:
         assert any(e["stage"] == "verification" for e in fake_store.logged)
 
 
+# ── Payload-supplied affected system (ticketing system sends it) ────────
+
+
+class TestPinnedSystem:
+    def test_pinned_system_skips_stage1_llm(self, fake_completion):
+        outputs, calls = fake_completion
+        # Ambiguous ticket (both 'haj' and 'umrah' aliases) — WITHOUT a pin
+        # this would need a stage-1 LLM call. Pinned → stage 1 skipped.
+        outputs.append(_triage_json())
+        outputs.append(_full_result_json(service=SVC))
+        outputs.append(_full_result_json(service=OFFERING))
+        outputs.append(_verify_json())
+        result = classifier_mod.classify(
+            "Hajj and umrah portal down",
+            "Both haj and umrah systems unreachable",
+            affected_system="Nusuk Masar Haj",
+        )
+        assert len(calls) == 4  # triage + stage2 + stage3 + verification — NO stage 1
+        assert result.affected_system == AffectedSystem.nusuk_masar_haj
+        assert result.service == OFFERING
+
+    def test_invalid_pinned_system_falls_back_to_llm(self, fake_completion):
+        outputs, calls = fake_completion
+        outputs.append(_triage_json())
+        outputs.append(_full_result_json(affected_system="Nusuk Masar Haj"))  # stage 1 LLM
+        outputs.append(_full_result_json(service=SVC))
+        outputs.append(_full_result_json(service=OFFERING))
+        outputs.append(_verify_json())
+        result = classifier_mod.classify(
+            "Hajj and umrah portal down",
+            "Both haj and umrah systems unreachable",
+            affected_system="Bogus System",
+        )
+        # invalid pin → normal pipeline (stage 1 LLM ran)
+        assert len(calls) == 5
+        assert result.affected_system == AffectedSystem.nusuk_masar_haj
+
+    def test_routed_kind_uses_pinned_system(self, fake_completion):
+        outputs, calls = fake_completion
+        outputs.append(_triage_json("administrative"))
+        outputs.append(_full_result_json(service=SVC))
+        result = classifier_mod.classify(
+            "Close ticket please",
+            "administrative housekeeping",
+            affected_system="Nusuk Masar Haj",
+        )
+        assert len(calls) == 2  # triage + stage2 only
+        assert result.affected_system == AffectedSystem.nusuk_masar_haj
+        assert result.service == SVC
+
+
 # ── Self-consistency (OFF by default) ──────────────────────────────────
 
 

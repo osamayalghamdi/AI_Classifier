@@ -22,15 +22,20 @@ from datetime import datetime, timezone
 _log = logging.getLogger(__name__)
 
 
-def _parse_args(argv: list[str]) -> tuple[bool, int | None]:
+def _parse_args(argv: list[str]) -> tuple[bool, int | None, int]:
     dry_run = "--dry-run" in argv
     limit = None
+    offset = 0
     for i, arg in enumerate(argv):
         if arg == "--limit" and i + 1 < len(argv):
             limit = int(argv[i + 1])
         elif arg.startswith("--limit="):
             limit = int(arg.split("=", 1)[1])
-    return dry_run, limit
+        elif arg == "--offset" and i + 1 < len(argv):
+            offset = int(argv[i + 1])
+        elif arg.startswith("--offset="):
+            offset = int(arg.split("=", 1)[1])
+    return dry_run, limit, offset
 
 
 def _kind_value(cls) -> str:
@@ -38,11 +43,13 @@ def _kind_value(cls) -> str:
     return cls.ticket_kind.value if hasattr(cls.ticket_kind, "value") else cls.ticket_kind
 
 
-def run_reclassify(*, dry_run: bool = False, limit: int | None = None) -> dict:
+def run_reclassify(*, dry_run: bool = False, limit: int | None = None, offset: int = 0) -> dict:
     from ai_classification.services.classify.classifier import classify
     from ai_classification.shared.store import store
 
     incidents = store.list_incidents()
+    if offset:
+        incidents = incidents[offset:]
     if limit is not None:
         incidents = incidents[:limit]
 
@@ -84,8 +91,8 @@ if __name__ == "__main__":
 
     from ai_classification.shared.store import store
 
-    dry_run, limit = _parse_args(sys.argv[1:])
+    dry_run, limit, offset = _parse_args(sys.argv[1:])
     store.setup()
-    stats = run_reclassify(dry_run=dry_run, limit=limit)
+    stats = run_reclassify(dry_run=dry_run, limit=limit, offset=offset)
     print(f"reclassify_v3: {stats}")
     print(f"finished at {datetime.now(timezone.utc).isoformat()}")
