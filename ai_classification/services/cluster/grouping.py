@@ -19,6 +19,23 @@ from collections import defaultdict
 
 _log = logging.getLogger(__name__)
 
+# ── v3 ticket-kind filter ──────────────────────────────────────────────
+# Only incident / service_request tickets feed the subsystem rollup and
+# cluster assignment. Everything else (administrative, inquiry,
+# feature_request, test, content_thin) is classified for routing only and
+# must never pollute rollups or clusters. The `ticket_kind` COLUMN wins
+# when present; fall back to the value inside classification_dict
+# (pre-column rows); absent entirely (legacy rows / test fixtures) →
+# treat as incident, the pre-v3 behavior.
+_CLUSTER_TICKET_KINDS = ("incident", "service_request")
+
+
+def _kind_of(inc: dict) -> str:
+    kind = inc.get("ticket_kind")
+    if not kind:
+        kind = (inc.get("classification_dict") or {}).get("ticket_kind")
+    return kind or "incident"
+
 
 # ── Subsystem rollup ──────────────────────────────────────────────────────
 
@@ -28,6 +45,8 @@ _log = logging.getLogger(__name__)
 def _subsystem_rollup(active_incidents: list[dict]) -> list[dict]:
     buckets: dict[tuple[str, str], list[dict]] = defaultdict(list)
     for inc in active_incidents:
+        if _kind_of(inc) not in _CLUSTER_TICKET_KINDS:
+            continue
         data = inc.get("classification_dict", {})
         system = data.get("affected_system") or "Unknown"
         service = data.get("service") or "Unknown"

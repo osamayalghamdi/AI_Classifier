@@ -55,7 +55,7 @@ def process_incident(incident: Incident) -> PipelineResult:
 
     # ── New content → classify (pure, read-only) ──
     try:
-        cls = classify(title, description)
+        cls = classify(title, description, affected_system=incident.affected_system or None)
     except Exception as exc:  # noqa: BLE001 — pipeline must return, not raise
         _log.error("Seams: classify failed for %s: %s", incident.source_reference, exc)
         return PipelineResult(
