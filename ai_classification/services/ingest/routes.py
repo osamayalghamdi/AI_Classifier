@@ -15,6 +15,7 @@ from ai_classification.shared.config import settings
 from ai_classification.services.cluster.grouping import build_clusters, invalidate_cache, request_rebuild
 from ai_classification.services.ingest.import_service import import_incidents_from_file, import_incidents_from_body
 from ai_classification.services.review.proposal_routes import router as proposal_router
+from ai_classification.services.review.taxonomy_gaps_routes import router as taxonomy_gaps_router
 
 _log = logging.getLogger(__name__)
 
@@ -65,6 +66,8 @@ async def _http_error_handler(_request, exc: _HTTPException):
 
 # Proposal review API (sub-offering engine, Phase 2)
 app.include_router(proposal_router)
+# Taxonomy gaps review API (classifier v3 OFFERING-GAP surface)
+app.include_router(taxonomy_gaps_router)
 from ai_classification.services.ingest.integration_routes import router as integration_router, ready_router
 app.include_router(integration_router)
 app.include_router(ready_router)

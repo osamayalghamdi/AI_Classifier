@@ -37,6 +37,14 @@ button:disabled{opacity:.45;cursor:default}
 .note input{flex:1;background:#0a0e13;border:1px solid var(--line);border-radius:8px;color:var(--ink);padding:6px 10px}
 .status-msg{margin-bottom:14px;font-size:13px}
 #empty{color:var(--faint);text-align:center;padding:40px;font-size:14px}
+.cols{display:grid;grid-template-columns:1fr 1fr;gap:20px;align-items:start}
+.col{min-width:0}
+.col-title{font-size:15px;font-weight:800;margin-bottom:12px}
+.gap{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px;margin-bottom:12px}
+.gap h3{font-size:14.5px;font-weight:800;margin-bottom:2px}
+.gap .offer{color:var(--faint);font-size:12px;margin-bottom:10px}
+.gap-empty{color:var(--faint);text-align:center;padding:24px;font-size:13px;border:1px dashed var(--line);border-radius:12px}
+@media (max-width:1100px){.cols{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
@@ -52,7 +60,16 @@ button:disabled{opacity:.45;cursor:default}
 </div>
 <div id="msg" class="status-msg"></div>
 <div id="queue"></div>
-<div id="list"></div>
+<div class="cols">
+  <div class="col">
+    <div id="list"></div>
+  </div>
+  <div class="col">
+    <h2 class="col-title">Taxonomy gaps</h2>
+    <div class="sub">OFFERING-GAP hits — the classifier found no taxonomy offering that fits. Extend the taxonomy to absorb them.</div>
+    <div id="gaps"></div>
+  </div>
+</div>
 <script>
 const API = location.hostname ? (location.port === "8085" ? "http://" + location.hostname + ":8000" : location.origin) : "http://localhost:8000";
 let TOK = localStorage.getItem("dash_token") || "";
@@ -69,6 +86,7 @@ async function load(){
   const list = document.getElementById("list");
   const msg = document.getElementById("msg");
   msg.textContent = "Loading…";
+  loadGaps();
   try {
     // Manual-review queue (Recovery job)
     const q = await api("/review-queue");
@@ -109,6 +127,24 @@ async function decide(id, decision){
     msg.textContent = decision + " OK — " + (d.message || JSON.stringify(d).slice(0, 80));
     load();
   } catch(e){ msg.textContent = "Decision failed: " + e.message; }
+}
+function fmtTs(s){ return s ? String(s).replace("T", " ").replace("Z", "").slice(0, 16) : "—"; }
+async function loadGaps(){
+  const el = document.getElementById("gaps");
+  try {
+    const d = await api("/taxonomy-gaps");
+    if (!d.gaps || !d.gaps.length){ el.innerHTML = '<div class="gap-empty">No taxonomy gaps recorded.</div>'; return; }
+    el.innerHTML = d.gaps.map(g => `
+      <div class="gap">
+        <h3>${esc(g.service)}</h3>
+        <div class="offer">Suggested offering: ${esc(g.suggested_offering)}</div>
+        <div class="meta">
+          <span class="badge">${Number(g.count) || 0} hit(s)</span>
+          <span class="badge">${(g.incident_refs || []).length} incident ref(s)</span>
+          <span class="badge">last seen ${esc(fmtTs(g.last_seen))}</span>
+        </div>
+      </div>`).join("");
+  } catch(e){ el.innerHTML = '<div class="gap-empty">Taxonomy gaps unavailable: ' + esc(e.message) + '</div>'; }
 }
 load();
 </script>
