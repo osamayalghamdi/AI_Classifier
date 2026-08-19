@@ -51,3 +51,37 @@ class BulkImportItem(BaseModel):
 
 class BulkImportRequest(BaseModel):
     incidents: list[BulkImportItem] = Field(min_length=1, description="Array of incidents with DisplayLabel and Description fields")
+
+
+class IncidentResponse(BaseModel):
+    """Typed incident read model — classification is a validated
+    ClassificationResult (never a raw JSON string), nullable only when the
+    row genuinely has no classification stored."""
+
+    id: str
+    title: str = ""
+    description: str = ""
+    status: str = "active"
+    ticket_kind: str = "incident"
+    classification_status: str = "ok"
+    classification: ClassificationResult | None = None
+    priority: str = "medium"
+    assignee: str = ""
+    assign_group: str = ""
+    notes: str | None = None
+    created_at: str | None = None
+    first_seen: str | None = None
+    last_seen: str | None = None
+    occurrence_count: int = 1
+    content_hash: str | None = None
+    extracted_text: str = ""
+    documents: list[str] = Field(default_factory=list)
+    source_ticket_ids: list[str] = Field(default_factory=list)
+    discussion_history: list[dict] = Field(default_factory=list)
+    escalation_info: str | None = None
+    completion_code: str | None = None
+
+
+class IncidentListResponse(BaseModel):
+    total: int
+    incidents: list[IncidentResponse]

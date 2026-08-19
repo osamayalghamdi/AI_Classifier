@@ -153,7 +153,11 @@ function restoreOpenView() {
 }
 
 function safeSev(i) {
-  try { return JSON.parse(i.classification || i.classification_json || "{}").severity || "Minor"; }
+  try {
+    let c = i.classification || i.classification_json || {};
+    if (typeof c === "string") c = JSON.parse(c);
+    return c.severity || "Minor";
+  }
   catch { return "Minor"; }
 }
 
