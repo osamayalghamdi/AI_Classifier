@@ -114,6 +114,14 @@ class Settings:
         "CLUSTER_ASSIGN_ON_ARRIVAL", "1"
     ).lower() in ("1", "true", "yes", "on")
     cluster_audit_interval_s: int = int(getenv("CLUSTER_AUDIT_INTERVAL_S", "86400"))
+    # Human gate for new clusters: proposals -> review -> activate. User
+    # asked to SKIP the gate (zero-friction NOC demo): default ON mints
+    # sweep groups as ACTIVE clusters directly. The nightly audit is the
+    # backstop (removes wrong members; verified live: 11 in one pass).
+    # Set CLUSTER_AUTO_ACTIVATE=0 to restore the human approval gate.
+    cluster_auto_activate: bool = getenv(
+        "CLUSTER_AUTO_ACTIVATE", "1"
+    ).lower() in ("1", "true", "yes", "on")
 
 
 settings = Settings()

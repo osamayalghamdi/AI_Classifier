@@ -20,6 +20,10 @@ os.environ.setdefault("INTEGRATION_WORKER_ENABLED", "0")
 # integration/classify tests. Forced off here; flow tests drive the engine
 # synchronously (production default stays ON: env not set in .env).
 os.environ["CLUSTER_ASSIGN_ON_ARRIVAL"] = "0"
+# v2 persistent clustering: sweep groups mint straight to ACTIVE in prod
+# (user's zero-friction override). Tests exercise the human-gate path by
+# default; the auto-activate path is tested via a settings monkeypatch.
+os.environ["CLUSTER_AUTO_ACTIVATE"] = "0"
 
 # SAFETY GUARD: integration tests operate on settings.pg_database and can
 # wipe rows. Never let them run against the production DB (ai_incidents) —
