@@ -99,7 +99,7 @@ underlying problem. A group needs >= 2 tickets. Tickets that match nothing stay 
 
 Return JSON only:
 {{"groups": [{{"member_ids": [...], "name_ar": "<short clear Arabic title for the group — max 9 words, uniform with other cluster names>",
-"description": "<ONE short clear sentence, max 25 words: what this problem is>"}}],
+"description": "<ONE short clear Arabic sentence, max 9 words: what this problem is>"}}],
  "singletons": ["<ids that match no group>"]}}
 Never invent IDs. Every input ID appears exactly once across groups and singletons."""
 
@@ -117,7 +117,7 @@ Tickets:
 Return JSON only:
 {{"keep": ["<ids that belong>"],
  "remove": [{{"id": "<id>", "reason": "<one sentence — what makes it different>"}}],
- "description": "<optionally refined cluster description — ONE short clear sentence, max 25 words — or the original>"}}
+ "description": "<optionally refined cluster description — ONE short clear sentence, max 9 words — or the original>"}}
 Rules: Every input ID appears in exactly one of keep or remove. Never invent or
 omit an ID. Be precise: same feature + different failure = remove."""
 
@@ -144,12 +144,13 @@ Tickets:
 {tickets}"""
 
 _AR_NAME_MAX_TICKETS = 15
-_AR_NAME_MAX_WORDS = 9     # hard cap — user rule
-_DESC_MAX_WORDS = 25       # hard cap — user rule: descriptions are ONE short sentence
+_AR_NAME_MAX_WORDS = 9     # hard cap — user rule (names)
+_DESC_MAX_WORDS = 9        # hard cap — user rule: descriptions match the name rule
+_MIN_CLUSTER_MEMBERS = 2   # user rule: 1 incident = individual, never a cluster
 
 
 def _cap_description(text: str) -> str:
-    """Enforce the short-description user rule: max 25 words, no paragraphs."""
+    """Enforce the short-description user rule: max 9 words, one sentence."""
     words = (text or "").split()
     return " ".join(words[:_DESC_MAX_WORDS])
 
@@ -321,6 +322,27 @@ def assign_incident(incident_id: str) -> dict:
 
 # ── Flow B — pool sweep ───────────────────────────────────────────────────
 
+def _demote_small_clusters() -> int:
+    """USER RULE: a cluster needs >= 2 incidents; 1 incident = individual.
+    Any active cluster below the minimum is retired and its members return
+    to the pool (they render as individuals on the dashboard). Runs at the
+    top of every sweep so demoted tickets get re-tried by Flow A."""
+    demoted = 0
+    for c in store.list_clusters(status="active"):
+        members = store.cluster_member_ids(c["id"])
+        if len(members) < _MIN_CLUSTER_MEMBERS:
+            for m in members:
+                store.remove_cluster_member(c["id"], m)
+                store.log_assignment(m, [c["id"]], {
+                    "action": "demoted", "cluster_id": c["id"],
+                    "reason": "cluster below 2 members — returned to individual pool"},
+                    PROMPT_VERSION, settings.llm_model)
+            store.set_cluster_status(c["id"], "retired")
+            demoted += 1
+            _log.info("Demoted %s (%d member) — below the %d-incident minimum",
+                      c["id"][:10], len(members), _MIN_CLUSTER_MEMBERS)
+    return demoted
+
 def _sweep_batch(batch_ids: list[str]) -> list[dict] | None:
     """Group one batch via the LLM. Returns groups, or None when the batch is
     discarded (ID mismatch — validate_group safeguard: returned IDs must equal
@@ -372,9 +394,11 @@ def sweep_pool(*, dry_run: bool = False) -> dict:
        returned group of >= 2 becomes a PROPOSAL (status='proposed' with
        members attached) — surfaced in the review UI, human-gated.
     """
-    stats = {"pool_before": 0, "flow_a_assigned": 0, "batches": 0,
+    stats = {"pool_before": 0, "demoted": 0, "flow_a_assigned": 0, "batches": 0,
              "proposals_created": 0, "discarded_batches": 0,
              "pool_after": 0, "dry_run": dry_run}
+    if not dry_run:
+        stats["demoted"] = _demote_small_clusters()
     pool = store.unassigned_incident_ids()
     stats["pool_before"] = len(pool)
     if not pool:
@@ -511,6 +535,23 @@ def audit_cluster(cluster_id: str) -> dict:
         store.update_cluster_fields(cluster_id, description=refined.strip())
         changed = True
 
+    # USER RULE: audit may shrink a cluster, but never below 2 members —
+    # a single incident is an individual. Demote the cluster instead.
+    demoted = False
+    remaining = store.cluster_member_ids(cluster_id)
+    if len(remaining) < _MIN_CLUSTER_MEMBERS:
+        for m in remaining:
+            store.remove_cluster_member(cluster_id, m)
+            store.log_assignment(m, [cluster_id], {
+                "action": "audit_demote", "cluster_id": cluster_id,
+                "reason": "audit left the cluster below 2 members — returned to individual pool"},
+                PROMPT_VERSION, settings.llm_model)
+        store.set_cluster_status(cluster_id, "retired")
+        demoted = True
+        changed = True
+        _log.info("Flow C %s: demoted — %d member left, below the %d-incident minimum",
+                  cluster_id[:10], len(remaining), _MIN_CLUSTER_MEMBERS)
+
     name_regenerated = False
     if changed:
         try:
@@ -521,7 +562,7 @@ def audit_cluster(cluster_id: str) -> dict:
 
     return {"cluster_id": cluster_id, "members_before": len(input_ids),
             "removed": removed, "description_refined": bool(refined and changed),
-            "name_regenerated": name_regenerated}
+            "demoted": demoted, "name_regenerated": name_regenerated}
 
 
 # ── Flow D — naming (stored on the cluster row) ───────────────────────────
@@ -594,7 +635,10 @@ def _cluster_report(cluster: dict, incidents_by_id: dict[str, dict]) -> dict | N
     members = store.list_cluster_members(cluster["id"])
     m_incs = [incidents_by_id[m["incident_id"]] for m in members
               if m["incident_id"] in incidents_by_id]
-    if not m_incs:
+    # USER RULE: 1 incident = individual, never a cluster. A sub-2-member
+    # cluster is not emitted here (its members render as individuals; the
+    # next sweep demotes the cluster row itself).
+    if len(m_incs) < _MIN_CLUSTER_MEMBERS:
         return None
     worst_sev = _worst_severity(m_incs)
     top_sys, top_svc = _dominant_labels(m_incs)

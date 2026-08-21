@@ -298,9 +298,9 @@ class TestFlowB:
         assert len(actives) == 1 and actives[0]["name_ar"] == "تعطل بوابة الدفع"
         assert set(store.cluster_member_ids(actives[0]["id"])) == {"tst-p0", "tst-p1"}
 
-    def test_sweep_description_capped_at_25_words(self, monkeypatch):
-        """User rule: descriptions are ONE short sentence — a longer LLM
-        description is truncated to 25 words at mint time."""
+    def test_sweep_description_capped_at_max_words(self, monkeypatch):
+        """User rule: descriptions match the name rule — a longer LLM
+        description is truncated at mint time."""
         for i, t in enumerate(["payment gateway down", "payment gateway failing"]):
             _save_incident(f"tst-r{i}", t, service="Nusuk Masar Haj.Bill Payment")
 
@@ -317,6 +317,41 @@ class TestFlowB:
 
         c = store.list_clusters(status="proposed")[0]
         assert len(c["description"].split()) <= pc._DESC_MAX_WORDS
+
+    def test_sweep_demotes_single_member_clusters(self):
+        """USER RULE: 1 incident = individual. A cluster below 2 members is
+        retired and its member returns to the pool."""
+        _save_incident("tst-s1", "housing provider issuance fails",
+                       service="Nusuk Masar Haj.Service Unavailability")
+        _seed_cluster("cl_tst_one_member", "فشل اصدار مزود خدمة السكن",
+                      "housing provider", ["tst-s1"])
+
+        n = pc._demote_small_clusters()
+
+        assert n == 1
+        assert store.get_cluster("cl_tst_one_member")["status"] == "retired"
+        assert store.cluster_member_ids("cl_tst_one_member") == []
+        assert "tst-s1" in store.unassigned_incident_ids()
+        log = store.list_assignment_log(incident_id="tst-s1")
+        assert log[0]["verdict"]["action"] == "demoted"
+
+    def test_audit_demotes_when_shrinking_below_two(self, monkeypatch):
+        """Audit may shrink a cluster, but never to a single incident —
+        the cluster is demoted and the last member returns to the pool."""
+        _save_incident("tst-t1", "permit delay", service="Nusuk Masar Haj.Issue Permits")
+        _save_incident("tst-t2", "permit stuck", service="Nusuk Masar Haj.Issue Permits")
+        _seed_cluster("cl_tst_shrink", "تأخر إصدار التصاريح", "permit issuance delays",
+                      ["tst-t1", "tst-t2"])
+
+        _json_llm(monkeypatch, {"keep": ["tst-t1"],
+                                "remove": [{"id": "tst-t2", "reason": "different"}],
+                                "description": "تأخر إصدار التصاريح"})
+        r = pc.audit_cluster("cl_tst_shrink")
+
+        assert r["removed"] == ["tst-t2"]
+        assert r["demoted"] is True
+        assert store.get_cluster("cl_tst_shrink")["status"] == "retired"
+        assert "tst-t1" in store.unassigned_incident_ids()  # individual now
 
     def test_sweep_reruns_flow_a_first(self, monkeypatch):
         # A ticket that now matches a new active cluster is assigned by Flow A
@@ -387,25 +422,29 @@ class TestFlowC:
     def test_audit_pruning_floor_blocks_over_pruning(self, monkeypatch):
         _save_incident("tst-k1", "one", service="Nusuk Masar Haj.Service Unavailability")
         _save_incident("tst-k2", "two", service="Nusuk Masar Haj.Service Unavailability")
-        _seed_cluster("cl_tst_audit2", "مجموعة", "desc", ["tst-k1", "tst-k2"])
+        _save_incident("tst-k3", "three", service="Nusuk Masar Haj.Service Unavailability")
+        _seed_cluster("cl_tst_audit2", "مجموعة", "desc",
+                      ["tst-k1", "tst-k2", "tst-k3"])
 
-        # remove 1 of 2 = 50% — under the floor, allowed (audit may shrink a cluster)
-        _json_llm(monkeypatch, {"keep": ["tst-k1"],
-                                "remove": [{"id": "tst-k2", "reason": "different"}],
+        # remove 1 of 3 = 33% — under the floor, allowed; cluster stays at 2
+        _json_llm(monkeypatch, {"keep": ["tst-k1", "tst-k2"],
+                                "remove": [{"id": "tst-k3", "reason": "different"}],
                                 "description": "d"})
         r = pc.audit_cluster("cl_tst_audit2")
-        assert r["removed"] == ["tst-k2"]
+        assert r["removed"] == ["tst-k3"]
+        assert r["demoted"] is False  # still 2 members — stays a cluster
+        assert store.cluster_member_ids("cl_tst_audit2") == ["tst-k1", "tst-k2"]
 
-        # now 3 members, remove 2 = 67% > 60% — verdict discarded, members untouched
-        _save_incident("tst-k3", "three", service="Nusuk Masar Haj.Service Unavailability")
-        store.add_cluster_member("cl_tst_audit2", "tst-k3", assigned_by="llm")
-        _json_llm(monkeypatch, {"keep": [],
-                                "remove": [{"id": "tst-k3", "reason": "a"},
-                                           {"id": "tst-k1", "reason": "b"}],
+        # now remove 2 of 3 = 67% > 60% — verdict discarded, members untouched
+        _save_incident("tst-k4", "four", service="Nusuk Masar Haj.Service Unavailability")
+        store.add_cluster_member("cl_tst_audit2", "tst-k4", assigned_by="llm")
+        _json_llm(monkeypatch, {"keep": ["tst-k1"],
+                                "remove": [{"id": "tst-k4", "reason": "a"},
+                                           {"id": "tst-k2", "reason": "b"}],
                                 "description": "d"})
         r = pc.audit_cluster("cl_tst_audit2")
         assert r["discarded"] == "pruning floor"
-        assert store.cluster_member_ids("cl_tst_audit2") == ["tst-k1", "tst-k3"]
+        assert store.cluster_member_ids("cl_tst_audit2") == ["tst-k1", "tst-k2", "tst-k4"]
 
 
 # ── Invariants + review gate + API shape ─────────────────────────────────
