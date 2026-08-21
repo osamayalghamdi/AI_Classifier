@@ -67,6 +67,11 @@ class Settings:
     # ── Ticketing system sync ────────────────────────────────────────────
     ticketing_api_url: str = getenv("TICKETING_API_URL", "http://localhost:8002")
     sync_interval_seconds: int = int(getenv("SYNC_INTERVAL", "60"))
+    # Runtime stamp file path — where the last-sync timestamp lives. Defaults
+    # to the repo root (four parents above this file: shared/config.py →
+    # ai_classification/ → repo root); overridable so deployments can keep it
+    # outside the repo (BUG-3: the old hardcoded path resolved one level short).
+    sync_stamp_path: str = getenv("SYNC_STAMP_PATH", "")
     # Repool worker sweep interval (seconds) — re-match-only, never re-classifies
     repool_interval_seconds: int = int(getenv("REPOOL_INTERVAL", "900"))
     # SEAMS: which ticket source the pipeline talks to — "real" (default,

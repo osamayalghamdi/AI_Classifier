@@ -1267,8 +1267,7 @@ class IncidentStore:
             self._putconn(conn)
 
     def decide_proposal(self, proposal_id: str, decision: str,
-                        target_sub_offering_id: str = "", note: str = "",
-                        decided_by: str = "admin") -> dict | None:
+                        target_sub_offering_id: str = "", note: str = "") -> dict | None:
         """One-shot decision: only pending -> approved/rejected/merged. Returns the
         updated proposal, or the existing row if already decided (no-op)."""
         if not self._ready or self._pool is None:

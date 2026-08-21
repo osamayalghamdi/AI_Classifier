@@ -62,11 +62,12 @@ def from_smax(payload: dict) -> Incident:
 def to_smax_suggestion(result) -> dict:
     """Serialize a PipelineResult into the SMAX suggestion payload
     (write-back in the safest mode — a side channel, not ticket fields)."""
+    cls = result.classification
     return {
         "classification": {
-            "affected_system": result.classification.get("affected_system") if result.classification else None,
-            "service": result.classification.get("service") if result.classification else None,
-            "severity": result.classification.get("severity") if result.classification else None,
+            "affected_system": getattr(cls, "affected_system", None) if cls else None,
+            "service": getattr(cls, "service", None) if cls else None,
+            "severity": getattr(cls, "severity", None) if cls else None,
         },
         "similar_ticket_ids": [t.get("id") for t in (result.similar_tickets or [])],
         "suggestions": result.suggestions,

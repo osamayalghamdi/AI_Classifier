@@ -215,6 +215,58 @@ class TestIdempotency:
         assert len(s.list_incidents()) == 0
 
 
+# ── BUG-2: status propagation writes the mapped local status ─────────
+
+
+class TestStatusPropagation:
+    def test_seen_persists_local_status_not_raw_external(self, monkeypatch):
+        """BUG-2: persist_result must store the MAPPED local status
+        (active/resolved), never the raw external value ('open',
+        'in_progress', 'third_party', ...) whose domain differs."""
+        s = _make_seams_store(monkeypatch)
+        monkeypatch.setattr("ai_classification.services.classify.classifier.classify",
+                            lambda t, d, *, incident_ref=None, affected_system=None: _make_result(canonical_statement="CS", signature="sg"))
+
+        # First pass: new incident with external status 'open' -> stored 'active'.
+        inc = Incident(source_reference="EXT-ST", title="TST", description="DST",
+                       status="open")
+        r1 = process_incident(inc)
+        out1 = persist_result(r1)
+        assert out1["action"] == "new"
+        row = s.get_incident(out1["incident_id"])
+        assert row["status"] == "active"
+
+        # Second pass: same content, upstream now resolved -> local 'resolved'.
+        inc2 = Incident(source_reference="EXT-ST", title="TST", description="DST",
+                        status="resolved")
+        r2 = process_incident(inc2)
+        assert r2.is_new is False
+        out2 = persist_result(r2)
+        assert out2["action"] == "seen"
+        row2 = s.get_incident(out2["incident_id"])
+        assert row2["status"] == "resolved"
+
+    def test_seen_maps_in_progress_and_third_party_to_active(self, monkeypatch):
+        s = _make_seams_store(monkeypatch)
+        monkeypatch.setattr("ai_classification.services.classify.classifier.classify",
+                            lambda t, d, *, incident_ref=None, affected_system=None: _make_result(canonical_statement="CS", signature="sg"))
+        inc = Incident(source_reference="EXT-ST2", title="T", description="D",
+                       status="open")
+        r1 = process_incident(inc)
+        out1 = persist_result(r1)
+        assert s.get_incident(out1["incident_id"])["status"] == "active"
+
+        for external in ("in_progress", "third_party"):
+            inc2 = Incident(source_reference="EXT-ST2", title="T", description="D",
+                            status=external)
+            r2 = process_incident(inc2)
+            out2 = persist_result(r2)
+            row = s.get_incident(out2["incident_id"])
+            assert row["status"] == "active", (
+                f"external '{external}' must map to active, got {row['status']}"
+            )
+
+
 # ── S6: provenance ────────────────────────────────────────────────────
 
 

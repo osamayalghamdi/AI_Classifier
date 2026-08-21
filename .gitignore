@@ -35,6 +35,9 @@ Thumbs.db
 *.db-wal
 *.db-shm
 
+# Runtime state — last-sync stamp (not repo content)
+.last_sync
+
 # Generated / cleanup scripts
 fix_tests.py
 test_incidents.json
