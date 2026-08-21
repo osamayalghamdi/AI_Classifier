@@ -17,10 +17,19 @@ from ai_classification.seams import NotConfiguredError, get_ticket_source, persi
 
 _log = logging.getLogger(__name__)
 
-# Moved from package root (ai_classification/sync.py) to services/jobs/ — the
-# repo-root stamp is now three levels up. Keep it at the repo root so the
-# stamp survives restarts and is shared with the main tree's tooling.
-SYNC_STAMP = Path(__file__).parent.parent.parent / ".last_sync"
+# Runtime stamp file — where the last-sync timestamp lives. BUG-3: the
+# hardcoded three-parent path resolved to ai_classification/ instead of the
+# repo root, so the checked-in stamp was never read. Now configurable via
+# SYNC_STAMP_PATH; default resolves four parents above this file
+# (services/jobs/sync.py → jobs/ → services/ → ai_classification/ → repo root).
+def _stamp_path() -> Path:
+    configured = getattr(settings, "sync_stamp_path", "") or ""
+    if configured:
+        return Path(configured)
+    return Path(__file__).resolve().parent.parent.parent.parent / ".last_sync"
+
+
+SYNC_STAMP = _stamp_path()
 
 # Read the last sync timestamp from file, default to epoch
 def _read_last_sync() -> str:
@@ -66,12 +75,15 @@ def start_sync_worker(store) -> None:
                     since = None
                 latest = since_raw
                 advanced = False
+                processed = 0
                 for incident in source.list_changed(since):
                     result = process_incident(incident)
                     outcome = persist_result(result, dry_run=dry_run)
                     if outcome.get("action") == "skipped":
                         _log.error("Sync: ticket %s skipped — %s",
                                    incident.source_reference, outcome.get("reason"))
+                        continue
+                    processed += 1
                     changed = incident.updated_at or incident.created_at
                     if changed is not None:
                         iso = changed.isoformat()
@@ -80,7 +92,7 @@ def start_sync_worker(store) -> None:
                             advanced = True
                 if advanced:
                     _write_last_sync(latest)
-                    _log.info("Synced %s changes (since %s)", "1+" , since_raw[:19])
+                    _log.info("Synced %s changes (since %s)", processed, since_raw[:19])
                 else:
                     _log.debug("Sync — no changes (since %s)", since_raw[:19])
             except NotConfiguredError as exc:

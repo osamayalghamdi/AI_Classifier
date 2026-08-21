@@ -149,7 +149,7 @@ def persist_result(result: PipelineResult, *, dry_run: bool = False) -> dict:
         )
         current = store.get_incident(result.incident_id)
         if current and current.get("status") != local_status:
-            store.set_status(result.incident_id, result.status)
+            store.set_status(result.incident_id, local_status)
     return {
         "action": "seen",
         "incident_id": result.incident_id,
