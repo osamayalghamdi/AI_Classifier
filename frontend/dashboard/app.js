@@ -293,7 +293,7 @@ function groupClusters() {
     .filter((c) => !q || c.name.toLowerCase().includes(q) || c.incidents.some((i) =>
       (i.title || "").toLowerCase().includes(q) || (i.id || "").toLowerCase().includes(q)
       || (i.description || "").toLowerCase().includes(q)))
-    .sort((a, b) => (SEV_RANK[b.worst_severity] || 0) - (SEV_RANK[a.worst_severity] || 0) || b.incidents.length - a.incidents.length);
+    .sort((a, b) => b.incidents.length - a.incidents.length || (SEV_RANK[b.worst_severity] || 0) - (SEV_RANK[a.worst_severity] || 0));
 }
 
 function renderEmployee() {
@@ -353,7 +353,7 @@ function renderLead() {
   const teamSel = LEAD_TEAM_FILTER;
   const clusters = DATA.clusters
     .filter((c) => !teamSel || c.incidents.some((i) => i.team === teamSel))
-    .sort((a, b) => (SEV_RANK[b.worst_severity] || 0) - (SEV_RANK[a.worst_severity] || 0) || b.count - a.count);
+    .sort((a, b) => b.count - a.count || (SEV_RANK[b.worst_severity] || 0) - (SEV_RANK[a.worst_severity] || 0));
   const crit = clusters.filter((c) => c.worst_severity === "Critical");
   const total = DATA.all.length;
 
