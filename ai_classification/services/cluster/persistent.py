@@ -63,7 +63,7 @@ _log = logging.getLogger(__name__)
 
 # ── Versioning / constants ────────────────────────────────────────────────
 
-PROMPT_VERSION = "clustering-v2-2026-08"
+PROMPT_VERSION = "clustering-v3-2026-08"  # v3: strict same-service/same-failure sweep rule
 MAX_CANDIDATES = 5          # active clusters shown to the LLM per assignment
 SWEEP_BATCH_SIZE = 20       # tickets per Flow-B grouping call
 PROPOSAL_MIN_SIZE = 2       # a proposal needs >= 2 tickets
@@ -96,6 +96,13 @@ If unsure, return none_fit. none_fit is a safe answer; wrong assignment is not."
 
 SWEEP_PROMPT = """Here are unassigned incident tickets. Group tickets that describe the SAME
 underlying problem. A group needs >= 2 tickets. Tickets that match nothing stay alone.
+
+A cluster = ONE specific underlying problem, not a service area.
+Only group tickets with the SAME failing action on the SAME service surface.
+Same feature + same failure = same group. Same feature + different failure = different group.
+Different services or different failures = different groups, even if the symptoms sound
+similar ("cannot access tax form" and "cannot enter pilgrim numbers" are DIFFERENT problems
+even though both say "user cannot access"). When in doubt, leave a ticket as a singleton.
 
 Return JSON only:
 {{"groups": [{{"member_ids": [...], "name_ar": "<short clear Arabic title for the group — max 9 words, uniform with other cluster names>",
