@@ -122,13 +122,13 @@ def _verify_json(verdict: str = "approve", corrections=None, reason: str = "ok")
 
 class TestStageOptionCounts:
     def test_system_stage_has_4_options(self):
-        assert len(list(AffectedSystem)) == 4
+        assert len(list(AffectedSystem)) == 5
 
     def test_service_stage_is_only_that_systems_services(self):
-        # Nusuk Masar Haj: 29 services in the hierarchy — NOT the flat 193
-        assert len(SERVICES_BY_SYSTEM[AffectedSystem.nusuk_masar_haj]) == 29
+        # Nusuk Masar Haj: 31 services in the hierarchy — NOT the flat 203
+        assert len(SERVICES_BY_SYSTEM[AffectedSystem.nusuk_masar_haj]) == 31
         flat_total = sum(len(v) for v in flatten_services().values())
-        assert flat_total == 193
+        assert flat_total == 203
         assert len(SERVICES_BY_SYSTEM[AffectedSystem.nusuk_masar_haj]) < flat_total
 
     def test_offering_stage_is_only_that_services_offerings(self):
