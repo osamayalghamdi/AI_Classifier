@@ -462,7 +462,7 @@ _SYSTEM_PROMPT = _build_system_prompt()
 
 # Identity of _SYSTEM_PROMPT — recorded on persisted classifications by the
 # seams pipeline (provenance). Bump when the prompt content changes.
-PROMPT_VERSION = "2026-08-v3"  # v3: stage-0 triage + kind routing + OFFERING-GAP abstention + stage-4 verification
+PROMPT_VERSION = "2026-08-v3.1"  # v3.1: stage-1 routing rules (tax→Haj invoicing, CRM only when explicit)
 def _stage_system_from_partial(raw: str) -> ClassificationResult | None:
     """Recover affected_system from a truncated stage-1 response.
 
@@ -504,9 +504,14 @@ def _stage_system_from_partial(raw: str) -> ClassificationResult | None:
 def _normalize_canonical(cs: str) -> str:
     """Clean a canonical statement for consistent embedding.
 
-    The LLM may vary wording and include ticket IDs, company names, numbers,
-    and dates. This strips those so the same problem always produces the
+    The LLM may vary wording and include ticket IDs, company names, and
+    dates. This strips those so the same problem always produces the
     same embedding regardless of LLM phrasing.
+
+    Numbers are PRESERVED: counts, amounts, and percentages are often the
+    distinguishing signal between incidents (\"600 pilgrims affected\" vs
+    \"13 pilgrims affected\"). Only ticket/permit ID-like tokens (6+ digit
+    runs) and date-like patterns are stripped.
     """
     if not cs:
         return cs
@@ -514,8 +519,10 @@ def _normalize_canonical(cs: str) -> str:
     if ":" in cs:
         cs = cs.split(":", 1)[1].strip()
 
-    # Remove ticket IDs, permit numbers, phone numbers
-    cs = re.sub(r"\b\d{2,}\b", "", cs)  # 2+ digit numbers (IDs, percentages, counts)
+    # Remove long ID-like tokens (ticket/permit/phone numbers, 6+ digits).
+    # Short numbers (counts, amounts, percentages) are kept — they are
+    # grouping-relevant context, not noise.
+    cs = re.sub(r"\b\d{6,}\b", "", cs)
     cs = re.sub(r"\b\d{1,2}[-/]\d{1,2}\b", "", cs)  # date-like patterns
 
     # Remove stopwords that vary between runs — zero grouping value
@@ -664,12 +671,14 @@ _SYSTEM_EXACT_NAMES = {
     AffectedSystem.nusuk_masar_haj: "nusuk masar haj",
     AffectedSystem.nusuk_masar_umrah: "nusuk masar umrah",
     AffectedSystem.old_sm: "oldsm",
+    AffectedSystem.crm: "crm",
 }
 
 _SYSTEM_ALIASES = {
     AffectedSystem.nusuk_masar_haj: ("haj", "hajj"),
     AffectedSystem.nusuk_masar_umrah: ("umrah",),
     AffectedSystem.old_sm: ("old sm", "old system"),
+    AffectedSystem.crm: ("crm",),
 }
 # ── Cascade classifier (CASCADE_CLASSIFICATION=true) ──────────────────
 # Coarse-to-fine system → service → offering. Each stage's LLM call returns
@@ -766,6 +775,10 @@ def _stage_system_llm(
     rules = (
         "This is stage 1 of 3 (system resolution).\n"
         "- affected_system MUST be exactly one of the 4 allowed values below — pick the system the ticket is about.\n"
+        "- CRM: choose ONLY when the ticket text explicitly mentions CRM (the CRM application/system). Never pick CRM "
+        "for contracts, accommodation, licensing, reporting, or other inquiries that do not mention CRM.\n"
+        "- Tax/VAT data tickets (ضريب/فوترة/VAT/tax invoice): choose Nusuk Masar Haj — tax invoice data is managed "
+        "under Haj Invoicing ('7.1 Invoicing and Billing - Nusuk Masar Haj' / 'Tax Data Management').\n"
         "- service: give your best provisional guess as a single string (it will be refined in stage 2); "
         "prefer a value that belongs to the chosen system.\n"
         "- Fill ALL other JSON fields with your best judgment."
@@ -1072,6 +1085,10 @@ def _classify_routed(
         result.service = key
         result.ticket_kind = kind
         result.canonical_statement = _normalize_canonical(result.canonical_statement)
+        # Confidence honesty applies to routed kinds too (2026-08-21): an
+        # administrative/inquiry/other ticket landing on General / Unspecified
+        # is a guess, not a high-confidence verdict — same rule as incidents.
+        _enforce_confidence_honesty(result)
         _log.info("Routed classification (kind=%s) — system=%s, service=%s, confidence=%s",
                   kind.value, result.affected_system, result.service, result.confidence)
         return result
@@ -1131,7 +1148,33 @@ def _classify_v3(
     result = _verify_classification(title, description, result, incident_ref=incident_ref)
     if getattr(settings, "classify_self_consistency", False) and result.confidence == "low":
         result = _self_consistency(title, description, result, incident_ref=incident_ref)
+    _enforce_confidence_honesty(result)
     return result
+
+
+def _enforce_confidence_honesty(result: ClassificationResult) -> None:
+    """Post-classification confidence rule (user directive, 2026-08-19):
+
+    A classification is only 'high'/'medium' when the LLM actually landed on
+    a real taxonomy service. Guesses and fallbacks must be marked 'low':
+      - 'General / Unspecified' service (no real service found)
+      - OFFERING-GAP abstention (already forced low, kept for safety)
+      - hedging reasoning that admits a guess ('closest', 'not in the
+        allowed list', 'safe bet', 'best match available', ...)
+
+    This kills the misleading 'high'-confidence / wrong-service combos the
+    audit found (e.g. 4 CRM tickets with conf=high on General/Unspecified).
+    """
+    svc = (result.service or "").lower()
+    if "general" in svc or "unspecified" in svc or result.service.endswith(".OFFERING-GAP"):
+        result.confidence = "low"
+        return
+    reasoning = (result.reasoning or "").lower()
+    hedge = ("closest" in reasoning or "not in the allowed list" in reasoning
+             or "safe bet" in reasoning or "best match available" in reasoning
+             or "closest related" in reasoning)
+    if hedge and result.confidence != "low":
+        result.confidence = "low"
 
 
 # ── Stage 4 verification ──────────────────────────────────────────────
@@ -1534,6 +1577,14 @@ def classify_and_store(
     result = precomputed if precomputed is not None else classify(
         title, description, incident_ref=incident_id, affected_system=affected_system
     )
+
+    # ── Provenance (report fix 2026-08-19): every stored classification
+    # carries which model + prompt version produced it. The seams pipeline
+    # sets these; the direct API path must too, or drift can't be debugged.
+    if not result.model_version:
+        result.model_version = settings.llm_model
+    if not result.prompt_version:
+        result.prompt_version = PROMPT_VERSION
 
     # ── Severity→priority mapping (only when the caller did not supply one) ──
     _priority_map = {"Critical": "critical", "Major": "high", "Minor": "medium", "Cosmetic": "low"}
