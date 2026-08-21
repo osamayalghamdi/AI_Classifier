@@ -20,6 +20,7 @@ class AffectedSystem(StrEnum):
     nusuk_masar_haj = "Nusuk Masar Haj"
     nusuk_masar_umrah = "Nusuk Masar Umrah"
     old_sm = "OldSM"
+    crm = "CRM"
     other = "Other"
 
 
@@ -88,6 +89,7 @@ SERVICES_BY_SYSTEM: dict[AffectedSystem, dict[str, list[str]]] = {
             'Bill Payment',
             'installments payments',
             'Payment Notification',
+            'Tax Data Management',
         ],
         '7.2 Bank Account Management - Nusuk Masar Haj': [
             'Activate electronic wallet',
@@ -102,6 +104,10 @@ SERVICES_BY_SYSTEM: dict[AffectedSystem, dict[str, list[str]]] = {
             'Naqaba Confirmation Management',
             'Private Vehicles Log',
             'Register Arrival/Departure for in house',
+        ],
+        'appeals and violations - Nusuk Masar Haj': [
+            'Submit Appeal',
+            'Track Appeal Status',
         ],
         'camps - Nusuk Masar Haj': [
             'Add Camp',
@@ -121,6 +127,10 @@ SERVICES_BY_SYSTEM: dict[AffectedSystem, dict[str, list[str]]] = {
             'Edit the service details of specific house and food Category city.',
             'View Lifting Provider Details (HPC)',
             'viewed the list of house and food services.',
+        ],
+        'company evaluation - Nusuk Masar Haj': [
+            'Submit Evaluation',
+            'View Evaluation',
         ],
         'financial reports - Nusuk Masar Haj': [
             'Final report foe EH',
@@ -303,6 +313,12 @@ SERVICES_BY_SYSTEM: dict[AffectedSystem, dict[str, list[str]]] = {
     },
     AffectedSystem.nusuk_masar_umrah: {
         'System/Application - Nusuk Masar Umrah': [
+        ],
+    },
+    AffectedSystem.crm: {
+        'System/Application - CRM': [
+            'Service Unavailability',
+            'Transaction issue',
         ],
     },
     AffectedSystem.old_sm: {
