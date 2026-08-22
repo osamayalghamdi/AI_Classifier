@@ -8,9 +8,9 @@ clustered — without turning the pool into a grab-bag.
 
 import numpy as np
 
-import ai_classification.shared.store as store_mod
-import ai_classification.services.match.suboffering as sub_mod
-from ai_classification.services.jobs import repool
+import legacy.suboffering_engine.store_suboffering as store_mod
+import legacy.suboffering_engine.suboffering as sub_mod
+from legacy.suboffering_engine import repool
 
 _VEC = np.ones(8, dtype=np.float32)
 
@@ -79,7 +79,10 @@ def _patch_no_phase1(monkeypatch):
         return {"offering": sub_mod.offering_of(svc) or sub_mod.OFFERING_000,
                 "routed": "pool", "matched": False}
     monkeypatch.setattr(sub_mod, "feed_incident", no_match)
-    monkeypatch.setattr(sub_mod, "embed_pure", lambda t, d: _VEC)
+    # repool_once imports embed_pure from the LIVE module
+    # (ai_classification.services.match.suboffering) — patch there too.
+    import ai_classification.services.match.suboffering as live_sub_mod
+    monkeypatch.setattr(live_sub_mod, "embed_pure", lambda t, d: _VEC)
 
 
 def test_phase1_never_crosses_offerings(monkeypatch):
@@ -155,7 +158,8 @@ def test_stats_report_both_phases(monkeypatch):
         exemplars={"subA": [_exemplar("subA")], "subB": [_exemplar("subB")]},
     )
     _patch_store(monkeypatch, fs)
-    monkeypatch.setattr(sub_mod, "embed_pure",
+    import ai_classification.services.match.suboffering as live_sub_mod
+    monkeypatch.setattr(live_sub_mod, "embed_pure",
                         lambda t, d: np.full(8, 1.0, dtype=np.float32) if "tA1" in t
                         else np.full(8, 2.0, dtype=np.float32))
 

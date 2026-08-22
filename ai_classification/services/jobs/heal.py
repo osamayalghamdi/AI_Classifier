@@ -18,6 +18,8 @@ Safety rules:
 from __future__ import annotations
 
 import logging
+import threading
+import time
 
 from ai_classification.shared.config import settings
 
@@ -64,3 +66,31 @@ def reclassify_fallback_incidents(limit: int | None = None) -> dict:
     if healed or still:
         _log.info("Heal sweep: %d healed, %d still fallback", healed, still)
     return {"healed": healed, "still_fallback": still}
+
+
+def start_heal_worker(interval: float | None = None) -> threading.Thread | None:
+    """Daemon: periodic re-classification of fallback-marked incidents.
+
+    Gated on RECLASSIFY_ENABLED (default on). Interval defaults to
+    RECLASSIFY_INTERVAL_S (600s); per-tick cap is RECLASSIFY_MAX_PER_TICK.
+    Fails open — an LLM outage just skips the tick and retries next time.
+    Returns the thread, or None when disabled.
+    """
+    if not settings.reclassify_enabled:
+        _log.info("Heal worker NOT started — RECLASSIFY_ENABLED is false")
+        return None
+    interval = interval if interval is not None else settings.reclassify_interval_s
+
+    def _loop() -> None:
+        _log.info("Heal worker started — every %ss (max %d/tick)",
+                  interval, settings.reclassify_max_per_tick)
+        while True:
+            try:
+                reclassify_fallback_incidents()
+            except Exception as exc:  # noqa: BLE001 — one bad tick must not kill the loop
+                _log.error("Heal sweep failed: %s", exc)
+            time.sleep(interval)
+
+    t = threading.Thread(target=_loop, name="heal", daemon=True)
+    t.start()
+    return t

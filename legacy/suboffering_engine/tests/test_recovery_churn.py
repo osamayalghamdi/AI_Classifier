@@ -4,7 +4,7 @@ The queue replaces the old in-memory `_retried_still_fallback` set: the
 guard is now durable (DB table) instead of process-local.
 """
 
-from ai_classification.services.jobs.recovery import recovery_candidates, run_recovery
+from legacy.suboffering_engine.recovery import recovery_candidates, run_recovery
 
 
 class FakeStore:
