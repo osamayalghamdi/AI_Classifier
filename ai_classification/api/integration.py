@@ -4,7 +4,7 @@ dry-run, readiness. Auth (Bearer token) on every endpoint EXCEPT
 
 Structured errors: {"error": {"code": <stable>, "message": ..., "reference": ...}}.
 Validation failures (unknown fields, bad types) map to 422 INVALID_PAYLOAD
-via the app-level handler registered in routes.py.
+via the app-level handler registered in app.py.
 """
 
 from __future__ import annotations

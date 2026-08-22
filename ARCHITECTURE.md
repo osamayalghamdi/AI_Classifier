@@ -44,9 +44,9 @@ graph LR
 | Cluster names wrong / English / stale | `services/cluster/grouping.py` (LLM Arabic naming + fingerprint cache) |
 | Proposals stuck or minting | `services/review/` + `frontend/dashboard/review.html` |
 | Fallback/offering-less tickets | `services/jobs/recovery.py` (manual) / `repool.py` (continuous) |
-| Async ingest job stuck (retryable/flagged) | `services/jobs/integration/` + `services/ingest/integration_routes.py` |
+| Async ingest job stuck (retryable/flagged) | `services/jobs/integration/` + `api/integration.py` |
 | DB / persistence / pool issues | `shared/store.py` |
-| API returns wrong status / auth | `services/ingest/routes.py` + `integration_routes.py` |
+| API returns wrong status / auth | `app.py` + `api/integration.py` |
 | SMAX / ticketing connectivity | `seams/smax/` |
 
 ## Contracts

@@ -5,7 +5,7 @@ import pytest
 from datetime import datetime, timedelta, timezone
 
 import ai_classification.services.classify.classifier as classifier
-import ai_classification.shared.store as store_module
+from ai_classification.api.incidents import resolve_incident as store_module_resolve_incident
 from ai_classification.shared.store import store, SimilarMatch
 from ai_classification.domain.models import ClassificationResult
 from ai_classification.domain.taxonomy import AffectedSystem, IncidentType, Severity, Urgency, Category
@@ -177,9 +177,9 @@ class TestResolveIncident:
     def test_delegates_to_store(self, monkeypatch):
         calls = []
         monkeypatch.setattr(store, "resolve_incident", lambda iid: calls.append(iid) or True)
-        assert store_module.resolve_incident("abc123") is True
+        assert store_module_resolve_incident("abc123") is True
         assert calls == ["abc123"]
 
     def test_returns_false_for_unknown_incident(self, monkeypatch):
         monkeypatch.setattr(store, "resolve_incident", lambda iid: False)
-        assert store_module.resolve_incident("does-not-exist") is False
+        assert store_module_resolve_incident("does-not-exist") is False

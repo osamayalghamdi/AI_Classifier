@@ -9,7 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import ai_classification.services.review.taxonomy_gaps_routes as tg
-from ai_classification.services.ingest.routes import app
+from ai_classification.app import app
 
 GAPS = [
     {
