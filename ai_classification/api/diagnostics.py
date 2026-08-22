@@ -8,7 +8,7 @@ discoverability, not redundancy):
 | /health    | k8s / load balancer liveness | process alive? (returns {status, model, store_ready}) |
 | /ready     | k8s readiness (in api/integration.py) | db / embedding / llm one-shot readiness    |
 | /status    | dashboard top bar  | per-service status: db / embedding / llm    |
-| /test/llm  | human smoke test   | ask the configured model anything, live     |
+| /test/llm  | human smoke test   | ask the configured model anything, live (auth-gated: spends LLM tokens) |
 | /test/all  | human full battery | db → embedding → llm → classify → similar → clusters |
 
 Moved from ai_classification/services/ingest/routes.py (C-3 restructure) —
@@ -18,8 +18,9 @@ Pipeline position: 50_api — FastAPI endpoints."""
 
 import logging
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
+from ai_classification.api.auth import require_token
 from ai_classification.shared.config import settings
 from ai_classification.shared.store import store
 from ai_classification.services.cluster.persistent import build_clusters
@@ -47,8 +48,13 @@ def health():
 # configured model (whatever .env selects) and returns the raw answer
 # plus timing + resolved config. Handy on a fresh VM to confirm the
 # company endpoint + key work before anything else.
-@router.post("/test/llm")
-@router.get("/test/llm")
+#
+# Auth-gated (Bearer token, same as the /api/v1/* API — api/auth.py):
+# this endpoint spends LLM tokens per call, so it must not be open on a
+# public ingress. /test/all stays open (human smoke battery) — review
+# whether to gate it too when exposing the host publicly.
+@router.post("/test/llm", dependencies=[Depends(require_token)])
+@router.get("/test/llm", dependencies=[Depends(require_token)])
 def test_llm(question: str = "Say hello in one short sentence.", max_tokens: int = 200):
     import time
 
