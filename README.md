@@ -35,59 +35,76 @@ LLM-powered incident classification on the Nusuk Masar Haj service-offering mode
 nothing), `/api/v1/backfill` (batch ≤200), `/ready` (db/embedding/llm checks).
 Bearer auth (`INTEGRATION_API_TOKEN`). Full contract: `docs/INTEGRATION_GUIDE.md`.
 
-## SMAX integration — code ready, not live yet
+## SMAX integration — standalone connector
 
-SMAX = the ticketing system. Two ways to connect:
+SMAX = the ticketing system. The connection lives in its **own process**:
+`integrations/smax/` — a self-contained connector that talks to the
+classifier **only through its public HTTP API** (zero `ai_classification`
+imports; runnable on a machine that only has network access).
 
-1. **API (ready now):** SMAX (or any system) pushes incidents →
-   `POST /api/v1/incidents` → poll `GET /api/v1/incidents/{ref}` for the
-   result. Nothing to configure on the SMAX side beyond the bearer token.
+```
+SMAX ──list_changed──▶ integrations/smax (poller)
+                          │ POST /api/v1/incidents (Bearer CLASSIFIER_API_TOKEN)
+                          ▼
+                      classifier API ──▶ classification + persistence
+                          │ GET /api/v1/incidents/{ref}
+                          ▼
+                      integrations/smax (writeback) ──write_suggestion──▶ SMAX
+```
 
-2. **Polling (code exists, NOT yet tested against real SMAX):** the app
-   polls SMAX for changed tickets itself (adapter: `ai_classification/seams/smax/`).
-   Enable when SMAX credentials exist:
+Run it:
 
-   ```
-   TICKETING_API_URL=<smax-url>     # default http://localhost:8002
-   TICKETING_API_TOKEN=<token>      # required — until set, sync logs
-                                    # "SMAX source is not configured" (expected)
-   TICKETING_SOURCE=real            # default
-   TICKETING_DRY_RUN=true           # first: verify nothing is written back
-   ```
+```bash
+cd integrations/smax
+export SMAX_API_URL=<smax-url>            # upstream ticketing system
+export SMAX_API_TOKEN=<token>             # required to poll SMAX
+export CLASSIFIER_API_URL=http://localhost:8000
+export CLASSIFIER_API_TOKEN=<INTEGRATION_API_TOKEN from .env>
+export SMAX_DRY_RUN=true                  # first: verify nothing is written back
 
-   Until `TICKETING_API_TOKEN` is configured, the API path (1) is the
-   integration route.
+python -m integrations.smax.main --check      # validate config, print masked summary
+python -m integrations.smax.main --once       # one poll + write-back pass
+python -m integrations.smax.main              # run poller + writeback (Ctrl-C to stop)
+python -m integrations.smax.main --backfill incidents.json --since 2026-08-01T00:00:00Z
+```
+
+Full contract (payload shapes, env vars, error handling, sequence diagram):
+`integrations/smax/README.md`. The E1-E9 API it consumes is documented in
+`docs/INTEGRATION_GUIDE.md`.
 
 ## Project Layout
 
 ```
 AI_Classifier/
 ├── ai_classification/
-│   ├── __init__.py
-│   ├── config.py                # Env-based settings (LLM model, PG, keys)
-│   ├── sync.py                  # Background ticketing sync worker
-│   ├── api/
-│   │   ├── routes.py            # FastAPI endpoints — no business logic
-│   │   └── schemas.py           # Pydantic request/response schemas
-│   ├── core/
-│   │   ├── classifier.py        # LLM classification via LiteLLM
-│   │   ├── store.py             # PostgreSQL + pgvector persistence
-│   │   ├── grouping.py          # Two-phase clustering (offering + embedding)
-│   │   ├── failure_modes.py     # Legacy FM codes (internal only — not the product taxonomy)
-│   │   └── import_service.py    # Bulk import logic
-│   └── domain/
-│       ├── models.py            # ClassificationResult, SimilarMatch
-│       └── taxonomy.py          # Hajj-only enums (3 systems, 189 services)
-├── frontend/dashboard/          # Three-lens dashboard (standalone)
-│   ├── index.html               # UI shell
-│   └── app.js                   # Logic + rendering (no build step)
-├── tests/
-│   ├── test_classifier.py       # 15 tests (mocked LLM)
-│   ├── test_incident_store.py   # 22 tests (requires PG)
-│   └── test_service.py          # 5 tests
-├── ocr/                         # OCR microservice (separate)
-├── simulator/                   # Ticketing simulator (separate)
-├── test_incidents.json          # 200 real Nusuk tickets
+│   ├── app.py                  # FastAPI wiring: lifespan, CORS, router mounting, worker startup
+│   ├── api/                    # Endpoint-only modules (no business logic)
+│   │   ├── incidents.py        # /classify, /incidents, /import, /reset (auth-gated)
+│   │   ├── reports.py          # /api/reports, /clusters, /review-queue, /cluster/sweep
+│   │   ├── diagnostics.py      # /health, /status, /test/llm (auth-gated), /test/all
+│   │   ├── integration.py      # E1-E9 integration API (/api/v1/*, /ready)
+│   │   ├── auth.py             # Shared bearer-token dependency (E6/E6b)
+│   │   └── schemas.py          # Pydantic request/response schemas
+│   ├── domain/
+│   │   ├── models.py           # ClassificationResult, SimilarMatch, SimilarOpenIncident
+│   │   └── taxonomy.py         # Hajj/Umrah enums + hierarchy (frozen)
+│   ├── services/
+│   │   ├── classify/           # LLM classifier (prompts/parsing/cascade/verification/persistence)
+│   │   ├── cluster/            # v2 LLM-first persistent clustering (Flow A/B/C)
+│   │   ├── jobs/               # sync, heal (gated), integration worker
+│   │   ├── review/             # cluster-proposal + taxonomy-gaps review APIs
+│   │   ├── ingest/             # import service, status monitor
+│   │   └── match/              # offering helpers (dormant engine moved to legacy/)
+│   ├── seams/                  # ticket-source port, pipeline, local fake source
+│   └── shared/                 # config + split store (db, store_incidents, store_clusters, store_logs)
+├── integrations/
+│   └── smax/                   # Standalone SMAX connector (talks to the API over HTTP)
+├── legacy/
+│   └── suboffering_engine/     # Quarantined sub-offering engine (superseded, for resurrection)
+├── frontend/dashboard/         # Dashboard (no build step)
+├── tests/                      # Mirrors services 1:1
+├── docs/                       # Docs + worklogs/
+├── ocr/  simulator/  evaluation/  scripts/
 └── pyproject.toml
 ```
 
