@@ -31,7 +31,7 @@ from tests.services.classify.test_cascade import _settings_with, make_fake_compl
 
 import ai_classification.services.classify.classifier as classifier_mod
 import ai_classification.services.classify.llm as mod_llm
-from ai_classification.services.ingest.routes import app
+from ai_classification.app import app
 from ai_classification.shared.config import settings
 from ai_classification.services.jobs.integration import get_job, list_jobs, worker_tick
 from ai_classification.services.jobs.integration.schemas import Err

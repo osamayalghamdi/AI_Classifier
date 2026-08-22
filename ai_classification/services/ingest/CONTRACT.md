@@ -2,7 +2,7 @@
 
 Pipeline position: `50_api` — FastAPI HTTP layer, bulk import, service monitoring.
 
-## routes.py — app endpoints
+## app.py + api/ — app endpoints
 - `GET /health` · `GET/POST /test/llm` · `GET /test/all` (full-system battery)
 - `POST /classify`, `GET /classify`, `POST /classify/batch`
 - `POST /incidents/{id}/resolve`, `GET /incidents`, `GET /incidents/{id}`
@@ -11,7 +11,7 @@ Pipeline position: `50_api` — FastAPI HTTP layer, bulk import, service monitor
 - Structured errors: 422 `INVALID_PAYLOAD` (app-level RequestValidationError handler with
   `fields` list) and `{"error": {...}}` bodies for HTTPException; CORS open.
 
-## integration_routes.py — E1–E9 integration API
+## api/integration.py — E1–E9 integration API
 - Bearer token (`settings.integration_token`) required on every endpoint EXCEPT `/health`,
   `/ready` (E4), `/status` (liveness/readiness exempt by design); missing/empty config → 401.
 - `POST /api/v1/incidents` (E1, 202 async) · `GET /api/v1/incidents/{reference}` (E2)
