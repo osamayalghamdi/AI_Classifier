@@ -175,3 +175,27 @@ def test_find_fallback_marks_only_fallback_rows(_fake_llm):
     ids = {r["id"] for r in rows}
     assert bad_id in ids
     assert good_id not in ids
+
+
+# ── Worker wiring (DEAD-2: config promised it, lifespan now starts it) ─
+
+def test_start_heal_worker_disabled_returns_none(monkeypatch):
+    from ai_classification.services.jobs import heal as heal_mod
+    from dataclasses import replace
+
+    fake = replace(heal_mod.settings, reclassify_enabled=False)
+    monkeypatch.setattr(heal_mod, "settings", fake)
+    assert heal_mod.start_heal_worker() is None
+
+
+def test_start_heal_worker_enabled_starts_thread(monkeypatch):
+    from ai_classification.services.jobs import heal as heal_mod
+    from dataclasses import replace
+
+    fake = replace(heal_mod.settings, reclassify_enabled=True, reclassify_interval_s=3600)
+    monkeypatch.setattr(heal_mod, "settings", fake)
+    monkeypatch.setattr(heal_mod, "reclassify_fallback_incidents", lambda: {"healed": 0, "still_fallback": 0})
+    t = heal_mod.start_heal_worker()
+    assert t is not None
+    assert t.daemon is True
+    assert t.name == "heal"

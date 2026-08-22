@@ -18,7 +18,6 @@ from ai_classification.services.classify.classifier import classify_and_store, c
 from ai_classification.shared.config import settings
 from ai_classification.services.cluster.persistent import build_clusters, sweep_pool
 from ai_classification.services.ingest.import_service import import_incidents_from_file, import_incidents_from_body
-from ai_classification.services.review.proposal_routes import router as proposal_router
 from ai_classification.services.review.cluster_proposal_routes import router as cluster_proposal_router
 from ai_classification.services.review.taxonomy_gaps_routes import router as taxonomy_gaps_router
 
@@ -69,8 +68,6 @@ async def _http_error_handler(_request, exc: _HTTPException):
         return JSONResponse(status_code=exc.status_code, content=exc.detail)
     return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 
-# Proposal review API (sub-offering engine, Phase 2)
-app.include_router(proposal_router)
 # Cluster-proposal review API (v2 persistent clustering — human gate)
 app.include_router(cluster_proposal_router)
 # Taxonomy gaps review API (classifier v3 OFFERING-GAP surface)

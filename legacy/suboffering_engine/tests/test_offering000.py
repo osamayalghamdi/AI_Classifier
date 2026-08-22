@@ -16,9 +16,9 @@ import random
 import numpy as np
 import pytest
 
-import ai_classification.shared.store as live_store  # noqa: F401  (store module init)
+from ai_classification.shared.config import settings as base_settings
 from ai_classification.services.match.suboffering import OFFERING_000
-from ai_classification.services.cluster.suboffering_cluster import run_pool
+from legacy.suboffering_engine.suboffering_cluster import run_pool
 
 from tests.shared.test_incident_store import FixedVecModel, _make_store
 from tests.conftest import TEST_PG_DATABASE
@@ -59,7 +59,15 @@ def _ticket(iid: str, text: str, svc: str) -> dict:
 @pytest.fixture
 def engine_store(monkeypatch):
     """Real test Postgres + mocked embeddings + engine tables truncated."""
-    s = _make_store(monkeypatch, FixedVecModel())
+    import ai_classification.shared.store as store_mod
+    from dataclasses import replace as _replace
+    from legacy.suboffering_engine.store_suboffering import LegacySubOfferingStore
+
+    monkeypatch.setattr(store_mod, "SentenceTransformer", lambda *a, **_: FixedVecModel())
+    test_settings = _replace(base_settings, pg_database=TEST_PG_DATABASE)
+    monkeypatch.setattr(store_mod, "settings", test_settings)
+    s = LegacySubOfferingStore()
+    s.setup()
     conn = s._getconn()
     try:
         with conn.cursor() as cur:
@@ -89,7 +97,7 @@ def _vecs_for(pairs: dict[tuple[str, str], float]) -> dict[str, np.ndarray]:
 def _patch_stores(monkeypatch, s):
     """Point both engine modules' module-level `store` at the test store so
     embed_pure / create_proposal hit the test DB."""
-    monkeypatch.setattr("ai_classification.services.cluster.suboffering_cluster.store", s)
+    monkeypatch.setattr("legacy.suboffering_engine.suboffering_cluster.store", s)
     monkeypatch.setattr("ai_classification.services.match.suboffering.store", s)
 
 
@@ -150,13 +158,15 @@ class TestDecisionMintNewOffering:
     def test_approve_with_new_offering_name_mints_under_new_offering(self, engine_store, monkeypatch):
         """W3: approve + new_offering_name -> sub_offering minted under the NEW
         offering id (not the proposal's OFFERING-000 pool id)."""
-        import ai_classification.services.review.proposal_routes as pr
+        import legacy.suboffering_engine.proposal_routes as pr
         import ai_classification.services.match.suboffering as so
         monkeypatch.setattr(pr, "store", engine_store)
         monkeypatch.setattr(so, "store", engine_store)
-        from ai_classification.services.ingest.routes import app
+        from fastapi import FastAPI
         from fastapi.testclient import TestClient
         from tests.shared.test_incident_store import _insert_raw, _make_result
+        app = FastAPI()
+        app.include_router(pr.router)
         s = engine_store
         for iid in ("i1", "i2", "i3"):
             _insert_raw(s, iid, f"title {iid}", f"desc {iid}", "",
@@ -179,12 +189,14 @@ class TestDecisionMintNewOffering:
 
     def test_approve_without_name_keeps_pool_offering(self, engine_store, monkeypatch):
         """W2 semantics preserved: plain approve mints under the proposal's pool offering."""
-        import ai_classification.services.review.proposal_routes as pr
+        import legacy.suboffering_engine.proposal_routes as pr
         import ai_classification.services.match.suboffering as so
         monkeypatch.setattr(pr, "store", engine_store)
         monkeypatch.setattr(so, "store", engine_store)
-        from ai_classification.services.ingest.routes import app
+        from fastapi import FastAPI
         from fastapi.testclient import TestClient
+        app = FastAPI()
+        app.include_router(pr.router)
         s = engine_store
         prop = s.create_proposal("some-pool", ["i1", "i2", "i3"], 0.6, {},
                                  {"needs_review": False})

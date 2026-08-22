@@ -11,7 +11,7 @@ venv/
 # Environment
 .env
 
-# Local config (copy from config.example.py, gitignored to keep secrets safe)
+# Local config (copy from .env.example, gitignored to keep secrets safe)
 ai_classification/config.py
 
 # Docker

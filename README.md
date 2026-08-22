@@ -169,7 +169,7 @@ AI endpoint is unreachable, and the startup logs print
 `SERVICE LLM: UNREACHABLE` loudly — so a wrong key or unreachable model
 is visible immediately.
 
-**Full detail:** `DEPLOY.md` (deploy runbook) and `DEPLOY_STATUS.md`
+**Full detail:** `DEPLOY.md` (deploy runbook) and `docs/worklogs/DEPLOY_STATUS.md`
 (what was verified, gate results, known open items).
 
 ## Ports & URLs

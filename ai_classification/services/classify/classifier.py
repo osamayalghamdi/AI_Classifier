@@ -16,7 +16,6 @@ Every LLM decision is recorded to classification_log; genuine LLM failure
 marks classification_status="failed" with the E5 reasoning marker intact.
 """
 
-import inspect
 import json
 import logging
 import re
@@ -601,9 +600,8 @@ def classify(title: str, description: str, *, incident_ref: str | None = None,
     _log.info("Classifying — title='%s'", title[:60])
     ref = incident_ref or f"anon-{content_hash(title, description)[:8]}"
 
-    # CASCADE_CLASSIFICATION gate (default TRUE). The Settings field is added
-    # by the config commit; getattr keeps this worktree importable until then.
-    if getattr(settings, "cascade_classification", True):
+    # CASCADE_CLASSIFICATION gate (default TRUE).
+    if settings.cascade_classification:
         return _classify_v3(title, description, incident_ref=ref, affected_system=affected_system)
 
     return _classify_single_shot(title, description, incident_ref=ref)
@@ -1618,16 +1616,9 @@ def classify_and_store(
         content_hash=h,
         source_ticket_ids=[source_ticket_id] if source_ticket_id else [incident_id],
     )
-    # v3: persist ticket_kind/classification_status to the dedicated columns
-    # (worker B's save_incident accepts them; fall back gracefully when this
-    # worktree snapshot predates that merge).
-    try:
-        _sig = inspect.signature(store.save_incident)
-    except Exception:
-        _sig = None
-    if _sig is not None and "ticket_kind" in _sig.parameters:
-        _save_kwargs["ticket_kind"] = result.ticket_kind.value
-        _save_kwargs["classification_status"] = result.classification_status
+    # v3: persist ticket_kind/classification_status to the dedicated columns.
+    _save_kwargs["ticket_kind"] = result.ticket_kind.value
+    _save_kwargs["classification_status"] = result.classification_status
     store.save_incident(
         incident_id, title, description, result, extracted_text, **_save_kwargs
     )

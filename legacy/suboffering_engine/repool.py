@@ -33,16 +33,15 @@ CROSS_OFFERING_THRESHOLD = 0.75
 
 
 def repool_once(*, dry_run: bool = False) -> dict:
-    from ai_classification.shared.store import store
+    from legacy.suboffering_engine.store_suboffering import store
     from ai_classification.services.match.suboffering import (
         OFFERING_000,
         embed_pure,
-        feed_incident,
-        match_against_exemplars,
         offering_of,
     )
-    from ai_classification.services.cluster.suboffering_cluster import run_all_pools
-    from ai_classification.services.cluster.verifier import Verifier
+    from legacy.suboffering_engine.suboffering import feed_incident, match_against_exemplars
+    from legacy.suboffering_engine.suboffering_cluster import run_all_pools
+    from legacy.suboffering_engine.verifier import Verifier
 
     stats = {"pool_before": 0, "matched": 0, "phase1_moved": 0, "phase2_moved": 0,
              "remaining": 0, "clustered_pools": 0, "proposals_created": 0,

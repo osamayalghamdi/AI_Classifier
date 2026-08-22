@@ -1,7 +1,5 @@
-"""Tests for classify_and_store/resolve_incident — orchestration between
-core.classifier and core.store (formerly one service.py module, now split
-along the same seam: store lifecycle in core.store, classify orchestration
-in core.classifier)."""
+"""Tests for classify_and_store/resolve_incident — orchestration between the
+classifier and the incident store (formerly one service.py module)."""
 
 import pytest
 from datetime import datetime, timedelta, timezone

@@ -10,13 +10,13 @@ from dataclasses import replace
 from fastapi.testclient import TestClient
 
 from ai_classification.shared.config import settings as base_settings
-from ai_classification.shared.store import IncidentStore
 from ai_classification.services.match.suboffering import offering_of, embed_pure
-from ai_classification.services.cluster.suboffering_cluster import generate_candidates, compute_member_flags
-import ai_classification.services.cluster.verifier as verifier_mod
+from legacy.suboffering_engine.suboffering_cluster import generate_candidates, compute_member_flags
+import legacy.suboffering_engine.verifier as verifier_mod
 
 from tests.conftest import TEST_PG_DATABASE
 from tests.shared.test_incident_store import FixedVecModel, _truncate, _make_store
+from legacy.suboffering_engine.store_suboffering import LegacySubOfferingStore
 
 
 # ── prompt identity (drift guard: engine copy must equal the canary copy) ──
@@ -86,7 +86,17 @@ class TestCandidates:
 # ── engine store round-trip ───────────────────────────────────────────
 @pytest.fixture
 def engine_store(monkeypatch):
-    s = _make_store(monkeypatch, FixedVecModel())
+    """LegacySubOfferingStore (IncidentStore + sub-offering mixin) against the
+    real test Postgres with mocked embeddings."""
+    import ai_classification.shared.store as store_mod
+    from dataclasses import replace as _replace
+
+    monkeypatch.setattr(store_mod, "SentenceTransformer", lambda *a, **_: FixedVecModel())
+    test_settings = _replace(base_settings, pg_database=TEST_PG_DATABASE)
+    monkeypatch.setattr(store_mod, "settings", test_settings)
+    s = LegacySubOfferingStore()
+    s.setup()
+    _truncate(s)
     conn = s._getconn()
     try:
         with conn.cursor() as cur:
@@ -150,11 +160,13 @@ class TestEngineStore:
 # ── proposal API flow (routes against the test store) ─────────────────
 @pytest.fixture
 def api(engine_store, monkeypatch):
-    import ai_classification.services.review.proposal_routes as pr
+    import legacy.suboffering_engine.proposal_routes as pr
     import ai_classification.services.match.suboffering as so
     monkeypatch.setattr(pr, "store", engine_store)
     monkeypatch.setattr(so, "store", engine_store)
-    from ai_classification.services.ingest.routes import app
+    from fastapi import FastAPI
+    app = FastAPI()
+    app.include_router(pr.router)
     return TestClient(app)
 
 
