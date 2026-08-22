@@ -66,6 +66,15 @@ def _connect():
     )
 
 
+def ping() -> str:
+    """Public connectivity probe — used by /test/all instead of the private
+    _connect() helper (which stays for internal use)."""
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT count(*) FROM incidents")
+            return f"connected, {cur.fetchone()[0]} incidents"
+
+
 def ensure_jobs_table() -> None:
     with _connect() as conn:
         conn.autocommit = True

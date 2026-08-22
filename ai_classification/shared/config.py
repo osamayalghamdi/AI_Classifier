@@ -38,17 +38,13 @@ class Settings:
     # CASCADE_CLASSIFICATION=true (default) → coarse-to-fine system→service→
     # offering cascade; false → legacy single-shot prompt (byte-identical to
     # the pre-cascade behavior).
-    cascade_classification: bool = getenv(
-        "CASCADE_CLASSIFICATION", "true"
-    ).lower() in ("1", "true", "yes", "on")
+    cascade_classification: bool = _is_truthy(getenv("CASCADE_CLASSIFICATION", "true"))
 
     # Classifier v3 self-consistency pass (DEFAULT OFF — measure before
     # enabling): when true, tickets that end confidence=low are re-run 3× at
     # temperature 0.7 and majority-voted per field; no majority → the
     # low-confidence result is kept and flagged needs_review=true.
-    classify_self_consistency: bool = getenv(
-        "CLASSIFY_SELF_CONSISTENCY", "false"
-    ).lower() in ("1", "true", "yes", "on")
+    classify_self_consistency: bool = _is_truthy(getenv("CLASSIFY_SELF_CONSISTENCY", "false"))
 
     # ── Intake field mapping ─────────────────────────────────────────────
     # Payload keys tried in order when mapping a raw ticket to title /
@@ -104,9 +100,7 @@ class Settings:
     integration_retry_base_s: int = int(getenv("INTEGRATION_RETRY_BASE_S", "5"))
     integration_poll_s: float = float(getenv("INTEGRATION_POLL_S", "2.0"))
     # 0 disables the background worker (tests / manual ticking).
-    integration_worker_enabled: bool = getenv(
-        "INTEGRATION_WORKER_ENABLED", "1"
-    ).lower() in ("1", "true", "yes", "on")
+    integration_worker_enabled: bool = _is_truthy(getenv("INTEGRATION_WORKER_ENABLED", "1"))
 
     # ── Re-classification sweep (heal) ──────────────────────────────────
     # Periodically re-classify incidents whose stored classification is the
@@ -114,27 +108,21 @@ class Settings:
     # reasoning), so an LLM outage self-heals once the endpoint is reachable
     # again. Only fallback-marked rows are touched — good classifications
     # are never re-run.
-    reclassify_enabled: bool = getenv(
-        "RECLASSIFY_ENABLED", "1"
-    ).lower() in ("1", "true", "yes", "on")
+    reclassify_enabled: bool = _is_truthy(getenv("RECLASSIFY_ENABLED", "1"))
     reclassify_interval_s: int = int(getenv("RECLASSIFY_INTERVAL_S", "600"))
     reclassify_max_per_tick: int = int(getenv("RECLASSIFY_MAX_PER_TICK", "10"))
 
     # ── Persistent clustering (v2 LLM-first) ────────────────────────────
     # Flow A runs in the classify path's BACKGROUND task; slow inference
     # must not delay the classify response. Flow C audit cadence (nightly).
-    cluster_assign_on_arrival: bool = getenv(
-        "CLUSTER_ASSIGN_ON_ARRIVAL", "1"
-    ).lower() in ("1", "true", "yes", "on")
+    cluster_assign_on_arrival: bool = _is_truthy(getenv("CLUSTER_ASSIGN_ON_ARRIVAL", "1"))
     cluster_audit_interval_s: int = int(getenv("CLUSTER_AUDIT_INTERVAL_S", "86400"))
     # Human gate for new clusters: proposals -> review -> activate. User
     # asked to SKIP the gate (zero-friction NOC demo): default ON mints
     # sweep groups as ACTIVE clusters directly. The nightly audit is the
     # backstop (removes wrong members; verified live: 11 in one pass).
     # Set CLUSTER_AUTO_ACTIVATE=0 to restore the human approval gate.
-    cluster_auto_activate: bool = getenv(
-        "CLUSTER_AUTO_ACTIVATE", "1"
-    ).lower() in ("1", "true", "yes", "on")
+    cluster_auto_activate: bool = _is_truthy(getenv("CLUSTER_AUTO_ACTIVATE", "1"))
 
 
 settings = Settings()

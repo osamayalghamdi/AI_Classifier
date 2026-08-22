@@ -12,11 +12,10 @@ ai_classification/app.py, and the api modules call store.<method> directly
 """
 
 import logging
-from dataclasses import dataclass
 
 from sentence_transformers import SentenceTransformer
 
-from ai_classification.domain.models import ClassificationResult
+from ai_classification.domain.models import ClassificationResult, SimilarMatch
 from ai_classification.shared.config import settings
 from ai_classification.shared.db import DBBase, VECTOR_DIM
 from ai_classification.shared.store_incidents import IncidentsMixin
@@ -39,14 +38,6 @@ _INCIDENT_COLS: tuple[str, ...] = (
     "notes", "discussion_history", "escalation_info", "completion_code",
     "ticket_kind", "classification_status",
 )
-
-
-@dataclass
-class SimilarMatch:
-    id: str
-    title: str
-    similarity: float
-    classification: ClassificationResult
 
 
 class IncidentStore(DBBase, IncidentsMixin, ClustersMixin, LogsMixin):
