@@ -249,3 +249,24 @@ export PG_DATABASE=ai_incidents_test INTEGRATION_TOKEN=test-token \
 the E5 test spawns a subprocess pointed at the REAL unreachable company
 endpoint and asserts the retryable→flagged path with the actual
 DNS/connection error.)
+
+## 10. Reference client — integrations/smax
+
+The canonical example consumer of this API is the **SMAX connector** in
+`integrations/smax/` — a standalone process with **zero** `ai_classification`
+imports that talks to the classifier only over HTTP:
+
+- `submit(incident)` → `POST /api/v1/incidents` (Bearer, 202 + reference)
+- `result(ref)` → `GET /api/v1/incidents/{ref}` (polls to a terminal state)
+- `backfill(incidents)` → `POST /api/v1/backfill` (chunked ≤200)
+
+Run it (see `integrations/smax/README.md` for the full env table):
+
+```bash
+export CLASSIFIER_API_URL=http://localhost:8000
+export CLASSIFIER_API_TOKEN=<INTEGRATION_API_TOKEN from .env>
+python -m integrations.smax.main --once      # one poll + write-back pass
+```
+
+Use it as a template for any other upstream system: the E1-E9 contract here
+is the only surface it needs.
