@@ -294,6 +294,19 @@ class DBBase:
 
     # ── Embedding ──────────────────────────────────────────────────
 
+    def embedding_ready(self) -> bool:
+        """Public probe: is the embedding model loaded? (diagnostics use this
+        instead of reaching into the private _model attribute.)"""
+        return self._model is not None
+
+    def embedding_dim(self) -> int | None:
+        """Public probe: embedding dimension (None when the model isn't
+        loaded). Used by /test/all instead of private _model access."""
+        if self._model is None:
+            return None
+        v = self._model.encode("test ticket")
+        return int(np.asarray(v).shape[-1])
+
     def _embed(self, text: str) -> np.ndarray | None:
         if self._model is None:
             return None

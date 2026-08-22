@@ -1,6 +1,7 @@
 """Internal domain models — the LLM classification contract and derived types.
 Pipeline position: 15_models — domain types (ClassificationResult, …)."""
 
+from dataclasses import dataclass
 from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
@@ -134,3 +135,16 @@ class SimilarOpenIncident(BaseModel):
     similarity: float = Field(ge=0.0, le=1.0)
     classification: ClassificationResult
     canonical_statement: str = Field(default="")
+
+
+@dataclass
+class SimilarMatch:
+    """Storage-layer shape of a similar-incident match (returned by
+    store.find_similar). Sibling of SimilarOpenIncident above — the same
+    concept at two layers: storage (this dataclass) vs API (Pydantic model).
+    """
+
+    id: str
+    title: str
+    similarity: float
+    classification: ClassificationResult

@@ -1,5 +1,15 @@
-"""Diagnostics endpoints — /health liveness, /test/llm live smoke test,
-/test/all full system battery.
+"""Diagnostics endpoints — liveness, smoke tests, full system battery.
+
+Which endpoint for which consumer (they overlap deliberately; the split is
+discoverability, not redundancy):
+
+| Endpoint   | Consumer          | What it does                                |
+|------------|-------------------|---------------------------------------------|
+| /health    | k8s / load balancer liveness | process alive? (returns {status, model, store_ready}) |
+| /ready     | k8s readiness (in api/integration.py) | db / embedding / llm one-shot readiness    |
+| /status    | dashboard top bar  | per-service status: db / embedding / llm    |
+| /test/llm  | human smoke test   | ask the configured model anything, live     |
+| /test/all  | human full battery | db → embedding → llm → classify → similar → clusters |
 
 Moved from ai_classification/services/ingest/routes.py (C-3 restructure) —
 endpoint behavior, status codes, and response shapes are unchanged.
@@ -102,20 +112,15 @@ def test_all():
 
     # 1. DB — connect + count incidents
     def _db():
-        from ai_classification.services.jobs.integration import _connect
-        with _connect() as conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT count(*) FROM incidents")
-                return f"connected, {cur.fetchone()[0]} incidents"
+        from ai_classification.services.jobs.integration import ping
+        return ping()
 
     # 2. Embedding model — encode a string, confirm shape
     def _embedding():
-        import numpy as np
         from ai_classification.shared.store import store
-        if store._model is None:
+        if not store.embedding_ready():
             raise RuntimeError("embedding model not loaded")
-        v = store._model.encode("test ticket")
-        return f"model={settings.embedding_model_name}, dim={np.asarray(v).shape[-1]}"
+        return f"model={settings.embedding_model_name}, dim={store.embedding_dim()}"
 
     # 3. LLM — real completion against the configured endpoint
     def _llm():
