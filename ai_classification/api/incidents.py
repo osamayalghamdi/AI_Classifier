@@ -7,8 +7,9 @@ Pipeline position: 50_api — FastAPI endpoints."""
 
 import logging
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
+from ai_classification.api.auth import require_token
 from ai_classification.api.schemas import (
     ClassifyRequest, ClassifyResponse, ClassifyBatchRequest, ClassifyBatchResponse,
     ResolveResponse, BulkImportRequest, IncidentResponse, IncidentListResponse,
@@ -167,8 +168,9 @@ def import_bulk_from_body(req: BulkImportRequest):
     return result
 
 
-# Delete all incidents (resets the store)
-@router.post("/reset")
+# Delete all incidents (resets the store) — destructive, auth-gated.
+# Same bearer check as the /api/v1/* integration API (api/auth.py).
+@router.post("/reset", dependencies=[Depends(require_token)])
 def reset_all():
     count = delete_all_incidents()
     _log.warning("Reset complete — %d incidents deleted", count)

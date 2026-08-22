@@ -10,10 +10,10 @@ via the app-level handler registered in app.py.
 from __future__ import annotations
 
 import logging
-import secrets
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
+from ai_classification.api.auth import require_token
 from ai_classification.shared.config import settings
 from ai_classification.services.jobs.integration import enqueue, get_job, list_jobs, worker_tick
 from ai_classification.services.jobs.integration.schemas import Err, IntegrationBatch, IntegrationIncident, error_body
@@ -23,28 +23,6 @@ from ai_classification.seams.pipeline import persist_result, process_incident
 _log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1", tags=["integration"])
-
-
-# ── Auth (E6) — every non-health endpoint ─────────────────────────────
-
-def require_token(authorization: str | None = Header(None)) -> None:
-    expected = settings.integration_token
-    if not expected:
-        raise HTTPException(
-            status_code=401,
-            detail=error_body(Err.UNAUTHORIZED, "Integration token is not configured on the server"),
-        )
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(
-            status_code=401,
-            detail=error_body(Err.UNAUTHORIZED, "Missing Authorization header (Bearer <token>)"),
-        )
-    supplied = authorization[len("Bearer "):]
-    if not secrets.compare_digest(supplied, expected):
-        raise HTTPException(
-            status_code=401,
-            detail=error_body(Err.UNAUTHORIZED, "Invalid token"),
-        )
 
 
 # ── E1: async ingest ──────────────────────────────────────────────────

@@ -22,8 +22,9 @@ echo
 echo "# 2. LLM & full system test"
 echo "# ONE CALL — runs the whole battery (db/embedding/llm/classify/similar/clusters):"
 echo "curl -s $BASE/test/all"
-echo "curl -s '$BASE/test/llm?question=What%20is%20your%20name%3F&max_tokens=200'"
-echo "curl -s -X POST $BASE/test/llm -H 'Content-Type: application/json' -d '{\"question\": \"Say hello in Arabic in one line.\"}'"
+echo "# /test/llm is auth-gated (spends LLM tokens):"
+echo "curl -s '$BASE/test/llm?question=What%20is%20your%20name%3F&max_tokens=200' -H \"Authorization: Bearer $TOKEN\""
+echo "curl -s -X POST $BASE/test/llm -H \"Authorization: Bearer $TOKEN\" -H 'Content-Type: application/json' -d '{\"question\": \"Say hello in Arabic in one line.\"}'"
 echo
 
 # ── 3. Classification ───────────────────────────────────────────────────────
@@ -49,8 +50,8 @@ echo
 # ── 6. Data management ──────────────────────────────────────────────────────
 echo "# 6. Data management"
 echo "curl -s -X POST $BASE/import -H 'Content-Type: application/json' -d '{\"incidents\": [{\"title\": \"Example\", \"description\": \"example\"}]}'"
-echo "# CAREFUL — deletes everything:"
-echo "curl -s -X POST $BASE/reset"
+echo "# CAREFUL — deletes everything (auth-gated):"
+echo "curl -s -X POST $BASE/reset -H \"Authorization: Bearer $TOKEN\""
 echo
 
 # ── 7. Integration API (auth) ───────────────────────────────────────────────

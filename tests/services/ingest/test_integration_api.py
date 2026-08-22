@@ -331,6 +331,38 @@ def test_e6_health_and_ready_exempt_from_auth(client):
     assert client.get("/ready").status_code in (200, 503)
 
 
+# ── E6b: destructive/dangerous dashboard endpoints are auth-gated ─────
+# POST /reset deletes ALL incidents; /test/llm spends LLM tokens. Both
+# were open on the same unauthenticated surface as the dashboard —
+# now they share the same bearer check as /api/v1/* (api/auth.py).
+
+def test_e6b_reset_requires_auth(client):
+    # No token → 401
+    r = client.post("/reset")
+    assert r.status_code == 401, r.text
+    assert r.json()["error"]["code"] == Err.UNAUTHORIZED
+    # Wrong token → 401
+    r = client.post("/reset", headers={"Authorization": "Bearer WRONG"})
+    assert r.status_code == 401
+    # Valid token → allowed (deletes everything — test DB is truncated by _clean_state)
+    r = client.post("/reset", headers=AUTH)
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "reset"
+
+
+def test_e6b_test_llm_requires_auth(client):
+    for method in ("get", "post"):
+        r = getattr(client, method)("/test/llm")
+        assert r.status_code == 401, f"{method} /test/llm -> {r.status_code}"
+        assert r.json()["error"]["code"] == Err.UNAUTHORIZED
+        r = getattr(client, method)("/test/llm", headers={"Authorization": "Bearer WRONG"})
+        assert r.status_code == 401, f"{method} /test/llm bad token -> {r.status_code}"
+    # Valid token → fake LLM fixture answers without a real call
+    r = client.get("/test/llm", headers=AUTH)
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "ok"
+
+
 # ── E7: idempotent replay on source_reference ────────────────────────
 
 def test_e7_replay_safe(client):
