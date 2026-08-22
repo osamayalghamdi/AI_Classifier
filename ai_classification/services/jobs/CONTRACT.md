@@ -1,27 +1,23 @@
 # Jobs Service — CONTRACT
-Recurring sweeps + manual one-time operations. No HTTP surface.
-## recovery — jobs/recovery.py · entry: `run_recovery(dry_run=...)`
-- Input: incidents whose classification actually FAILED (failed-reasoning marker), not already in `manual_review_queue`.
-- Output: re-classified via `store.update_classification`; failures/exhausted → queue (`store.queue_add`), human decides.
-- Depends on: `core.store`, `core.classifier.classify`, `config.settings` · Called by: human manually (`python -m ai_classification.services.jobs.recovery [--dry-run]`) — never automatic.
-- Key invariants: ERROR-only tickets; queued = "don't try again"; dry-run writes nothing.
-## repool — jobs/repool.py · entry: `repool_once(dry_run=...)` / `start_repool_worker()`
-- Input: `unmatched_pool` tickets (have offering, no sub-offering).
-- Output: re-matched to ACTIVE sub-offerings (own offering @0.60, cross-offering @0.75); leftovers clustered per offering → pending PROPOSALS.
-- Depends on: `core.store`, `core.suboffering`, `core.suboffering_cluster.run_all_pools`, `core.verifier.Verifier`, `config.settings` · Called by: daemon every `repool_interval_seconds` (900s) via `core.store.lifespan`; or manual run.
-- Key invariants: re-match only — NEVER re-classifies; proposals NEVER auto-mint (human review gate); dry-run does no LLM/embedding/writes.
-## reclassify_offerings — jobs/reclassify_offerings.py · entry: `run_reclassify(dry_run=...)`
-- Input: invalid/invented stored offering, `Spike` incident_type without error text, "Error Spikes" semantic mispicks.
-- Output: `classification_json` updated in place via live cascade (hardened v2 prompt + validator).
-- Depends on: `core.store`, `core.classifier`, `config.settings`, `domain.taxonomy.SERVICES_BY_SYSTEM` · Called by: human manually (`python -m ai_classification.services.jobs.reclassify_offerings [--dry-run]`).
-- Key invariants: never mints, never touches pools; identity/status/occurrence bookkeeping untouched.
-## heal — jobs/heal.py · entry: `reclassify_fallback_incidents(limit=None)`
+Recurring sweeps + background workers. No HTTP surface (endpoints live in `api/`).
+
+## sync — jobs/sync.py · entry: `start_sync_worker(store)`
+- Input: changed tickets from the configured `TicketSource` since the `.last_sync` stamp (`SYNC_STAMP_PATH`-configurable, defaults to repo root).
+- Output: processed via seams pipeline + `persist_result`; `.last_sync` advanced to the newest `updated_at` (count logged — BUG-5 fix).
+- Depends on: `config.settings`, `seams` (`get_ticket_source`, `process_incident`, `persist_result`, `NotConfiguredError`) · Called by: daemon in `app.lifespan` (interval = `sync_interval_seconds`).
+- Key invariants: no payload translation here (all in source adapters); idles (no error spam) when source unconfigured; dry-run skips persistence.
+
+## heal — jobs/heal.py · entry: `reclassify_fallback_incidents(limit=None)` / `start_heal_worker()`
 - Input: rows whose stored reasoning carries the fallback marker ("Classification failed after ...").
 - Output: re-classified in place (`store.reclassify_incident`); still-fallback rows left for next tick.
-- Depends on: `core.store.find_fallback_incidents`, `core.classifier.classify`, `config.settings` · Called by: `core.grouping._maybe_heal` on `reclassify_interval_s` cadence (`reclassify_enabled`-gated).
+- Depends on: `shared.store.find_fallback_incidents`, `classify.classifier.classify`, `config.settings` · Called by: daemon in `app.lifespan` via `start_heal_worker` (interval = `reclassify_interval_s`, `reclassify_enabled`-gated — default OFF in compose to conserve LLM tokens).
 - Key invariants: only fallback-marked rows touched; fails open when LLM down (bounded per tick); re-embeds the ticket's own text.
-## sync — jobs/sync.py · entry: `start_sync_worker(store)`
-- Input: changed tickets from the configured `TicketSource` since `.last_sync` stamp (repo root).
-- Output: processed via seams pipeline + `persist_result`; `.last_sync` advanced to newest `updated_at`.
-- Depends on: `config.settings`; `seams` (`get_ticket_source`, `process_incident`, `persist_result`, `NotConfiguredError`) · Called by: daemon in `core.store.lifespan` (interval = `sync_interval_seconds`).
-- Key invariants: no payload translation here (all in source adapters); idles (no error spam) when source unconfigured; dry-run skips persistence.
+
+## integration — jobs/integration/ · entry: `start_integration_worker()` / `ensure_jobs_table()`
+- Input: `ingestion_jobs` rows (async ingest E1-E9: pending → retrying → done/flagged).
+- Output: classifies + persists each job; retry with backoff on LLM failure; writes `result_json`/`error_code`.
+- Depends on: `classify.classifier`, `shared.store`, `config.settings` · Called by: daemon in `app.lifespan` (`integration_worker_enabled`-gated; tests drive synchronously with the gate off).
+- Key invariants: fail-closed bearer auth on the HTTP surface (`api/integration.py`); idempotent per `source_reference`; `_connect()` private, `ping()` public (diagnostics).
+
+## Removed from this service (Phase 1)
+- `recovery.py` / `repool.py` / `reclassify_offerings.py` — the sub-offering engine is dormant; all three moved to `legacy/suboffering_engine/` (see its README).
