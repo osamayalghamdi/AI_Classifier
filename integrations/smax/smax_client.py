@@ -1,12 +1,14 @@
-"""SMAX HTTP client — the only place that talks to SMAX's REST API.
+"""SMAX HTTP client — the only place this connector talks to SMAX's REST API.
 
-Kept deliberately thin: transport concerns (auth header, timeouts, retry
-on 429/5xx) live here; payload shapes live in models.py; the port
-semantics live in real_source.py. Nothing outside this package imports
-this module.
+Moved from the classifier app's old seams/smax package (Phase 4
+restructure) and made standalone: the transport logic (auth header,
+timeouts, retry on 429/5xx) is unchanged, but NotConfiguredError is now
+defined locally in this package (config.py) instead of being imported from
+the classifier's port module. Payload shapes live in smax_models.py; the
+poll loop lives in poller.py.
 
 NotConfiguredError is raised before any network I/O when the token is
-missing, so a misconfigured deployment fails loudly instead of polling a
+missing, so a misconfigured connector fails loudly instead of polling a
 dead endpoint.
 """
 
@@ -16,7 +18,7 @@ import logging
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from ..port import NotConfiguredError
+from .config import NotConfiguredError
 
 _log = logging.getLogger(__name__)
 
@@ -64,7 +66,7 @@ class SmaxClient:
 
     # ── endpoint surface (one method per upstream call) ───────────────
     def get_ticket(self, ticket_id: str) -> dict:
-        """Fetch one ticket. Returns the raw SMAX payload (see models.py)."""
+        """Fetch one ticket. Returns the raw SMAX payload (see smax_models.py)."""
         raw = self._request("GET", f"/tickets/{ticket_id}")
         return _json(raw)
 
@@ -85,8 +87,8 @@ class SmaxClient:
     def _require_configured(self) -> None:
         if not self._token:
             raise NotConfiguredError(
-                "SMAX source is not configured: set TICKETING_API_TOKEN "
-                f"(TICKETING_API_URL={self._api_url!r} present but no credentials)"
+                "SMAX source is not configured: set SMAX_API_TOKEN "
+                f"(SMAX_API_URL={self._api_url!r} present but no credentials)"
             )
 
 

@@ -1,18 +1,67 @@
 """SMAX external payload models — the boundary translation layer.
 
-SMAX wire formats are SMAX's business; the pipeline's incident model is
-ours. This module owns the mapping between them. No SMAX field name may
-appear anywhere outside this package (enforced by the containment grep).
+Moved from the classifier app's old seams/smax package (Phase 4
+restructure) and made standalone: the `Incident` shape it translated into
+is now defined locally in this package (a copy of the classifier's
+normalized incident shape) instead of being imported from the classifier's
+port module — the connector never imports the classifier's internals.
+
+The BUG-1 fix is preserved: `to_smax_suggestion` reads classification
+fields with `getattr(cls, ...)` (attribute access — works for Pydantic
+models and plain objects), NOT `.get()` (dict-only).
+
+No SMAX field name may appear anywhere outside this package (enforced by
+the containment grep).
 """
 
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
-
-from ..port import Incident
+from typing import Any
 
 _log = logging.getLogger(__name__)
+
+
+# ── Local normalized shapes (standalone copies — never imported) ──────
+
+@dataclass
+class Incident:
+    """Normalized incident — the shape this connector submits to the
+    classifier's public API. Field list mirrors the classifier's port
+    Incident (source_reference is the idempotency key)."""
+
+    source_reference: str
+    title: str
+    description: str
+    attachments: list[dict] = field(default_factory=list)
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    status: str = "active"
+    # Affected system supplied by the ticketing system (when available) —
+    # the classifier validates and pins it, skipping LLM system resolution.
+    affected_system: str = ""
+
+
+@dataclass
+class PipelineResult:
+    """Result-shaped object consumed by `to_smax_suggestion`.
+
+    Standalone copy of the classifier's PipelineResult surface — only the
+    attributes the write-back needs. Anything with these attributes works
+    (the serializer uses attribute access, never the concrete type).
+    """
+
+    source_reference: str
+    classification: Any | None = None  # object with affected_system/service/severity
+    similar_tickets: list[dict] = field(default_factory=list)
+    suggestions: list[str] = field(default_factory=list)
+    confidence: str = ""
+    model_version: str = ""
+    prompt_version: str = ""
+    processed_at: datetime | None = None
+
 
 # ── SMAX field name → our Incident field ──────────────────────────────
 # Only place in the codebase where SMAX's payload keys are named.
@@ -43,11 +92,11 @@ def _iso(payload: dict, keys: tuple[str, ...]) -> datetime | None:
 
 
 def from_smax(payload: dict) -> Incident:
-    """Translate a raw SMAX payload into the pipeline's Incident model.
+    """Translate a raw SMAX payload into the normalized Incident shape.
 
     Unknown keys are ignored (SMAX returns many fields we don't consume);
     malformed payloads degrade to empty strings rather than raising, so a
-    schema drift in upstream never takes the pipeline down.
+    schema drift in upstream never takes the connector down.
     """
     return Incident(
         source_reference=_first(payload, _ID_KEYS),
@@ -61,7 +110,13 @@ def from_smax(payload: dict) -> Incident:
 
 def to_smax_suggestion(result) -> dict:
     """Serialize a PipelineResult into the SMAX suggestion payload
-    (write-back in the safest mode — a side channel, not ticket fields)."""
+    (write-back in the safest mode — a side channel, not ticket fields).
+
+    BUG-1 (preserved fix): classification fields are read with
+    `getattr(cls, ...)` so Pydantic models and plain attribute objects
+    work; the old `.get()` only worked on dicts and silently produced None
+    for real classification objects.
+    """
     cls = result.classification
     return {
         "classification": {

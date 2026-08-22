@@ -1,9 +1,16 @@
 """SEAMS — the ticket-source port for the ingestion pipeline.
 
 The pipeline (pipeline.py) talks ONLY to the TicketSource interface; all
-external payload translation happens inside the source adapters. Selection
-is configuration (TICKETING_SOURCE=real|local), never code.
+external payload translation happens inside the source adapters.
+
+IMPORTANT (Phase 4): the real SMAX adapter moved OUT of this package into
+the standalone `integrations/smax` connector, which talks to the
+classifier through its public HTTP API. In-process, `get_ticket_source()`
+now returns ONLY the local fake source; selecting TICKETING_SOURCE=real
+logs a deprecation note pointing at the connector.
 """
+
+import logging
 
 from .local_source import LocalFakeTicketSource
 from .pipeline import (
@@ -18,26 +25,30 @@ from .port import (
     PipelineResult,
     TicketSource,
 )
-from .smax.real_source import RealTicketingSource
+
+_log = logging.getLogger(__name__)
 
 
 def get_ticket_source() -> TicketSource:
-    """Config-selected ticket source.
+    """Config-selected ticket source — LOCAL ONLY since Phase 4.
 
-    - "real" (default): satisfies the interface but raises
-      NotConfiguredError until TICKETING_API_TOKEN exists.
     - "local": fake source backed by the incident store (tests + offline).
+    - anything else (legacy "real"): the SMAX connector now lives in
+      `integrations/smax` (python -m integrations.smax.main); we log a
+      deprecation note and fall back to the local fake source so the
+      process keeps working.
     """
     from ai_classification.shared.config import settings
+    from ai_classification.shared.store import store
 
-    if settings.ticketing_source == "local":
-        from ai_classification.shared.store import store
-
-        return LocalFakeTicketSource(store)
-    return RealTicketingSource(
-        api_url=settings.ticketing_api_url,
-        token=settings.ticketing_api_token,
-    )
+    if settings.ticketing_source != "local":
+        _log.warning(
+            "TICKETING_SOURCE=%r is deprecated in-process — SMAX connectivity "
+            "moved to the standalone connector: `python -m integrations.smax.main` "
+            "(see integrations/smax/). Falling back to the local fake source.",
+            settings.ticketing_source,
+        )
+    return LocalFakeTicketSource(store)
 
 
 __all__ = [
@@ -46,7 +57,6 @@ __all__ = [
     "PipelineResult",
     "TicketSource",
     "LocalFakeTicketSource",
-    "RealTicketingSource",
     "get_ticket_source",
     "process_incident",
     "process_batch",

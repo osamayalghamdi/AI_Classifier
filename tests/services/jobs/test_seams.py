@@ -2,21 +2,18 @@
 
 Runs against the real test Postgres (see conftest.py) with mocked
 embeddings and a mocked LLM classification. Covers: port contract,
-config-driven selection, not-configured stub, pipeline result object
-(no writes), idempotency (S6), and provenance (S6).
+config-driven selection (local-only since Phase 4 — the real SMAX source
+moved to integrations/smax), pipeline result object (no writes),
+idempotency (S6), and provenance (S6).
 """
 
 from datetime import datetime, timedelta, timezone
-
-import pytest
 
 from ai_classification.shared.store import IncidentStore
 from ai_classification.seams import (
     Incident,
     LocalFakeTicketSource,
-    NotConfiguredError,
     PipelineResult,
-    RealTicketingSource,
     get_ticket_source,
     manual_process,
     persist_result,
@@ -59,34 +56,13 @@ def _make_store(monkeypatch, model):
 # ── S1/S2: port contract + implementations ────────────────────────────
 
 
-class TestRealSource:
-    def test_raises_not_configured_without_token(self):
-        src = RealTicketingSource("http://localhost:8002", token="")
-        dummy = PipelineResult(
-            source_reference="x", title="", description="", is_new=False,
-            incident_id=None, classification=None, similar_tickets=[],
-            suggestions=[], confidence="", model_version="", prompt_version="",
-            processed_at=datetime.now(timezone.utc), status="active",
-        )
-        for call in (lambda: src.fetch_ticket("x"),
-                     lambda: src.fetch_attachments("x"),
-                     lambda: src.list_changed(),
-                     lambda: src.write_back(dummy)):
-            with pytest.raises(NotConfiguredError, match="not configured"):
-                call()
-
-    def test_with_token_attempts_network_not_configured_error(self, monkeypatch):
-        # With a token the client is live: NotConfiguredError must NOT be
-        # raised — the real HTTP attempt is (no server on localhost:8002).
-        src = RealTicketingSource("http://localhost:8002", token="tok")
-        with pytest.raises(Exception) as exc:
-            src.fetch_ticket("x")
-        assert not isinstance(exc.value, NotConfiguredError)
-
-
 class TestSelection:
-    def test_default_is_real_stub(self):
-        assert isinstance(get_ticket_source(), RealTicketingSource)
+    def test_default_real_falls_back_to_local(self):
+        # Phase 4: the real SMAX source moved OUT of the app into the
+        # standalone integrations/smax connector. In-process, even the
+        # legacy "real" selection returns the local fake source (with a
+        # deprecation note) — never a network source.
+        assert isinstance(get_ticket_source(), LocalFakeTicketSource)
 
     def test_local_selected_by_config(self, monkeypatch):
         import ai_classification.shared.config as config_mod

@@ -55,10 +55,19 @@ def start_sync_worker(store) -> None:
     """
     interval = settings.sync_interval_seconds
     dry_run = settings.ticketing_dry_run
-    if settings.ticketing_source != "local" and not (settings.ticketing_api_token or "").strip():
-        _log.info(
-            "Sync worker NOT started — TICKETING_SOURCE=real but "
-            "TICKETING_API_TOKEN is unset. Set it to enable polling."
+    if settings.ticketing_source != "local":
+        # Phase 4: the real SMAX source moved out of the app into the
+        # standalone connector (integrations/smax, python -m
+        # integrations.smax.main), which talks to the classifier through
+        # its public HTTP API. In-process, only the local fake source is
+        # available; selecting "real" just logs the deprecation note and
+        # the worker idles instead of polling a dead endpoint.
+        _log.warning(
+            "Sync worker NOT started — TICKETING_SOURCE=%r is deprecated "
+            "in-process: SMAX connectivity moved to the standalone connector "
+            "`python -m integrations.smax.main` (integrations/smax/). "
+            "Set TICKETING_SOURCE=local to run the in-process worker.",
+            settings.ticketing_source,
         )
         return
     source = get_ticket_source()
