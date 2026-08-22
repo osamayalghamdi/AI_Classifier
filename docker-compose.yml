@@ -72,6 +72,11 @@ services:
       - TICKETING_API_TOKEN=${TICKETING_API_TOKEN:-}
       - TICKETING_DRY_RUN=${TICKETING_DRY_RUN:-false}
       - SYNC_INTERVAL=${SYNC_INTERVAL:-60}
+      # LLM-usage gates — conserve tokens: heal re-classification and
+      # per-arrival cluster assignment default OFF (flip to 1 to enable).
+      - RECLASSIFY_ENABLED=${RECLASSIFY_ENABLED:-0}
+      - CLUSTER_ASSIGN_ON_ARRIVAL=${CLUSTER_ASSIGN_ON_ARRIVAL:-0}
+      - CLUSTER_AUDIT_INTERVAL_S=${CLUSTER_AUDIT_INTERVAL_S:-86400}
       # Model is baked into the image (/app/hf_cache) — never reach the hub
       # at runtime (no DNS dependency, no startup retry loop).
       - HF_HUB_OFFLINE=1
