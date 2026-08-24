@@ -581,11 +581,29 @@ def _classify_v3(
             title, description, kind, incident_ref=incident_ref, pinned_system=pinned
         )
 
-    result = _run_cascade(
-        title, description, kind=kind, incident_ref=incident_ref, pinned_system=pinned
-    )
+    # Cascade retry loop (v3 resilience): a stage's LLM response can fail to
+    # parse/validate on a flaky call ("service selection failed") — that is a
+    # transient bad-content response, NOT a network error (call_llm already
+    # retries those). Re-run the whole cascade with fresh LLM calls before
+    # accepting the honest fallback. Config: CLASSIFY_CASCADE_RETRIES (0 =
+    # single attempt). Every retry is logged so the rate of residual failures
+    # stays observable.
+    max_retries = int(getattr(settings, "cascade_retries", 2) or 0)
+    result = None
+    for attempt in range(max_retries + 1):
+        if attempt:
+            _log.warning(
+                "Cascade attempt %d/%d failed — retrying classification of %r",
+                attempt, max_retries, title[:60],
+            )
+        result = _run_cascade(
+            title, description, kind=kind, incident_ref=incident_ref, pinned_system=pinned
+        )
+        if result.classification_status != "failed":
+            break
+    assert result is not None
     if result.classification_status == "failed":
-        return result  # honest failure — nothing to verify
+        return result  # honest failure after all retries — nothing to verify
     result = _verify_classification(title, description, result, incident_ref=incident_ref)
     if getattr(settings, "classify_self_consistency", False) and result.confidence == "low":
         result = _self_consistency(title, description, result, incident_ref=incident_ref)

@@ -202,6 +202,15 @@ class Settings:
     # low-confidence result is kept and flagged needs_review=true.
     classify_self_consistency: bool = _is_truthy(getenv("CLASSIFY_SELF_CONSISTENCY", "false"))
 
+    # Cascade retries (v3 resilience): when a cascade stage's LLM response
+    # fails to parse/validate (e.g. stage-2 "service selection failed" — a
+    # transient bad-content response, not a network error), the WHOLE
+    # cascade is re-run up to this many extra times with fresh LLM calls
+    # before accepting the honest low-confidence fallback. 0 = current
+    # behavior (single attempt). Each retry costs a full cascade; the heal
+    # sweep remains the safety net for anything still failing.
+    cascade_retries: int = int(getenv("CLASSIFY_CASCADE_RETRIES", "2"))
+
     # Inter-ticket delay in classify_batch (seconds). 0 = unchanged (no
     # sleep). Lets operators pace a synchronous bulk run to stay under
     # provider rate limits without code edits. For real bulk ingest use the

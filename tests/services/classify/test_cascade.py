@@ -50,10 +50,11 @@ def make_fake_completion(body: str):
     return FakeResponse(body)
 
 
-def _settings_with(cascade: bool):
+def _settings_with(cascade: bool, **overrides):
     """A copy of Settings with cascade_classification pinned (frozen dataclass)."""
     d = {k: v for k, v in settings.__dict__.items() if not k.startswith("_")}
     d["cascade_classification"] = cascade
+    d.update(overrides)
     return types.SimpleNamespace(**d)
 
 
@@ -229,7 +230,10 @@ class TestCascadeCalls:
 
 
 class TestCascadeFallback:
-    def test_system_stage_failure_returns_generic_fallback(self, fake_completion):
+    def test_system_stage_failure_returns_generic_fallback(self, fake_completion, monkeypatch):
+        # Single-attempt contract (CLASSIFY_CASCADE_RETRIES=0): a persistent
+        # stage-1 failure returns the honest fallback immediately.
+        monkeypatch.setattr(classifier_mod, "settings", _settings_with(True, cascade_retries=0))
         outputs, calls = fake_completion
         outputs.append(_triage_json())
         outputs.append("not json at all")  # stage 1 fails
@@ -265,6 +269,36 @@ class TestCascadeFallback:
         outputs.append("garbage")
         result = classifier_mod.classify("anything", "at all")  # must not raise
         assert isinstance(result, ClassificationResult)
+
+    def test_cascade_retry_rescues_flaky_stage2(self, monkeypatch):
+        """CLASSIFY_CASCADE_RETRIES: the FIRST stage-2 (service) call returns
+        garbage (transient bad response); the cascade retries and succeeds —
+        the ticket is classified instead of falling back to failed."""
+        import ai_classification.services.classify.llm as mod_llm
+        monkeypatch.setattr(classifier_mod, "settings", _settings_with(True, cascade_retries=2))
+
+        calls = []
+        stage2_calls = {"n": 0}
+
+        def fake_completion(**kwargs):
+            calls.append(kwargs)
+            system = (kwargs.get("messages") or [{}])[0].get("content", "")
+            # Stage-2 prompts pin only affected_system ("is FIXED to");
+            # stage-3 also pins the service ("service is FIXED to").
+            is_stage2 = ("is FIXED to" in system) and ("service is FIXED to" not in system)
+            if is_stage2:
+                stage2_calls["n"] += 1
+                if stage2_calls["n"] == 1:
+                    return make_fake_completion("garbage")  # first stage-2 call fails
+            return make_fake_completion(_full_result_json())
+
+        monkeypatch.setattr(mod_llm, "completion", fake_completion)
+        result = classifier_mod.classify("Nusuk Masar Haj x", "nusuk masar haj issue")
+        assert result.classification_status == "ok", result.reasoning
+        assert result.service != "General / Unspecified"
+        assert result.affected_system == AffectedSystem.nusuk_masar_haj
+        # Two stage-2 calls happened (one failed, one from the retry).
+        assert stage2_calls["n"] == 2
 
 
 # ── Stage-1 lenient parse (provisional service) ────────────────────────
