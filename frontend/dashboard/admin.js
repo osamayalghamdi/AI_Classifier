@@ -52,6 +52,7 @@ $("authBtn").addEventListener("click", async () => {
     $("tabs").style.display = "flex";
     $("authBtn").textContent = "✓ Unlocked";
     loadAll();
+    startStatusAutoRefresh();
   } catch (e) {
     TOKEN = "";
     localStorage.removeItem(TOKEN_KEY);
@@ -66,6 +67,7 @@ $("authBtn").addEventListener("click", async () => {
     await api("/admin/status");
     $("tabs").style.display = "flex";
     loadAll();
+    startStatusAutoRefresh();
   } catch (_) {
     localStorage.removeItem(TOKEN_KEY);
     TOKEN = "";
@@ -87,9 +89,22 @@ function loadAll() {
   loadStatus(); loadTaxonomy(); loadEnv(); loadGroups();
 }
 
-// ── Status ────────────────────────────────────────────────────────────
+// ── Status (auto-refresh every 15s) ───────────────────────────────────
+
+let _statusTimer = null;
+
+function startStatusAutoRefresh() {
+  if (_statusTimer) clearInterval(_statusTimer);
+  _statusTimer = setInterval(() => { if (TOKEN) loadStatus(); }, 15000);
+}
+
+$("statusRefresh").addEventListener("click", () => { if (TOKEN) loadStatus(); });
 
 async function loadStatus() {
+  if (!TOKEN) {
+    $("statusBody").innerHTML = '<span class="hint">Enter your bearer token above and click Unlock.</span>';
+    return;
+  }
   try {
     const d = await api("/admin/status");
     const i = d.incidents, c = d.clusters;
@@ -105,6 +120,7 @@ async function loadStatus() {
       </div>
       <p style="margin-top:14px" class="hint">Model: <span class="mono">${esc(d.model)}</span> · server time: ${esc(d.server_time)} · version ${esc(d.version)}</p>`;
     $("statusBody").innerHTML = html;
+    $("statusUpdated").textContent = "updated " + new Date().toLocaleTimeString();
   } catch (e) {
     $("statusBody").innerHTML = `<span class="badge bad">${esc(e.message)}</span>`;
   }
@@ -169,6 +185,40 @@ $("txAddOffering").addEventListener("click", async () => {
     $("txOfferService").value = $("txOffering").value = "";
     loadTaxonomy();
   } catch (e) { setMsg("txMsg", e.message, "err"); }
+});
+
+// ── Taxonomy JSON import / export ─────────────────────────────────────
+
+$("txImportJson").addEventListener("click", async () => {
+  const raw = $("txJson").value.trim();
+  if (!raw) return setMsg("txJsonMsg", "paste JSON first", "err");
+  let payload;
+  try { payload = JSON.parse(raw); } catch (e) { return setMsg("txJsonMsg", "invalid JSON: " + e.message, "err"); }
+  if (typeof payload !== "object" || Array.isArray(payload) || !Object.keys(payload).length) {
+    return setMsg("txJsonMsg", 'expected an object like {"System": {"Service": ["Offering"]}}', "err");
+  }
+  try {
+    const r = await api("/admin/taxonomy/import", { method: "POST", body: payload });
+    setMsg("txJsonMsg", `Imported ${r.services_added} service(s), ${r.offerings_added} offering(s) — effective immediately.`);
+    $("txJson").value = "";
+    loadTaxonomy();
+  } catch (e) { setMsg("txJsonMsg", e.message, "err"); }
+});
+
+$("txExportJson").addEventListener("click", async () => {
+  try {
+    const d = await api("/admin/taxonomy");
+    const out = {};
+    for (const sys of d.systems) {
+      out[sys.system] = {};
+      for (const svc of sys.services) {
+        out[sys.system][svc.service] = svc.offerings || [];
+      }
+    }
+    $("txJson").value = JSON.stringify(out, null, 2);
+    setMsg("txJsonMsg", "Current effective taxonomy loaded into the box — edit and Import to add more.");
+    navigator.clipboard && navigator.clipboard.writeText(JSON.stringify(out));
+  } catch (e) { setMsg("txJsonMsg", e.message, "err"); }
 });
 
 // ── Env ───────────────────────────────────────────────────────────────
@@ -247,9 +297,19 @@ async function loadGroups() {
         <td>${esc(g.status)}</td>
         <td>${g.member_count}</td>
         <td class="mono" style="font-size:11px">${esc(g.members.map((m) => m.title).slice(0, 3).join("; "))}${g.member_count > 3 ? " …" : ""}</td>
+        <td><button class="small danger" data-del-group="${esc(g.cluster_id)}" data-del-name="${esc(g.name_ar)}">delete</button></td>
       </tr>`);
     $("groupsBody").innerHTML =
-      `<table><thead><tr><th>ID</th><th>Name (ar)</th><th>Description</th><th>Status</th><th>Members</th><th>Sample titles</th></tr></thead><tbody>${rows.join("")}</tbody></table>`;
+      `<table><thead><tr><th>ID</th><th>Name (ar)</th><th>Description</th><th>Status</th><th>Members</th><th>Sample titles</th><th></th></tr></thead><tbody>${rows.join("")}</tbody></table>`;
+    document.querySelectorAll("[data-del-group]").forEach((b) => {
+      b.addEventListener("click", async () => {
+        if (!confirm(`Delete group "${b.dataset.delName}" and its ${b.closest("tr").children[4].textContent} member(s)? Members return to the unassigned pool.`)) return;
+        try {
+          const r = await api("/admin/groups/" + b.dataset.delGroup, { method: "DELETE" });
+          loadGroups();
+        } catch (e) { alert(e.message); }
+      });
+    });
   } catch (e) {
     $("groupsBody").innerHTML = `<span class="badge bad">${esc(e.message)}</span>`;
   }
@@ -257,19 +317,22 @@ async function loadGroups() {
 
 // ── Tests ─────────────────────────────────────────────────────────────
 
-function runTest(kind) {
+function runTest(kind, btn) {
   const out = $("testOutput");
   out.style.display = "block";
-  out.textContent = "running " + kind + "…\n";
+  const orig = btn ? btn.textContent : "";
+  if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spin"></span> running…'; }
+  out.textContent = "running " + (kind === "pytest" ? "full pytest suite (takes a few minutes)…" : "smoke_test.sh…") + "\n";
   api("/admin/tests/" + kind, { method: "POST" })
     .then((r) => {
       out.textContent = (r.output || "") + "\n\n[exit code " + r.exit_code + "]" +
         (r.truncated ? "\n[output truncated]" : "");
     })
-    .catch((e) => { out.textContent = "ERROR: " + e.message; });
+    .catch((e) => { out.textContent = "ERROR: " + e.message; })
+    .finally(() => { if (btn) { btn.disabled = false; btn.innerHTML = orig; } });
 }
-$("runSmoke").addEventListener("click", () => runTest("smoke"));
-$("runPytest").addEventListener("click", () => runTest("pytest"));
+$("runSmoke").addEventListener("click", (e) => runTest("smoke", e.target));
+$("runPytest").addEventListener("click", (e) => runTest("pytest", e.target));
 
 // ── Danger ────────────────────────────────────────────────────────────
 
