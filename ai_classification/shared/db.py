@@ -312,6 +312,19 @@ class DBBase:
                         ) AS seed(name, description, sort_order)
                         WHERE NOT EXISTS (SELECT 1 FROM assignment_groups)
                     """)
+                    # ── System activation (admin console) ─────────────────────
+                    # Which systems the AI may classify into. A system covered
+                    # by the call centre is deactivated here — the effective
+                    # taxonomy view (domain/taxonomy.py) then excludes it from
+                    # prompts + validation, so the LLM can never select it.
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS system_settings (
+                            system     TEXT PRIMARY KEY,
+                            active     BOOLEAN NOT NULL DEFAULT TRUE,
+                            note       TEXT NOT NULL DEFAULT '',
+                            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                        )
+                    """)
                 conn.commit()
             finally:
                 self._pool.putconn(conn)

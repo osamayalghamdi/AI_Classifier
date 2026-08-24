@@ -213,9 +213,12 @@ class LogsMixin:
             self._putconn(conn)
 
     def reload_taxonomy_overrides(self) -> None:
-        """Load DB overrides into the runtime registry (startup + admin edit).
-        Lazy import avoids a domain->store cycle at module load."""
-        from ai_classification.domain.taxonomy import set_runtime_overrides
+        """Load DB overrides + system activation into the runtime registry
+        (startup + admin edit). Lazy import avoids a domain->store cycle."""
+        from ai_classification.domain.taxonomy import (
+            set_active_systems,
+            set_runtime_overrides,
+        )
         merged: dict[str, dict[str, list[str]]] = {}
         for row in self.list_taxonomy_overrides():
             bucket = merged.setdefault(row["system"], {})
@@ -223,6 +226,78 @@ class LogsMixin:
             if row["offering"]:
                 bucket[row["service"]].append(row["offering"])
         set_runtime_overrides(merged)
+        set_active_systems(self.active_system_set())
+
+    # ── System activation (admin console) ──────────────────────────────
+
+    def list_system_settings(self) -> list[dict]:
+        """All systems with their active flag + note. Systems with no row
+        are implicitly ACTIVE (the table only stores explicit settings)."""
+        if not self._ready or self._pool is None:
+            return []
+        from ai_classification.domain.taxonomy import AffectedSystem
+        conn = self._getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT system, active, note FROM system_settings "
+                            "ORDER BY system")
+                rows = {r[0]: {"active": r[1], "note": r[2]} for r in cur.fetchall()}
+            out = []
+            for system in AffectedSystem:
+                row = rows.get(system.value, {"active": True, "note": ""})
+                out.append({"system": system.value, "active": row["active"],
+                            "note": row["note"]})
+            return out
+        finally:
+            self._putconn(conn)
+
+    def active_system_set(self) -> set[str] | None:
+        """The set of ACTIVE systems, or None when nothing is deactivated."""
+        if not self._ready or self._pool is None:
+            return None
+        from ai_classification.domain.taxonomy import AffectedSystem
+        conn = self._getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT system, active FROM system_settings")
+                rows = dict(cur.fetchall())
+            inactive = {s.value for s in AffectedSystem
+                        if rows.get(s.value, True) is False}
+            if not inactive:
+                return None  # nothing deactivated -> all active
+            return {s.value for s in AffectedSystem} - inactive
+        finally:
+            self._putconn(conn)
+
+    def set_system_active(self, system: str, active: bool, note: str = "") -> None:
+        """Upsert one system's activation flag (and optional note)."""
+        if not self._ready or self._pool is None:
+            return
+        conn = self._getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO system_settings (system, active, note, updated_at) "
+                    "VALUES (%s, %s, %s, NOW()) "
+                    "ON CONFLICT (system) DO UPDATE SET active = EXCLUDED.active, "
+                    "note = EXCLUDED.note, updated_at = NOW()",
+                    (system, active, note))
+            conn.commit()
+        finally:
+            self._putconn(conn)
+
+    def delete_system_setting(self, system: str) -> bool:
+        """Remove an explicit row -> the system returns to ACTIVE (default)."""
+        if not self._ready or self._pool is None:
+            return False
+        conn = self._getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM system_settings WHERE system = %s", (system,))
+            conn.commit()
+            return cur.rowcount > 0
+        finally:
+            self._putconn(conn)
 
     # ── Assignment groups (admin console) ──────────────────────────────
     # Managed list of TEAMS incidents are routed to (assign_group).

@@ -365,6 +365,11 @@ def flatten_services(
 #
 # Shape: {system_value: {service: [offering, ...]}}
 _runtime_overrides: dict[str, dict[str, list[str]]] = {}
+# Systems the AI may classify into. A system covered by the call centre is
+# DEACTIVATED here — the effective view then excludes it, so the LLM can
+# never pick it (prompts list only active systems; validation rejects it).
+# None = all systems active (the default / pre-admin state).
+_active_systems: set[str] | None = None
 
 
 def set_runtime_overrides(overrides: dict[str, dict[str, list[str]]]) -> None:
@@ -373,21 +378,44 @@ def set_runtime_overrides(overrides: dict[str, dict[str, list[str]]]) -> None:
     _runtime_overrides.update(overrides)
 
 
+def set_active_systems(systems: set[str] | None) -> None:
+    """Replace the active-system set. None = every system is active."""
+    global _active_systems
+    _active_systems = None if systems is None else set(systems)
+
+
+def active_systems() -> set[str]:
+    """The systems the AI may currently classify into (all if unset)."""
+    if _active_systems is None:
+        return {s.value for s in AffectedSystem}
+    return set(_active_systems)
+
+
 def runtime_overrides() -> dict[str, dict[str, list[str]]]:
     """Snapshot of the current override registry (for the admin console)."""
     return {k: {s: list(o) for s, o in v.items()} for k, v in _runtime_overrides.items()}
 
 
 def effective_services_by_system() -> dict[AffectedSystem, dict[str, list[str]]]:
-    """Frozen base + runtime overrides merged (call-time, never cached)."""
+    """Frozen base + runtime overrides merged, minus DEACTIVATED systems.
+
+    Call-time, never cached. 'Other' is always kept: it is the honest
+    fallback bucket for genuinely out-of-scope tickets — deactivating it
+    would force the LLM into a wrong pick instead of an explicit Other.
+    """
+    active = active_systems()
     merged: dict[AffectedSystem, dict[str, list[str]]] = {}
     for system, services in SERVICES_BY_SYSTEM.items():
+        if system.value not in active and system != AffectedSystem.other:
+            continue  # call-centre-covered system — AI must not pick it
         merged[system] = {s: list(o) for s, o in services.items()}
     for system_value, services in _runtime_overrides.items():
         try:
             system = AffectedSystem(system_value)
         except ValueError:
             continue  # override for an unknown system — ignore, keep base
+        if system.value not in active and system != AffectedSystem.other:
+            continue
         bucket = merged.setdefault(system, {})
         for svc, offerings in services.items():
             existing = bucket.setdefault(svc, [])

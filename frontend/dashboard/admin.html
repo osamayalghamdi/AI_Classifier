@@ -94,6 +94,7 @@ button.small { padding: 5px 10px; font-size: 12px; margin-top: 0; }
     <button data-tab="incidents">Add Incident</button>
     <button data-tab="assgroups">Assignment Groups</button>
     <button data-tab="groups">Cluster Groups</button>
+    <button data-tab="endpoints">Endpoints</button>
     <button data-tab="tests">Run Tests</button>
     <button data-tab="danger">Danger Zone</button>
   </div>
@@ -109,6 +110,10 @@ button.small { padding: 5px 10px; font-size: 12px; margin-top: 0; }
   </div>
 
   <div id="taxonomyTab" class="tabpane">
+    <div class="card"><h2>System activation (AI selection)</h2>
+      <p class="hint">Deactivate a system the call centre covers — the AI will no longer select it (hidden from prompts + validation). Services under ACTIVE systems stay fully selectable. "Other" is always kept as the honest fallback.</p>
+      <div id="systemsBody"><span class="spin"></span> loading…</div>
+    </div>
     <div class="card"><h2>Add service / offering</h2>
       <div class="row">
         <div><label>System</label><input id="txSystem" placeholder="Nusuk Masar Haj"></div>
@@ -175,6 +180,16 @@ button.small { padding: 5px 10px; font-size: 12px; margin-top: 0; }
       <div class="msg" id="grpMsg"></div>
     </div>
     <div class="card"><h2>Existing groups</h2><div id="groupsBody"><span class="spin"></span> loading…</div></div>
+  </div>
+
+  <div id="endpointsTab" class="tabpane">
+    <div class="card"><h2>All API endpoints</h2>
+      <p class="hint">Generated from the app's OpenAPI schema — methods, paths, and a short description. <span id="endpointCount"></span></p>
+      <div style="overflow-x:auto"><table id="endpointsTable">
+        <thead><tr><th>Method</th><th>Path</th><th>Description</th><th>Auth</th></tr></thead>
+        <tbody><tr><td colspan="4"><span class="spin"></span> loading…</td></tr></tbody>
+      </table></div>
+    </div>
   </div>
 
   <div id="testsTab" class="tabpane">

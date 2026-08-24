@@ -306,3 +306,53 @@ def test_assignment_group_add_patch_delete(client):
 def test_assignment_group_requires_auth(client):
     r = client.get("/admin/assignment-groups")
     assert r.status_code == 401
+
+
+# ── System activation ─────────────────────────────────────────────────
+
+def test_systems_list_all_present(client):
+    r = client.get("/admin/systems", headers=AUTH)
+    assert r.status_code == 200
+    names = {s["system"] for s in r.json()["systems"]}
+    assert {"Nusuk Masar Haj", "CRM", "Nusuk Masar Umrah", "OldSM", "Other"} <= names
+
+
+def test_system_deactivate_hides_from_effective_view(client):
+    from ai_classification.domain.taxonomy import effective_services_by_system, AffectedSystem
+    assert AffectedSystem.crm in effective_services_by_system()
+    r = client.patch("/admin/systems/CRM", headers=AUTH,
+                     json={"active": False, "note": "covered by call centre"})
+    assert r.status_code == 200, r.text
+    # effective immediately: CRM gone from the merged taxonomy
+    assert AffectedSystem.crm not in effective_services_by_system()
+    assert AffectedSystem.nusuk_masar_haj in effective_services_by_system()
+    assert AffectedSystem.other in effective_services_by_system()  # always kept
+    # re-activate
+    r = client.patch("/admin/systems/CRM", headers=AUTH, json={"active": True})
+    assert r.status_code == 200
+    assert AffectedSystem.crm in effective_services_by_system()
+    # cleanup the row
+    r = client.delete("/admin/systems/CRM", headers=AUTH)
+    assert r.status_code == 200
+    assert AffectedSystem.crm in effective_services_by_system()
+
+
+def test_system_unknown_rejected(client):
+    r = client.patch("/admin/systems/NotASystem", headers=AUTH, json={"active": False})
+    assert r.status_code == 422
+    r = client.patch("/admin/systems/CRM", headers=AUTH, json={})
+    assert r.status_code == 422
+
+
+# ── Endpoints reference ───────────────────────────────────────────────
+
+def test_endpoints_list(client):
+    r = client.get("/admin/endpoints", headers=AUTH)
+    assert r.status_code == 200, r.text
+    d = r.json()
+    assert d["count"] >= 40
+    paths = {e["path"] for e in d["endpoints"]}
+    assert "/classify" in paths and "/admin/status" in paths and "/api/v1/incidents" in paths
+    ep = [e for e in d["endpoints"] if e["path"] == "/classify"]
+    assert {e["method"] for e in ep} == {"GET", "POST"}  # both methods registered
+    assert all(e["summary"] for e in ep)  # has a description
