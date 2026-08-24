@@ -2,10 +2,11 @@
 
 Everything under /admin/* requires the same Bearer token as /api/v1/*
 (api/auth.py require_token). Covers: overall status, taxonomy overrides
-(add services/offerings to the FROZEN base taxonomy), env credentials
-(write to the .env overrides file — restart required), add incident,
-full DB reset, cluster group add/adjust, and running the smoke/pytest
-suites in-container.
+(add services/offerings to the FROZEN base taxonomy), system activation
+(deactivate call-centre-covered systems so the AI never picks them),
+env credentials (write to the .env overrides file — restart required),
+add incident, full DB reset, cluster group add/adjust, assignment groups,
+running the smoke/pytest suites in-container, and an endpoint reference.
 
 Design rules:
   - Base taxonomy is FROZEN (domain/taxonomy.py). Admin edits go to the
@@ -264,6 +265,74 @@ def admin_env_write(payload: dict):
         raise HTTPException(500, f"failed to write env file: {exc}") from exc
     return {"status": "ok", "key": key, "restart_required": True,
             "note": "Restart the container for this to take effect."}
+
+
+# ── System activation (call-centre-covered systems) ───────────────────
+
+@router.get("/systems")
+def admin_systems():
+    """All systems with active flag + note. Deactivated systems are hidden
+    from the AI's taxonomy entirely (prompts + validation)."""
+    from ai_classification.shared.store import store
+    return {"systems": store.list_system_settings()}
+
+
+@router.patch("/systems/{system}")
+def admin_system_set(system: str, payload: dict):
+    """Activate/deactivate a system (with an optional note, e.g. why the
+    call centre covers it). Effective immediately — no restart."""
+    from ai_classification.shared.store import store
+    from ai_classification.domain.taxonomy import AffectedSystem
+    try:
+        AffectedSystem(system)
+    except ValueError:
+        raise HTTPException(422, f"unknown system '{system}'")
+    if "active" not in payload:
+        raise HTTPException(422, "active (true/false) is required")
+    note = str(payload.get("note", "") or "")
+    store.set_system_active(system, bool(payload["active"]), note=note)
+    store.reload_taxonomy_overrides()
+    return {"status": "ok", "system": system,
+            "active": bool(payload["active"]), "note": note}
+
+
+@router.delete("/systems/{system}")
+def admin_system_reset(system: str):
+    """Remove an explicit system setting -> system returns to ACTIVE."""
+    from ai_classification.shared.store import store
+    store.delete_system_setting(system)
+    store.reload_taxonomy_overrides()
+    return {"status": "ok", "system": system, "active": True}
+
+
+# ── Endpoint reference (for the admin page) ───────────────────────────
+
+@router.get("/endpoints")
+def admin_endpoints():
+    """Every registered API route with method + one-line description,
+    generated from the app's OpenAPI schema (no hand-maintained list)."""
+    from ai_classification.app import app
+    schema = app.openapi()
+    out = []
+    for path, ops in sorted(schema["paths"].items()):
+        for method in ("get", "post", "put", "patch", "delete"):
+            op = ops.get(method)
+            if not op:
+                continue
+            summary = (op.get("summary") or "").strip()
+            desc = (op.get("description") or "").strip()
+            # first non-empty line of the description as the blurb
+            if not summary:
+                summary = next((ln.strip() for ln in desc.splitlines()
+                                if ln.strip()), "")
+            out.append({
+                "method": method.upper(),
+                "path": path,
+                "summary": summary[:160],
+                "auth": "bearer" if ("/api/v1" in path or path.startswith("/admin")
+                                     or path in ("/reset", "/test/llm")) else "none",
+            })
+    return {"endpoints": out, "count": len(out)}
 
 
 # ── Assignment groups (teams incidents are routed to) ─────────────────

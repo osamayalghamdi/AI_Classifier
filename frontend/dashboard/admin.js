@@ -86,8 +86,8 @@ document.querySelectorAll(".tabs button").forEach((btn) => {
 });
 
 function loadAll() {
-  loadStatus(); loadTaxonomy(); loadEnv(); loadGroups(); loadAssGroups();
-  loadAssGroupDropdown();
+  loadStatus(); loadTaxonomy(); loadSystems(); loadEnv(); loadGroups(); loadAssGroups();
+  loadAssGroupDropdown(); loadEndpoints();
 }
 
 // ── Status (auto-refresh every 15s) ───────────────────────────────────
@@ -221,6 +221,64 @@ $("txExportJson").addEventListener("click", async () => {
     navigator.clipboard && navigator.clipboard.writeText(JSON.stringify(out));
   } catch (e) { setMsg("txJsonMsg", e.message, "err"); }
 });
+
+// ── System activation (call-centre-covered systems) ───────────────────
+
+async function loadSystems() {
+  try {
+    const d = await api("/admin/systems");
+    const rows = d.systems.map((s) => `
+      <tr>
+        <td>${esc(s.system)}</td>
+        <td>${s.active ? '<span class="badge ok">AI selects</span>' : '<span class="badge warn">deactivated (call centre)</span>'}</td>
+        <td>${esc(s.note)}</td>
+        <td>
+          ${s.system === "Other"
+            ? '<span class="hint">always active (fallback)</span>'
+            : `<button class="small" data-sys-toggle="${esc(s.system)}" data-sys-active="${s.active}">${s.active ? "deactivate" : "activate"}</button>`}
+        </td>
+      </tr>`);
+    $("systemsBody").innerHTML =
+      `<table><thead><tr><th>System</th><th>Status</th><th>Note</th><th></th></tr></thead><tbody>${rows.join("")}</tbody></table>`;
+    document.querySelectorAll("[data-sys-toggle]").forEach((b) => {
+      b.addEventListener("click", async () => {
+        const nextActive = b.dataset.sysActive !== "true";
+        const note = nextActive ? "" : prompt(`Deactivate "${b.dataset.sysToggle}"?\nReason (e.g. covered by call centre):`) || "";
+        try {
+          await api("/admin/systems/" + encodeURIComponent(b.dataset.sysToggle), {
+            method: "PATCH", body: { active: nextActive, note },
+          });
+          loadSystems(); loadTaxonomy();
+        } catch (e) { alert(e.message); }
+      });
+    });
+  } catch (e) {
+    $("systemsBody").innerHTML = `<span class="badge bad">${esc(e.message)}</span>`;
+  }
+}
+
+// ── Endpoints reference ───────────────────────────────────────────────
+
+async function loadEndpoints() {
+  try {
+    const d = await api("/admin/endpoints");
+    $("endpointCount").textContent = `${d.count} endpoints.`;
+    const methodColor = (m) => ({
+      GET: "#1E9E6A", POST: "#1E6FD9", PUT: "#F2900B", PATCH: "#6D4AFF", DELETE: "#D64545",
+    }[m] || "#5E6E8C");
+    const rows = d.endpoints.map((e) => `
+      <tr>
+        <td><span class="badge" style="background:${methodColor(e.method)}22;color:${methodColor(e.method)}">${e.method}</span></td>
+        <td class="mono">${esc(e.path)}</td>
+        <td>${esc(e.summary || "—")}</td>
+        <td>${e.auth === "bearer" ? '<span class="badge warn">bearer</span>' : '<span class="badge ok">open</span>'}</td>
+      </tr>`);
+    $("endpointsTable").querySelector("tbody").innerHTML = rows.join("");
+  } catch (e) {
+    $("endpointsTable").querySelector("tbody").innerHTML =
+      `<tr><td colspan="4"><span class="badge bad">${esc(e.message)}</span></td></tr>`;
+  }
+}
 
 // ── Env ───────────────────────────────────────────────────────────────
 
