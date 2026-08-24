@@ -277,6 +277,10 @@ def classify_batch(incidents: list[dict]) -> ClassifyBatchResponse:
     """
     results = []
     failed = 0
+    # Bind settings through the facade at call time (same pattern as the
+    # other persistence functions) — tests patch classifier_mod.settings.
+    from ai_classification.services.classify import classifier as classifier_mod
+    settings = classifier_mod.settings
     sleep_s = getattr(settings, "classify_batch_sleep_s", 0.0) or 0.0
     for inc in incidents:
         try:
