@@ -43,9 +43,10 @@ def make_fake_completion(body: str):
     return FakeResponse(body)
 
 
-def _settings_with(cascade: bool):
+def _settings_with(cascade: bool, **overrides):
     d = {k: v for k, v in settings.__dict__.items() if not k.startswith("_")}
     d["cascade_classification"] = cascade
+    d.update(overrides)
     return types.SimpleNamespace(**d)
 
 
@@ -239,7 +240,10 @@ class TestAbstention:
 
 
 class TestHonestFailure:
-    def test_llm_failure_marks_failed_not_fake_incident(self, fake_completion):
+    def test_llm_failure_marks_failed_not_fake_incident(self, fake_completion, monkeypatch):
+        # Single-attempt contract (CLASSIFY_CASCADE_RETRIES=0) — the retry
+        # behaviour itself is covered by TestCascadeRetry.
+        monkeypatch.setattr(classifier_mod, "settings", _settings_with(True, cascade_retries=0))
         outputs, calls = fake_completion
         outputs.append(_triage_json())
         outputs.append("garbage")  # stage 1 fails -> cascade fallback
