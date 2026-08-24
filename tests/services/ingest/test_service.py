@@ -183,3 +183,70 @@ class TestResolveIncident:
     def test_returns_false_for_unknown_incident(self, monkeypatch):
         monkeypatch.setattr(store, "resolve_incident", lambda iid: False)
         assert store_module_resolve_incident("does-not-exist") is False
+
+
+# ── classify_batch / import endpoint (regression: settings binding) ──
+
+def test_classify_batch_binds_settings_at_call_time(monkeypatch):
+    """classify_batch must resolve `settings` through the facade at call
+    time (regression: it used a module-level name that was never bound in
+    the C-2 split → NameError on every /import call)."""
+    import ai_classification.services.classify.persistence as persistence_mod
+    from ai_classification.shared.config import settings as real_settings
+    from ai_classification.api import schemas as schemas_mod
+    from dataclasses import replace
+
+    fake = replace(real_settings, classify_batch_sleep_s=0)
+    monkeypatch.setattr(classifier, "settings", fake)
+
+    calls = []
+
+    def _fake_classify_and_store(title, description, *a, **kw):
+        calls.append((title, description))
+        cls = _make_result(canonical_statement=f"CS {title}", signature="sg")
+        return schemas_mod.ClassifyResponse(
+            incident_id=f"id-{len(calls)}",
+            incident_title=title,
+            classification=cls,
+            similar_open_incidents=[],
+        )
+
+    monkeypatch.setattr(persistence_mod, "classify_and_store", _fake_classify_and_store)
+
+    from ai_classification.services.classify.classifier import classify_batch
+    resp = classify_batch([{"title": "T1", "description": "D1"},
+                           {"title": "T2", "description": "D2"}])
+    assert len(calls) == 2
+    assert calls[0] == ("T1", "D1")
+    assert resp.total == 2
+
+
+def test_import_incidents_from_body_endpoint(monkeypatch):
+    """/import from body maps DisplayLabel/Description and classifies —
+    regression guard for the import_service NameError."""
+    from ai_classification.services.ingest import import_service as import_mod
+    from ai_classification.services.classify.classifier import classify_batch as real_batch
+    from ai_classification.domain.models import ClassificationResult
+    import ai_classification.api.schemas as schemas_mod
+
+    def _fake_batch(mapped):
+        return schemas_mod.ClassifyBatchResponse(
+            results=[
+                schemas_mod.ClassifyResponse(
+                    incident_id=f"id-{i}", incident_title=m["title"],
+                    classification=_make_result(canonical_statement="CS", signature="sg"),
+                    similar_open_incidents=[],
+                )
+                for i, m in enumerate(mapped)
+            ],
+            total=len(mapped), failed=0,
+        )
+
+    monkeypatch.setattr(import_mod, "classify_batch", _fake_batch)
+    from ai_classification.services.ingest.import_service import import_incidents_from_body
+    resp = import_incidents_from_body([
+        {"DisplayLabel": "Rawdah permit fails", "Description": "cannot book"},
+        {"DisplayLabel": "", "Description": "skipped"},
+    ])
+    assert resp.total == 1  # only the non-empty title
+    assert resp.failed == 0
