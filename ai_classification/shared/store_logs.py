@@ -158,3 +158,68 @@ class LogsMixin:
                 return [dict(zip(cols, r)) for r in cur.fetchall()]
         finally:
             self._putconn(conn)
+
+    # ── Taxonomy overrides (admin console) ──────────────────────────────
+    # Admin-added services/offerings, merged on top of the frozen code
+    # taxonomy at runtime (domain/taxonomy.py effective_* view).
+
+    def list_taxonomy_overrides(self) -> list[dict]:
+        """All override rows: {system, service, offering}."""
+        if not self._ready or self._pool is None:
+            return []
+        conn = self._getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT system, service, offering FROM taxonomy_overrides "
+                    "ORDER BY system, service, offering")
+                cols = ("system", "service", "offering")
+                return [dict(zip(cols, r)) for r in cur.fetchall()]
+        finally:
+            self._putconn(conn)
+
+    def upsert_taxonomy_override(self, system: str, service: str,
+                                 offering: str = "") -> None:
+        """Add/replace one override row. offering='' means 'add the service'
+        (possibly with offerings added separately as sibling rows)."""
+        if not self._ready or self._pool is None:
+            return
+        conn = self._getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO taxonomy_overrides (system, service, offering) "
+                    "VALUES (%s, %s, %s) "
+                    "ON CONFLICT (system, service, offering) DO NOTHING",
+                    (system, service, offering))
+            conn.commit()
+        finally:
+            self._putconn(conn)
+
+    def delete_taxonomy_override(self, system: str, service: str,
+                                 offering: str = "") -> bool:
+        if not self._ready or self._pool is None:
+            return False
+        conn = self._getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM taxonomy_overrides "
+                    "WHERE system = %s AND service = %s AND offering = %s",
+                    (system, service, offering))
+            conn.commit()
+            return cur.rowcount > 0
+        finally:
+            self._putconn(conn)
+
+    def reload_taxonomy_overrides(self) -> None:
+        """Load DB overrides into the runtime registry (startup + admin edit).
+        Lazy import avoids a domain->store cycle at module load."""
+        from ai_classification.domain.taxonomy import set_runtime_overrides
+        merged: dict[str, dict[str, list[str]]] = {}
+        for row in self.list_taxonomy_overrides():
+            bucket = merged.setdefault(row["system"], {})
+            bucket.setdefault(row["service"], [])
+            if row["offering"]:
+                bucket[row["service"]].append(row["offering"])
+        set_runtime_overrides(merged)

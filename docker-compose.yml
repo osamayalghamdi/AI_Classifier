@@ -83,6 +83,14 @@ services:
       - TRANSFORMERS_OFFLINE=1
     volumes:
       - ./ai_classification:/app/ai_classification
+      # Test-runner support (admin console "Run Tests"): the pytest suite
+      # and smoke script run as subprocesses inside the API container.
+      - ./tests:/app/tests:ro
+      - ./scripts:/app/scripts:ro
+      - ./docs:/app/docs:ro
+      - ./smoke_test.sh:/app/smoke_test.sh:ro
+      # Admin console writes env-credential changes here (restart required).
+      - ./.env:/app/.env
     depends_on:
       postgres:
         condition: service_healthy

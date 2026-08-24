@@ -117,3 +117,16 @@ No HPA for the api (see gotcha #2). PVC 20Gi for pgdata is generous for current 
 - Deploy = new image tag in env values → `helm upgrade` (or ArgoCD sync). `Recreate` strategy → ~1–5 min gap while the new pod loads the model; schedule accordingly or prioritize the worker split.
 - Rollback = `helm rollback` / revert the tag. DB schema is additive-idempotent, so rolling the app back is safe; **never** run `migrate_classifier_v3.py --down` against a DB that newer code wrote to.
 - Post-deploy check is always the same three: `/health`, `/ready`, `/test/all`.
+
+## 9. Admin console (`/admin.html`)
+
+A bearer-auth admin page (same token as `/api/v1/*`) at `/admin.html` covering:
+- **Status** — incident/cluster/embedding counts, model, store health.
+- **Taxonomy** — add services/offerings on top of the FROZEN base taxonomy. Overrides persist in the `taxonomy_overrides` table and take effect immediately (the cascade + validation read the merged view at call time; the base `domain/taxonomy.py` never changes).
+- **Credentials** — set `LLM_API_KEY`, `INTEGRATION_API_TOKEN`, etc. in the env file (default `.env`, override with `ADMIN_ENV_FILE`). Settings load at startup → **restart the container to apply**. Secrets are never returned in full (masked only).
+- **Add incident** — classify + store one ticket.
+- **Groups** — create/adjust cluster groups (rename, status, add/remove members).
+- **Run tests** — in-container `smoke_test.sh` (against the live API) and the full `pytest` suite (against `ai_incidents_test`). Requires `tests/`, `scripts/`, `smoke_test.sh` mounted into the api container (compose does this) and pytest in the image (Dockerfile installs it).
+- **Danger zone** — full DB reset (incidents + clusters + review queue + ingestion jobs).
+
+Notes for prod: `/admin/*` is proxied by nginx (chart ConfigMap regex includes `admin/`), so the same ingress-level protections apply — the bearer token is the only auth, keep the host internal or rely on the NetworkPolicy backstop. The test-runner endpoints execute subprocesses in the container; keep them behind the token (they already are).

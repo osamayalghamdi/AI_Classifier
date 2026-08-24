@@ -19,6 +19,24 @@ def _is_truthy(value: str) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _map_write_back(value: str) -> str:
+    """Normalise INTEGRATION_WRITE_BACK to the mode domain.
+
+    Accepts the documented modes (none/suggestions/full) plus the legacy
+    numeric aliases 0/1 that older compose/.env files set.
+    """
+    v = (value or "").strip().lower()
+    if v in {"0", "none"}:
+        return "none"
+    if v in {"1", "suggestions"}:
+        return "suggestions"
+    if v == "full":
+        return "full"
+    # Unknown value — fall back to the SAFEST mode rather than pass an
+    # invalid string downstream (the worker records mode in job results).
+    return "suggestions"
+
+
 @dataclass(frozen=True)
 class Settings:
     # ── LLM ───────────────────────────────────────────────────────────────
@@ -108,12 +126,17 @@ class Settings:
     # INTEGRATION_API_TOKEN (ops convention) takes precedence over
     # INTEGRATION_TOKEN (older alias) — both are accepted.
     integration_token: str = getenv("INTEGRATION_API_TOKEN") or getenv("INTEGRATION_TOKEN", "")
+    # Admin console: env-credential writes go to this file (default .env in
+    # the CWD). Settings is frozen at import, so changes need a restart.
+    admin_env_file: str = getenv("ADMIN_ENV_FILE", ".env")
     # Write-back mode for processed results:
     #   "suggestions" (default — SAFEST): results/suggestions land in the
     #     job result area, never written into ticket fields.
     #   "none": no write-back at all.  "full": write back to the ticket
     #     source (requires a configured source adapter).
-    integration_write_back: str = getenv("INTEGRATION_WRITE_BACK", "suggestions")
+    # Legacy numeric values are mapped: "0" -> "none", "1" -> "suggestions"
+    # (older compose/.env files set INTEGRATION_WRITE_BACK=0).
+    integration_write_back: str = _map_write_back(getenv("INTEGRATION_WRITE_BACK", "suggestions"))
     integration_max_attempts: int = int(getenv("INTEGRATION_MAX_ATTEMPTS", "5"))
     integration_retry_base_s: int = int(getenv("INTEGRATION_RETRY_BASE_S", "5"))
     integration_poll_s: float = float(getenv("INTEGRATION_POLL_S", "2.0"))

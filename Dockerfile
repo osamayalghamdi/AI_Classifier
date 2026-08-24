@@ -13,7 +13,8 @@ RUN apt-get update -qq && \
     && rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml ./
-RUN pip install --no-cache-dir -e . 2>&1 | tail -5
+# pytest is needed by the admin console's in-container test runner.
+RUN pip install --no-cache-dir -e . pytest 2>&1 | tail -5
 
 # Pre-download the embedding model so the runtime image doesn't need
 # network access or pip at startup. The project uses BAAI/bge-m3

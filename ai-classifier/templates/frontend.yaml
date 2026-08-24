@@ -29,7 +29,7 @@ server {
     }
 
     # Proxy ALL API/backend paths to the API Service (cluster DNS)
-    location ~ ^/(api/|health|ready|status|classify|incidents|import|reports|docs|openapi\.json|review-queue|cluster-proposals|taxonomy-gaps|clusters|all-incidents) {
+    location ~ ^/(api/|admin/|health|ready|status|classify|incidents|import|reports|docs|openapi\.json|review-queue|cluster-proposals|taxonomy-gaps|clusters|all-incidents) {
         proxy_pass http://{{ include "ai-classifier.fullname" . }}-api:{{ .Values.api.port }};
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
