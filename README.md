@@ -35,6 +35,13 @@ LLM-powered incident classification on the Nusuk Masar Haj service-offering mode
 nothing), `/api/v1/backfill` (batch ≤200), `/ready` (db/embedding/llm checks).
 Bearer auth (`INTEGRATION_API_TOKEN`). Full contract: `docs/INTEGRATION_GUIDE.md`.
 
+**Bulk-ingest rule (applies everywhere):** bulk loads (>20 tickets) go through
+the **async integration API** (`POST /api/v1/backfill` or `/api/v1/incidents` →
+202 + poll) — it has a retry worker with backoff and never holds an HTTP
+connection for the whole run. `/classify` and `/classify/batch` are for **single
+interactive tickets / small manual batches** (and `/classify/batch` is serial by
+design — no concurrency; `CLASSIFY_BATCH_SLEEP_S` can pace it if needed).
+
 ## SMAX integration — standalone connector
 
 SMAX = the ticketing system. The connection lives in its **own process**:

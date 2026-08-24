@@ -39,6 +39,15 @@ curl -s -X POST http://localhost:8000/api/v1/incidents \
 | GET | `/health` | **no** | Liveness |
 | GET | `/ready` | **no** | Readiness — DB / embedding / LLM reported individually |
 
+> **Bulk-ingest rule:** loads of **>20 tickets go through this API**
+> (`/api/v1/backfill` or repeated `/api/v1/incidents`), NOT through
+> `/classify` / `/classify/batch`. The integration API is async: every
+> ticket is a job row, the retry worker processes the queue with linear
+> backoff (`INTEGRATION_RETRY_BASE_S`, `INTEGRATION_MAX_ATTEMPTS`), and no
+> HTTP connection is held open for the whole run. `/classify` is for single
+> interactive tickets; `/classify/batch` is serial by design and has no
+> retry worker (only the optional `CLASSIFY_BATCH_SLEEP_S` pacing delay).
+
 ### 2.1 E1 — Ingest one incident (async)
 
 Request payload — **strict** (unknown fields are rejected, see §4):

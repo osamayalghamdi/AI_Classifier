@@ -422,7 +422,14 @@ class IncidentsMixin:
         finally:
             self._putconn(conn)
 
-    def list_incidents(self, status: str | None = None) -> list[dict]:
+    def list_incidents(self, status: str | None = None,
+                       classification_status: str | None = None) -> list[dict]:
+        """List incidents, optionally filtered by incident status
+        ('active'/'resolved') and/or classification_status ('ok'/'failed').
+
+        classification_status filtering happens in SQL (not in memory) so a
+        reclassify sweep over only-failed rows never pulls every incident.
+        """
         if not self._ready or self._pool is None:
             return []
         conn = self._getconn()
@@ -432,10 +439,19 @@ class IncidentsMixin:
                         "status, created_at, documents, assign_group, assignee, priority, "
                         "notes, discussion_history, escalation_info, completion_code, "
                         "ticket_kind, classification_status")
+                where = []
+                args: list = []
                 if status:
+                    where.append("status = %s")
+                    args.append(status)
+                if classification_status:
+                    where.append("classification_status = %s")
+                    args.append(classification_status)
+                if where:
                     cur.execute(
-                        f"SELECT {cols} FROM incidents WHERE status = %s ORDER BY created_at DESC",
-                        (status,),
+                        f"SELECT {cols} FROM incidents WHERE {' AND '.join(where)} "
+                        "ORDER BY created_at DESC",
+                        args,
                     )
                 else:
                     cur.execute(

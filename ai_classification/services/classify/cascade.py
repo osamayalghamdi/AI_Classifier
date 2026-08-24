@@ -122,6 +122,7 @@ def _classify_single_shot(title: str, description: str, *, incident_ref: str | N
         reasoning=f"Classification failed after 2 attempts. Last error: {last_error}",
         canonical_statement=f"Incident reported: {title[:120]}",
         classification_status="failed",
+        needs_review=True,  # a row the system KNOWS it failed on needs a human
     )
 # Stage 1 deterministic resolution — no LLM call.
 _SYSTEM_EXACT_NAMES = {
@@ -169,6 +170,7 @@ def _cascade_fallback(title: str, err: str, kind: TicketKind = TicketKind.incide
         canonical_statement=f"Incident reported: {title[:120]}",
         ticket_kind=kind,
         classification_status="failed",
+        needs_review=True,  # honest flag — the system failed on this row
     )
 
 
