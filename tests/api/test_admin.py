@@ -269,3 +269,40 @@ def test_admin_reset(client):
     assert r.json()["incidents_deleted"] >= 1
     d = client.get("/admin/status", headers=AUTH).json()
     assert d["incidents"]["total"] == 0
+
+
+# ── Assignment groups ─────────────────────────────────────────────────
+
+def test_assignment_groups_seeded(client):
+    r = client.get("/admin/assignment-groups", headers=AUTH)
+    assert r.status_code == 200
+    names = {g["name"] for g in r.json()["groups"]}
+    assert {"Payments", "Infrastructure", "Operations", "App Support"} <= names
+
+
+def test_assignment_group_add_patch_delete(client):
+    r = client.post("/admin/assignment-groups", headers=AUTH,
+                    json={"name": "Network Ops", "description": "network team",
+                          "sort_order": 7})
+    assert r.status_code == 200, r.text
+    gid = r.json()["group"]["id"]
+    # patch (rename + deactivate)
+    r = client.patch(f"/admin/assignment-groups/{gid}", headers=AUTH,
+                     json={"name": "Network Ops 2", "active": False})
+    assert r.status_code == 200
+    groups = r.json()["group"]
+    updated = next(g for g in groups if g["id"] == gid)
+    assert updated["name"] == "Network Ops 2" and updated["active"] is False
+    # missing name -> 422
+    r = client.post("/admin/assignment-groups", headers=AUTH, json={"name": ""})
+    assert r.status_code == 422
+    # delete
+    r = client.delete(f"/admin/assignment-groups/{gid}", headers=AUTH)
+    assert r.status_code == 200
+    r = client.delete(f"/admin/assignment-groups/{gid}", headers=AUTH)
+    assert r.status_code == 404
+
+
+def test_assignment_group_requires_auth(client):
+    r = client.get("/admin/assignment-groups")
+    assert r.status_code == 401

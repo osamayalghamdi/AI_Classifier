@@ -266,6 +266,57 @@ def admin_env_write(payload: dict):
             "note": "Restart the container for this to take effect."}
 
 
+# ── Assignment groups (teams incidents are routed to) ─────────────────
+
+@router.get("/assignment-groups")
+def admin_assignment_groups(active_only: bool = False):
+    from ai_classification.shared.store import store
+    return {"groups": store.list_assignment_groups(active_only=active_only)}
+
+
+@router.post("/assignment-groups")
+def admin_assignment_group_add(payload: dict):
+    """Add (or re-activate) an assignment group. Existing incidents keep
+    whatever assign_group text they already carry — the list feeds the
+    Add-Incident dropdown."""
+    from ai_classification.shared.store import store
+    name = str(payload.get("name", "")).strip()
+    if not name:
+        raise HTTPException(422, "name is required")
+    description = str(payload.get("description", "") or "")
+    sort_order = int(payload.get("sort_order") or 0)
+    g = store.add_assignment_group(name, description, sort_order)
+    return {"status": "ok", "group": g}
+
+
+@router.patch("/assignment-groups/{group_id}")
+def admin_assignment_group_adjust(group_id: int, payload: dict):
+    from ai_classification.shared.store import store
+    fields = {}
+    for k in ("name", "description", "sort_order", "active"):
+        if k in payload:
+            fields[k] = payload[k]
+    if not fields:
+        raise HTTPException(422, "nothing to update")
+    if "sort_order" in fields:
+        fields["sort_order"] = int(fields["sort_order"])
+    if "active" in fields:
+        fields["active"] = bool(fields["active"])
+    ok = store.update_assignment_group(group_id, **fields)
+    if not ok:
+        raise HTTPException(404, "group not found")
+    return {"status": "ok", "group": store.list_assignment_groups()}
+
+
+@router.delete("/assignment-groups/{group_id}")
+def admin_assignment_group_delete(group_id: int):
+    from ai_classification.shared.store import store
+    ok = store.delete_assignment_group(group_id)
+    if not ok:
+        raise HTTPException(404, "group not found")
+    return {"status": "ok", "deleted": True}
+
+
 # ── Incidents ─────────────────────────────────────────────────────────
 
 @router.post("/incidents")

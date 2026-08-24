@@ -86,7 +86,8 @@ document.querySelectorAll(".tabs button").forEach((btn) => {
 });
 
 function loadAll() {
-  loadStatus(); loadTaxonomy(); loadEnv(); loadGroups();
+  loadStatus(); loadTaxonomy(); loadEnv(); loadGroups(); loadAssGroups();
+  loadAssGroupDropdown();
 }
 
 // ── Status (auto-refresh every 15s) ───────────────────────────────────
@@ -253,6 +254,72 @@ async function loadEnv() {
   }
 }
 
+// ── Assignment groups (teams incidents are routed to) ─────────────────
+
+async function loadAssGroupDropdown() {
+  try {
+    const d = await api("/admin/assignment-groups");
+    const sel = $("incGroup");
+    sel.innerHTML = '<option value="">— none —</option>' + d.groups
+      .filter((g) => g.active)
+      .map((g) => `<option value="${esc(g.name)}">${esc(g.name)}</option>`)
+      .join("");
+  } catch (_) { /* dropdown is best-effort; incident still works without it */ }
+}
+
+$("agAdd").addEventListener("click", async () => {
+  const name = $("agName").value.trim();
+  if (!name) return setMsg("agMsg", "name required", "err");
+  try {
+    await api("/admin/assignment-groups", { method: "POST", body: {
+      name, description: $("agDesc").value.trim(), sort_order: parseInt($("agOrder").value || "10", 10),
+    }});
+    setMsg("agMsg", "Assignment group added.");
+    $("agName").value = $("agDesc").value = "";
+    loadAssGroups(); loadAssGroupDropdown();
+  } catch (e) { setMsg("agMsg", e.message, "err"); }
+});
+
+async function loadAssGroups() {
+  try {
+    const d = await api("/admin/assignment-groups");
+    if (!d.groups.length) { $("assGroupsBody").innerHTML = '<p class="hint">No groups yet — add one above.</p>'; return; }
+    const rows = d.groups.map((g) => `
+      <tr>
+        <td class="mono">${g.id}</td>
+        <td>${esc(g.name)}</td>
+        <td>${esc(g.description)}</td>
+        <td>${g.sort_order}</td>
+        <td>${g.active ? '<span class="badge ok">active</span>' : '<span class="badge bad">inactive</span>'}</td>
+        <td>
+          <button class="small" data-ag-toggle="${g.id}" data-ag-active="${g.active}" data-ag-name="${esc(g.name)}">${g.active ? "deactivate" : "activate"}</button>
+          <button class="small danger" data-ag-del="${g.id}" data-ag-name="${esc(g.name)}">delete</button>
+        </td>
+      </tr>`);
+    $("assGroupsBody").innerHTML =
+      `<table><thead><tr><th>ID</th><th>Name</th><th>Description</th><th>Order</th><th>Status</th><th></th></tr></thead><tbody>${rows.join("")}</tbody></table>`;
+    document.querySelectorAll("[data-ag-toggle]").forEach((b) => {
+      b.addEventListener("click", async () => {
+        try {
+          await api("/admin/assignment-groups/" + b.dataset.agToggle, { method: "PATCH", body: { active: b.dataset.agActive !== "true" } });
+          loadAssGroups(); loadAssGroupDropdown();
+        } catch (e) { alert(e.message); }
+      });
+    });
+    document.querySelectorAll("[data-ag-del]").forEach((b) => {
+      b.addEventListener("click", async () => {
+        if (!confirm(`Delete assignment group "${b.dataset.agName}"? Incidents already carrying this name keep it.`)) return;
+        try {
+          await api("/admin/assignment-groups/" + b.dataset.agDel, { method: "DELETE" });
+          loadAssGroups(); loadAssGroupDropdown();
+        } catch (e) { alert(e.message); }
+      });
+    });
+  } catch (e) {
+    $("assGroupsBody").innerHTML = `<span class="badge bad">${esc(e.message)}</span>`;
+  }
+}
+
 // ── Incidents ─────────────────────────────────────────────────────────
 
 $("incAdd").addEventListener("click", async () => {
@@ -262,6 +329,7 @@ $("incAdd").addEventListener("click", async () => {
   setMsg("incMsg", '<span class="spin"></span> classifying…', "ok");
   try {
     const body = { title, description };
+    if ($("incGroup").value) body.assign_group = $("incGroup").value;
     if ($("incRef").value.trim()) body.source_ticket_id = $("incRef").value.trim();
     const r = await api("/admin/incidents", { method: "POST", body });
     $("incResult").style.display = "block";

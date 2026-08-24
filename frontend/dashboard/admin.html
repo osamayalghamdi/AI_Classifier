@@ -92,7 +92,8 @@ button.small { padding: 5px 10px; font-size: 12px; margin-top: 0; }
     <button data-tab="taxonomy">Taxonomy</button>
     <button data-tab="env">Credentials</button>
     <button data-tab="incidents">Add Incident</button>
-    <button data-tab="groups">Groups</button>
+    <button data-tab="assgroups">Assignment Groups</button>
+    <button data-tab="groups">Cluster Groups</button>
     <button data-tab="tests">Run Tests</button>
     <button data-tab="danger">Danger Zone</button>
   </div>
@@ -143,11 +144,26 @@ button.small { padding: 5px 10px; font-size: 12px; margin-top: 0; }
     <div class="card"><h2>Add incident</h2>
       <label>Title</label><input id="incTitle" placeholder="e.g. Rawdah permit booking fails">
       <label>Description</label><textarea id="incDescription" placeholder="What happened…"></textarea>
+      <label>Assignment group (team)</label><select id="incGroup"></select>
       <label>Source ticket id (optional)</label><input id="incRef" placeholder="TKT-12345">
       <button class="primary" id="incAdd">Classify &amp; store</button>
       <div class="msg" id="incMsg"></div>
       <div id="incResult" style="display:none; margin-top:14px"><h2 style="font-size:14px">Result</h2><pre id="incResultBody"></pre></div>
     </div>
+  </div>
+
+  <div id="assgroupsTab" class="tabpane">
+    <div class="card"><h2>Add assignment group</h2>
+      <p class="hint">These are the TEAMS incidents get routed to (assign_group) — e.g. Payments, Infrastructure, Operations, App Support. New incidents pick one from the dropdown.</p>
+      <div class="row">
+        <div><label>Name</label><input id="agName" placeholder="e.g. Network Operations"></div>
+        <div><label>Description</label><input id="agDesc" placeholder="What this team handles"></div>
+        <div><label>Sort order</label><input id="agOrder" type="number" value="10"></div>
+      </div>
+      <button class="primary" id="agAdd">Add group</button>
+      <div class="msg" id="agMsg"></div>
+    </div>
+    <div class="card"><h2>Existing assignment groups</h2><div id="assGroupsBody"><span class="spin"></span> loading…</div></div>
   </div>
 
   <div id="groupsTab" class="tabpane">
