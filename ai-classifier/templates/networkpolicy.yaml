@@ -1,0 +1,46 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- /* Guard: enabling the policy while the api is exposed directly (no
+       frontend) without naming the ingress controller's namespace would
+       make the api unreachable — fail the render instead of deploying
+       that silently. */ -}}
+{{- if and (not .Values.frontend.enabled) (not .Values.networkPolicy.ingressController.namespace) -}}
+{{- required "networkPolicy: with frontend.enabled=false you MUST set networkPolicy.ingressController.namespace, or the api becomes unreachable from outside the cluster" .Values.networkPolicy.ingressController.namespace -}}
+{{- end -}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "ai-classifier.fullname" . }}-api
+  labels:
+    {{- include "ai-classifier.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "ai-classifier.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: api
+  policyTypes: ["Ingress"]
+  ingress:
+    {{- if .Values.frontend.enabled }}
+    # Frontend nginx → api (the dashboard path). Everything else in the
+    # namespace is blocked at the network layer.
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "ai-classifier.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: frontend
+      ports:
+        - protocol: TCP
+          port: {{ .Values.api.port }}
+    {{- end }}
+    {{- with .Values.networkPolicy.ingressController.namespace }}
+    # Direct api exposure (frontend.enabled=false): allow the ingress
+    # controller's pods through so the host/route still works.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ . | quote }}
+      ports:
+        - protocol: TCP
+          port: {{ $.Values.api.port }}
+    {{- end }}
+{{- end }}

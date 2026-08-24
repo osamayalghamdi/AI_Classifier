@@ -1,0 +1,40 @@
+# Prod overlay — EXTERNAL managed Postgres (pgvector required), TLS on.
+# Copy into the DevOps repo as values-prod.yaml and adjust.
+image:
+  repository: REGISTRY/ai-classifier
+  tag: ""            # pin an immutable tag/digest per release, never "latest"
+
+postgres:
+  enabled: false
+  external:
+    host: pg.prod.internal     # ← from DevOps/DBA; MUST have pgvector extension
+    port: 5432
+    username: aiuser
+    database: ai_incidents
+  # PG_PASSWORD lives in the api secret (key: PG_PASSWORD)
+
+ingress:
+  className: nginx
+  host: ai-classifier.example.com
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+  tls:
+    - secretName: ai-classifier-tls
+      hosts: [ai-classifier.example.com]
+
+api:
+  resources:
+    requests: { cpu: "1", memory: "4Gi" }
+    limits: { cpu: "4", memory: "6Gi" }
+  probes:
+    readiness:
+      path: /ready       # enable once LLM egress from the cluster is confirmed
+
+# Hardening backstop: only the frontend may reach the api at the network
+# layer (app-level bearer auth on /reset + /test/llm is the real control;
+# this blocks everything else pod→api). kubelet probes + port-forward
+# bypass it, so smoke tests still work. Flip off temporarily if the first
+# deploy shows unexpected connectivity issues.
+networkPolicy:
+  enabled: true

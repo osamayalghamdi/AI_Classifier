@@ -1,0 +1,196 @@
+# ── AI Classifier Helm values ─────────────────────────────────────────
+# Everything secret goes through `existingSecret` — this file must NEVER
+# contain real credentials. The DevOps repo overrides these per environment
+# (values-dev.yaml / values-prod.yaml).
+
+nameOverride: ""
+fullnameOverride: ""
+
+image:
+  # The API image (built by CI from the repo Dockerfile). NOTE: the
+  # embedding model BAAI/bge-m3 is baked in → image is several GB.
+  # Make sure the registry + nodes can handle it (see deployment guide).
+  repository: REGISTRY/ai-classifier   # ← set in DevOps repo values
+  tag: ""                              # defaults to Chart.appVersion when empty
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+#  - name: regcred
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+# ── API (FastAPI) ─────────────────────────────────────────────────────
+api:
+  # IMPORTANT: keep replicas at 1 until the in-process background workers
+  # (sync poller, cluster sweep, integration retry worker) are split into
+  # their own Deployment. With >1 replica every pod runs its own worker
+  # loop → duplicated sweeps/polls. See DEPLOYMENT_GUIDE §"Scaling".
+  replicas: 1
+
+  port: 8000
+
+  # Non-secret env. Secrets come from `existingSecret` below.
+  env:
+    LLM_MODEL: "openai/qwen3.6"
+    LLM_API_BASE: "https://llms.elm.sa/v1"
+    SIMILARITY_THRESHOLD: "0.35"
+    SYNC_INTERVAL: "60"
+    TICKETING_SOURCE: "real"
+    TICKETING_API_URL: "http://localhost:8002"
+    TICKETING_DRY_RUN: "false"
+    INTEGRATION_WORKER_ENABLED: "1"
+    INTEGRATION_WRITE_BACK: "0"
+    INTEGRATION_MAX_ATTEMPTS: "3"
+    INTEGRATION_POLL_S: "5"
+    INTEGRATION_RETRY_BASE_S: "2"
+    # Model is baked into the image — never reach HuggingFace at runtime.
+    HF_HUB_OFFLINE: "1"
+    TRANSFORMERS_OFFLINE: "1"
+
+  # Extra env vars merged verbatim (list of {name, value} or valueFrom):
+  extraEnv: []
+
+  # K8s Secret holding: LLM_API_KEY, INTEGRATION_API_TOKEN,
+  # TICKETING_API_TOKEN (and PG_PASSWORD when postgres.enabled=false).
+  # Create it out-of-band (SealedSecrets / ExternalSecrets / kubectl):
+  #   kubectl create secret generic ai-classifier-secrets \
+  #     --from-literal=LLM_API_KEY=... \
+  #     --from-literal=INTEGRATION_API_TOKEN=... \
+  #     --from-literal=TICKETING_API_TOKEN=...
+  existingSecret: "ai-classifier-secrets"
+
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "3Gi"      # bge-m3 embedding model needs ~2–2.5Gi resident
+    limits:
+      cpu: "2"
+      memory: "5Gi"
+
+  # /ready checks db + embedding + llm; model load takes tens of seconds
+  # on cold start → generous startupProbe, then normal liveness/readiness.
+  probes:
+    startup:
+      path: /health
+      failureThreshold: 30    # 30 × 10s = 5 min budget for model load
+      periodSeconds: 10
+    liveness:
+      path: /health
+      periodSeconds: 15
+      timeoutSeconds: 5
+      failureThreshold: 4
+    readiness:
+      path: /health           # switch to /ready once LLM reachability from
+      periodSeconds: 10       # the cluster is confirmed — /ready probes the
+      timeoutSeconds: 5       # LLM endpoint and will flap if egress is blocked
+      failureThreshold: 3
+
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+
+
+
+
+
+# ── Frontend (nginx serving the dashboard + proxying the API) ─────────
+frontend:
+  enabled: true
+  replicas: 1
+  image:
+    repository: REGISTRY/ai-classifier-frontend  # nginx:alpine + dashboard files
+    tag: ""
+    pullPolicy: IfNotPresent
+  port: 8082
+  resources:
+    requests: { cpu: "50m", memory: "64Mi" }
+    limits: { cpu: "200m", memory: "128Mi" }
+
+# ── OCR service (EasyOCR) — optional ──────────────────────────────────
+ocr:
+  enabled: false
+  replicas: 1
+  image:
+    repository: REGISTRY/ai-classifier-ocr
+    tag: ""
+    pullPolicy: IfNotPresent
+  port: 8001
+  resources:
+    requests: { cpu: "500m", memory: "2Gi" }
+    limits: { cpu: "2", memory: "4Gi" }
+
+# ── PostgreSQL + pgvector ─────────────────────────────────────────────
+# Two modes:
+#   enabled: true  → in-cluster StatefulSet (pgvector/pgvector image).
+#                    Fine for dev/test. NOT recommended for prod.
+#   enabled: false → point at an external/managed Postgres via `external`.
+#                    REQUIREMENT: the server must allow `CREATE EXTENSION
+#                    vector` (pgvector installed) — confirm with DevOps/DBA.
+postgres:
+  enabled: true
+  image:
+    repository: pgvector/pgvector
+    tag: pg17
+  auth:
+    username: aiuser
+    database: ai_incidents
+    # Password ALWAYS comes from a secret:
+    existingSecret: "ai-classifier-pg"   # key: POSTGRES_PASSWORD
+  persistence:
+    enabled: true
+    storageClass: ""      # cluster default when empty
+    size: 20Gi
+  resources:
+    requests: { cpu: "250m", memory: "512Mi" }
+    limits: { cpu: "1", memory: "2Gi" }
+
+  # Used only when enabled: false
+  external:
+    host: ""
+    port: 5432
+    username: aiuser
+    database: ai_incidents
+    # password read from api.existingSecret key PG_PASSWORD
+
+# ── NetworkPolicy (optional, prod hardening) ──────────────────────────
+# Restricts INGRESS to the api pods: only the frontend (when enabled)
+# and — if you expose the api directly — the ingress controller's
+# namespace may reach port 8000. Everything else gets no route to the
+# api pods at L3/L4 (this is a backstop; the app-level bearer auth on
+# /reset + /test/llm is the real control — see DEPLOYMENT_GUIDE §6
+# gotcha #7).
+#
+# Safety notes:
+#   - kubelet probes and `kubectl port-forward` originate from the node,
+#     NOT from a pod → they bypass NetworkPolicy, so health checks and
+#     smoke tests keep working.
+#   - Egress is NOT restricted (policyTypes: [Ingress] only) → the api
+#     can still reach the LLM endpoint and managed Postgres.
+#   - If you set frontend.enabled=false AND enable this policy, you MUST
+#     set ingressController.namespace or the api is unreachable from
+#     outside (helm fails the render with a clear message).
+# Opt-in: leave off for the first deploy, then flip on and re-run
+# /ready + /test/all (via port-forward) to confirm nothing broke.
+networkPolicy:
+  enabled: false
+  ingressController:
+    # Namespace the ingress controller runs in (e.g. "ingress-nginx").
+    # Only required when frontend.enabled=false.
+    namespace: ""
+
+# ── Ingress ───────────────────────────────────────────────────────────
+ingress:
+  enabled: true
+  className: ""            # e.g. nginx — ask DevOps which controller
+  annotations: {}
+  #  nginx.ingress.kubernetes.io/proxy-read-timeout: "300"   # LLM calls are slow
+  #  nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+  host: ai-classifier.example.com
+  tls: []
+  #  - secretName: ai-classifier-tls
+  #    hosts: [ai-classifier.example.com]

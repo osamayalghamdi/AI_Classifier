@@ -1,0 +1,18 @@
+# Dev overlay — in-cluster Postgres, no TLS, relaxed resources.
+# Copy into the DevOps repo as values-dev.yaml and adjust.
+image:
+  repository: REGISTRY/ai-classifier
+  tag: dev
+
+postgres:
+  enabled: true
+  persistence:
+    size: 10Gi
+
+ingress:
+  host: ai-classifier.dev.internal
+
+api:
+  env:
+    TICKETING_DRY_RUN: "true"     # never write back from dev
+    SIMILARITY_THRESHOLD: "0.35"

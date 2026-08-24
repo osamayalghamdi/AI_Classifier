@@ -1,0 +1,51 @@
+{{- if .Values.ocr.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "ai-classifier.fullname" . }}-ocr
+  labels:
+    {{- include "ai-classifier.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ocr
+spec:
+  replicas: {{ .Values.ocr.replicas }}
+  selector:
+    matchLabels:
+      {{- include "ai-classifier.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: ocr
+  template:
+    metadata:
+      labels:
+        {{- include "ai-classifier.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: ocr
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: ocr
+          image: "{{ .Values.ocr.image.repository }}:{{ .Values.ocr.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.ocr.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.ocr.port }}
+          resources:
+            {{- toYaml .Values.ocr.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "ai-classifier.fullname" . }}-ocr
+  labels:
+    {{- include "ai-classifier.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ocr
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: {{ .Values.ocr.port }}
+      targetPort: http
+  selector:
+    {{- include "ai-classifier.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: ocr
+{{- end }}
