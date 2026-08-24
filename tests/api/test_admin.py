@@ -356,3 +356,73 @@ def test_endpoints_list(client):
     ep = [e for e in d["endpoints"] if e["path"] == "/classify"]
     assert {e["method"] for e in ep} == {"GET", "POST"}  # both methods registered
     assert all(e["summary"] for e in ep)  # has a description
+
+
+# ── Model registry (enable / disable control) ────────────────────────
+
+def test_models_list_all_registry_entries(client):
+    r = client.get("/admin/models", headers=AUTH)
+    assert r.status_code == 200, r.text
+    d = r.json()
+    names = {m["name"] for m in d["models"]}
+    assert {"QWEN3_6", "GEMMA_4", "QWEN3_VL_32B", "OLMOCR_2_7B", "BGE_RERANKER"} <= names
+    by_name = {m["name"]: m for m in d["models"]}
+    assert by_name["QWEN3_6"]["role"] == "classifier"
+    assert by_name["QWEN3_VL_32B"]["role"] == "ocr"
+    assert by_name["BGE_RERANKER"]["role"] == "reranker"
+    assert "active" in d and "classifier" in d["active"]
+
+
+def test_models_list_requires_auth(client):
+    r = client.get("/admin/models")
+    assert r.status_code == 401
+
+
+def test_models_enable_disable_writes_env_and_rejects_unknown(monkeypatch, client, tmp_path):
+    """enable/disable write MODEL_<NAME>_ENABLED to the env file and
+    reject unknown model names (422)."""
+    import ai_classification.api.admin as admin_mod
+    from ai_classification.shared.config import settings as base_settings
+    from dataclasses import replace
+
+    env_file = tmp_path / "env_test"
+    fake_settings = replace(base_settings, admin_env_file=str(env_file))
+    monkeypatch.setattr(admin_mod, "settings", fake_settings)
+
+    # Unknown model → 422
+    r = client.post("/admin/models/NOPE/enable", headers=AUTH, json={})
+    assert r.status_code == 422
+
+    # Disable GEMMA_4 → env file gets MODEL_GEMMA_4_ENABLED=0
+    r = client.post("/admin/models/GEMMA_4/disable", headers=AUTH, json={})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["enabled"] is False and body["restart_required"] is True
+    assert "MODEL_GEMMA_4_ENABLED=0" in env_file.read_text()
+
+    # Enable it back → env file gets =1
+    r = client.post("/admin/models/GEMMA_4/enable", headers=AUTH, json={})
+    assert r.status_code == 200
+    assert "MODEL_GEMMA_4_ENABLED=1" in env_file.read_text()
+
+
+def test_registry_qwen36_defaults_enabled_when_llm_model_set(monkeypatch):
+    """Backward compat: with LLM_MODEL set (existing .env), QWEN3_6 is
+    the active classifier even without an explicit MODEL_* flag."""
+    import ai_classification.shared.config as cfg
+    monkeypatch.setenv("LLM_MODEL", "openai/qwen3.6")
+    monkeypatch.delenv("MODEL_QWEN3_6_ENABLED", raising=False)
+    reg = cfg._build_model_registry()
+    assert reg["QWEN3_6"].enabled is True
+    active = cfg._resolve_active_model("classifier")
+    assert active is not None and active.name == "QWEN3_6"
+
+
+def test_registry_all_disabled_yields_no_active_classifier(monkeypatch):
+    import ai_classification.shared.config as cfg
+    monkeypatch.setenv("LLM_MODEL", "")
+    for name in cfg.MODEL_CATALOG:
+        monkeypatch.setenv(f"MODEL_{name}_ENABLED", "0")
+    reg = cfg._build_model_registry()
+    assert all(not e.enabled for e in reg.values())
+    assert cfg._resolve_active_model("classifier") is None

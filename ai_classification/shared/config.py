@@ -37,14 +37,113 @@ def _map_write_back(value: str) -> str:
     return "suggestions"
 
 
+# ── Model registry ─────────────────────────────────────────────────────
+# Per-model enable/disable control (same provider, e.g. the ELM company
+# endpoint). Each named model is a registry entry with an ENABLED flag;
+# the classifier / OCR / reranker pick the ACTIVE entry for their role.
+#
+# Env surface per model (<NAME> = the registry key, e.g. QWEN3_6):
+#   MODEL_<NAME>_ENABLED=1|0     — the toggle (default: off)
+#   MODEL_<NAME>_ID=openai/qwen3.6            — litellm model id (optional)
+#   MODEL_<NAME>_API_BASE=...                 — optional per-model base URL
+#   MODEL_<NAME>_API_KEY=...                  — optional per-model key
+#
+# Legacy wiring stays: LLM_MODEL / LLM_API_KEY / LLM_API_BASE are the
+# classifier entry's fallback values when MODEL_* overrides are unset.
+
+# Registry catalog: key -> (role, default litellm id, description).
+# Pre-seeded from the company provider's model list (see .env).
+MODEL_CATALOG: dict[str, tuple[str, str, str]] = {
+    "QWEN3_6":              ("classifier", "openai/qwen3.6", "Qwen3.6 — primary classifier"),
+    "GEMMA_4":              ("classifier", "openai/gemma-4", "Gemma 4 — classifier alternative"),
+    "GPT_OSS_120B":         ("classifier", "openai/gpt-oss-120b", "GPT-OSS 120B — classifier alternative"),
+    "QWEN3_32B":            ("classifier", "openai/qwen3:32b", "Qwen3 32B — classifier alternative"),
+    "QWEN2_5_14B_INSTRUCT": ("classifier", "openai/qwen2.5:14b-instruct", "Qwen2.5 14B — classifier alternative"),
+    "QWEN3_CODER":          ("classifier", "openai/qwen3-coder", "Qwen3 Coder — classifier alternative"),
+    "QWEN3_VL_32B":         ("ocr",        "openai/qwen3-vl:32b", "Qwen3 VL 32B — vision/OCR"),
+    "OLMOCR_2_7B":          ("ocr",        "openai/olmOCR-2-7B", "olmOCR 2.7B — document OCR"),
+    "BGE_RERANKER":         ("reranker",   "openai/bge-reranker", "BGE Reranker — retrieval rerank"),
+}
+
+
+@dataclass(frozen=True)
+class ModelEntry:
+    """One registry entry: enabled flag + how to reach it (optional
+    per-model overrides; empty = inherit the shared LLM_* wiring)."""
+
+    name: str
+    role: str
+    enabled: bool
+    model_id: str
+    api_base: str
+    api_key: str
+
+
+def _build_model_registry() -> dict[str, ModelEntry]:
+    shared_base = getenv("LLM_API_BASE", "") or getenv("BASE_URL", "")
+    shared_key = getenv("LLM_API_KEY", "") or getenv("UNIVERSAL_API_KEY", "")
+    registry: dict[str, ModelEntry] = {}
+    # Backward compatibility: when the legacy LLM_MODEL is set (existing
+    # .env), QWEN3_6 defaults to ENABLED so current deployments keep
+    # classifying without adding MODEL_* vars. New MODEL_<NAME>_ENABLED
+    # explicitly overrides; an explicit MODEL_<NAME>_ENABLED=0 wins.
+    legacy_model_set = bool(getenv("LLM_MODEL", ""))
+    for name, (role, default_id, _desc) in MODEL_CATALOG.items():
+        # The classifier's legacy wiring (LLM_MODEL) doubles as the
+        # QWEN3_6 default so existing .env files keep working unchanged.
+        default_model = default_id
+        if name == "QWEN3_6" and getenv("LLM_MODEL", ""):
+            default_model = getenv("LLM_MODEL", default_id)
+        enabled_default = "1" if (name == "QWEN3_6" and legacy_model_set) else "0"
+        registry[name] = ModelEntry(
+            name=name,
+            role=role,
+            enabled=_is_truthy(getenv(f"MODEL_{name}_ENABLED", enabled_default)),
+            model_id=getenv(f"MODEL_{name}_ID", default_model),
+            api_base=getenv(f"MODEL_{name}_API_BASE", shared_base),
+            api_key=getenv(f"MODEL_{name}_API_KEY", shared_key),
+        )
+    return registry
+
+
+def _resolve_active_model(role: str) -> ModelEntry | None:
+    """The first ENABLED registry entry for a role, or None."""
+    for entry in _build_model_registry().values():
+        if entry.role == role and entry.enabled:
+            return entry
+    return None
+
+
 @dataclass(frozen=True)
 class Settings:
     # ── LLM ───────────────────────────────────────────────────────────────
     # Local:      LLM_MODEL=ollama/qwen2.5:7b  +  LLM_API_BASE=http://localhost:11434
-    # API:        LLM_MODEL=openrouter/qwen/qwen3.6-35b-a3b  +  LLM_API_KEY=sk-or-v1-...
+    # API:        LLM_MODEL=openai/qwen3.6  +  LLM_API_KEY=...  (ELM company
+    #             endpoint: LLM_API_BASE=https://llms.elm.sa/v1, bearer key)
     llm_model: str = getenv("LLM_MODEL", "ollama/qwen2.5:7b")
     llm_api_key: str | None = getenv("LLM_API_KEY")
     llm_api_base: str | None = getenv("LLM_API_BASE")
+    # Company ELM endpoint + universal key (the registry falls back to these
+    # when a model has no per-model override).
+    elm_base_url: str = getenv("BASE_URL", "")
+    universal_api_key: str = getenv("UNIVERSAL_API_KEY", "")
+    # Model registry — per-model enable/disable (see MODEL_CATALOG above).
+    # Exposed as a setting so callers can read the current state without
+    # rebuilding the registry on every call.
+    model_registry: dict[str, ModelEntry] = field(default_factory=_build_model_registry)
+    # The ACTIVE classifier model (first enabled classifier entry), if any.
+    # None when every classifier model is disabled — callers must fail loud.
+    active_classifier_model: ModelEntry | None = field(
+        default_factory=lambda: _resolve_active_model("classifier")
+    )
+    # The ACTIVE OCR (vision) model, if any (None = OCR falls back to local).
+    active_ocr_model: ModelEntry | None = field(
+        default_factory=lambda: _resolve_active_model("ocr")
+    )
+    # The ACTIVE reranker model, if any.
+    active_reranker_model: ModelEntry | None = field(
+        default_factory=lambda: _resolve_active_model("reranker")
+    )
 
     # ── LLM resilience (call_llm) ────────────────────────────────────────
     # Request timeout per LLM call, seconds (0 = provider default).

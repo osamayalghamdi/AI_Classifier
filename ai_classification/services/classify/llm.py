@@ -30,7 +30,7 @@ from litellm import (
     completion,
 )
 
-from ai_classification.shared.config import settings
+from ai_classification.shared.config import ModelEntry, settings
 
 _log = logging.getLogger(__name__)
 
@@ -105,40 +105,61 @@ def call_llm(
     *,
     max_tokens: int,
     temperature: float = 0.0,
+    model: str | None = None,
 ) -> str:
     """Call the LLM via LiteLLM with shared provider wiring.
+
+    Model resolution (model registry):
+      - ``model``: explicit override (ad-hoc callers that already resolved
+        a model id).
+      - otherwise the ACTIVE classifier model — the first ENABLED registry
+        entry with role='classifier'. If every classifier model is disabled,
+        raises immediately: the enable/disable control must be explicit,
+        never silently falls back to a disabled model.
 
     Args:
         messages: Chat messages (system + user).
         max_tokens: Max tokens for the response.
         temperature: Sampling temperature (0.0 = deterministic).
+        model: Optional explicit litellm model id (overrides resolution).
 
     Returns:
         Raw response text.
 
     Raises:
         ValueError: If the API call fails (after retries on transient
-            errors, immediately on auth/config errors) or returns empty.
-            The provider's original error text is always included.
+            errors, immediately on auth/config errors) or returns empty,
+            or when no classifier model is enabled.
     """
+    if model:
+        entry = ModelEntry(name="explicit", role="classifier", enabled=True,
+                           model_id=model, api_base=settings.llm_api_base or "",
+                           api_key=settings.llm_api_key or "")
+    else:
+        entry = settings.active_classifier_model
+        if entry is None:
+            raise ValueError(
+                "No classifier model is ENABLED. Enable one via "
+                "MODEL_<NAME>_ENABLED=1 (admin console → Models) and restart."
+            )
+
     kwargs: dict = dict(
-        model=settings.llm_model,
+        model=entry.model_id,
         temperature=temperature,
         seed=42,
         max_tokens=max_tokens,
         messages=messages,
     )
-    if settings.llm_api_base:
-        kwargs["api_base"] = settings.llm_api_base
-
-    if settings.llm_api_key:
-        kwargs["api_key"] = settings.llm_api_key
+    if entry.api_base:
+        kwargs["api_base"] = entry.api_base
+    if entry.api_key:
+        kwargs["api_key"] = entry.api_key
 
     if getattr(settings, "llm_timeout_s", 0):
         kwargs["timeout"] = settings.llm_timeout_s
 
     # Qwen3 thinks by default — disable for structured JSON output
-    if "qwen3" in settings.llm_model.lower():
+    if "qwen3" in entry.model_id.lower():
         kwargs["extra_body"] = {"reasoning": {"enabled": False}}
 
     max_retries = getattr(settings, "llm_max_retries", 0)
