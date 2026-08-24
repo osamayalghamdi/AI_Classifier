@@ -324,9 +324,10 @@ async function loadModels() {
       <tr>
         <td class="mono">${esc(m.name)}</td>
         <td>${esc(m.role)}</td>
+        <td>${esc(m.provider)}</td>
         <td>${m.enabled ? '<span class="badge ok">enabled</span>' : '<span class="badge bad">disabled</span>'}${isActive ? ' <span class="badge ok">● active</span>' : ""}</td>
         <td class="mono">${esc(m.model_id)}</td>
-        <td class="mono">${esc(m.api_base || "(inherit)")}</td>
+        <td class="mono">${esc(m.api_base || "(provider default)")}</td>
         <td class="mono">${m.key_set ? esc(m.key_masked) : '<span class="hint">no key</span>'}</td>
         <td>${m.enabled
           ? `<button class="small" data-model-disable="${esc(m.name)}">disable</button>`
@@ -336,7 +337,7 @@ async function loadModels() {
     const act = Object.entries(active).map(([r, n]) => n ? `${r}=${n}` : `${r}=<i>none</i>`).join(" · ");
     $("modelsBody").innerHTML =
       `<p class="hint">Active: ${act}</p>
-       <table><thead><tr><th>Model</th><th>Role</th><th>State</th><th>Model id</th><th>API base</th><th>Key</th><th></th></tr></thead>
+       <table><thead><tr><th>Model</th><th>Role</th><th>Provider</th><th>State</th><th>Model id</th><th>API base</th><th>Key</th><th></th></tr></thead>
        <tbody>${rows.join("")}</tbody></table>`;
     document.querySelectorAll("[data-model-enable]").forEach((b) => {
       b.addEventListener("click", async () => {
