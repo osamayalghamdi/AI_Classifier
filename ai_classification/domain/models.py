@@ -13,12 +13,12 @@ from .taxonomy import (
     Urgency,
     Category,
     TicketKind,
-    SERVICES_BY_SYSTEM,
-    flatten_services,
+    effective_flatten_services,
+    effective_services_by_system,
 )
 
-# Flat service list derived from the hierarchy (built once at import time)
-_FLAT_SERVICES = flatten_services()
+# Flat service list derived from the hierarchy — evaluated at VALIDATION time
+# via the effective view (frozen base + runtime admin overrides).
 
 # Abstention sentinel (classifier v3): when the ticket's problem genuinely
 # matches no listed offering, stage 3 stores "<Service>.OFFERING-GAP" and
@@ -73,10 +73,10 @@ class ClassificationResult(BaseModel):
         do, so the value is never split on the first dot; the offering part is
         not validated.
         """
-        allowed = _FLAT_SERVICES.get(self.affected_system, [])
+        allowed = effective_flatten_services().get(self.affected_system, [])
         if self.service in allowed:
             return self
-        for system, services in _FLAT_SERVICES.items():
+        for system, services in effective_flatten_services().items():
             if self.service in services:
                 self.affected_system = system
                 return self
@@ -85,7 +85,7 @@ class ClassificationResult(BaseModel):
         # must be a real service key. Anything else still raises.
         if self.service.endswith(OFFERING_GAP_SENTINEL):
             key = self.service[: -len(OFFERING_GAP_SENTINEL)]
-            for system, services in SERVICES_BY_SYSTEM.items():
+            for system, services in effective_services_by_system().items():
                 if key in services:
                     self.affected_system = system
                     return self
@@ -96,7 +96,7 @@ class ClassificationResult(BaseModel):
             )
         # Dot-path form (cascade): "Service.Offering"
         if "." in self.service:
-            own = SERVICES_BY_SYSTEM.get(self.affected_system, {})
+            own = effective_services_by_system().get(self.affected_system, {})
             for key in own:
                 if self.service == key or self.service.startswith(key + "."):
                     offering = self.service[len(key) + 1:] if self.service != key else ""
@@ -107,7 +107,7 @@ class ClassificationResult(BaseModel):
                             f"Allowed offerings: {own[key]}"
                         )
                     return self
-            for system, services in SERVICES_BY_SYSTEM.items():
+            for system, services in effective_services_by_system().items():
                 if system == self.affected_system:
                     continue
                 for key in services:

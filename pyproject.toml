@@ -18,3 +18,6 @@ dependencies = [
 
 [dependency-groups]
 dev = ["pytest>=9.0"]
+
+[tool.setuptools.packages.find]
+include = ["ai_classification*"]

@@ -10,7 +10,7 @@ from ai_classification.domain.taxonomy import (
     AffectedSystem,
     Category,
     TicketKind,
-    SERVICES_BY_SYSTEM,
+    effective_services_by_system,
 )
 from ai_classification.services.classify.llm import call_llm
 from ai_classification.services.classify.parsing import (
@@ -253,7 +253,7 @@ def _stage_service_llm(
 
     Returns None on any LLM/parse failure.
     """
-    services = SERVICES_BY_SYSTEM.get(system, {})
+    services = effective_services_by_system().get(system, {})
     options = "\n".join(f"  - {s}" for s in services)
     rules = (
         f"affected_system is FIXED to '{system.value}' (resolved in stage 1) — do not change it.\n"
@@ -310,7 +310,7 @@ def _stage_offering_llm(
     optional extra JSON key carried by NONE_OF_THE_ABOVE abstentions.
     """
     system = result.affected_system
-    services = SERVICES_BY_SYSTEM.get(system, {})
+    services = effective_services_by_system().get(system, {})
     # Defensive: stage 2 may have returned a dot-path, or the validator may
     # have auto-corrected the system — resolve the bare service key.
     if service_key is not None:
@@ -508,7 +508,7 @@ def _classify_routed(
         result.incident_type = None
         result.severity = None
         result.urgency = None
-        services = SERVICES_BY_SYSTEM.get(system, {})
+        services = effective_services_by_system().get(system, {})
         key = result.service if result.service in services else next(
             (k for k in services if result.service.startswith(k + ".")), None
         )

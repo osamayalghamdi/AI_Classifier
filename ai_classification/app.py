@@ -17,6 +17,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from ai_classification.api.admin import router as admin_router
 from ai_classification.api.diagnostics import router as diagnostics_router
 from ai_classification.api.incidents import router as incidents_router
 from ai_classification.api.integration import router as integration_router, ready_router
@@ -71,6 +72,11 @@ async def lifespan(app: FastAPI):
         _log.info("Store ready")
     else:
         _log.warning("Store FAILED (embeddings disabled)")
+    # Admin taxonomy overrides -> runtime registry (frozen base untouched).
+    try:
+        store.reload_taxonomy_overrides()
+    except Exception as exc:  # noqa: BLE001 — overrides are best-effort
+        _log.warning("Failed to load taxonomy overrides: %s", exc)
 
     start_sync_worker(store)
 
@@ -162,3 +168,4 @@ app.include_router(ready_router)
 app.include_router(incidents_router)
 app.include_router(reports_router)
 app.include_router(diagnostics_router)
+app.include_router(admin_router)

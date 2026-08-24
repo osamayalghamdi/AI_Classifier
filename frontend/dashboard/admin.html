@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
+<title>Admin — AI Classifier</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet">
+<style>
+:root {
+  --ink: #14294F; --navy: #0E2A5A;
+  --muted: #5E6E8C; --faint: #93A0B8;
+  --line: #E1E8F3; --panel: #FFFFFF;
+  --bg-1: #EDF2FA; --bg-2: #F6F9FD;
+  --blue: #1E6FD9; --blue-deep: #1559B4;
+  --orange: #F26B21; --red: #D64545; --green: #1E9E6A;
+  --mono: "JetBrains Mono", ui-monospace, monospace;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: var(--bg-1); color: var(--ink); font-family: Inter, system-ui, sans-serif; }
+header { background: var(--navy); color: #fff; padding: 16px 28px; display: flex; align-items: center; justify-content: space-between; }
+header h1 { font-size: 20px; font-weight: 800; }
+header .sub { font-size: 12px; opacity: .75; margin-top: 2px; }
+main { max-width: 1200px; margin: 0 auto; padding: 24px; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 20px; margin-bottom: 20px; }
+.card h2 { font-size: 16px; font-weight: 700; margin-bottom: 12px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; }
+.stat { background: var(--bg-2); border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
+.stat .k { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .03em; }
+.stat .v { font-size: 22px; font-weight: 800; margin-top: 4px; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+code, pre { font-family: var(--mono); font-size: 12px; }
+pre { background: #0F1B33; color: #CDE3FF; padding: 14px; border-radius: 8px; overflow: auto; max-height: 480px; white-space: pre-wrap; word-break: break-word; }
+input, select, textarea {
+  width: 100%; padding: 9px 12px; border: 1px solid var(--line); border-radius: 8px;
+  font: inherit; font-size: 13px; background: #fff; color: var(--ink);
+}
+textarea { min-height: 70px; font-family: var(--mono); font-size: 12px; }
+label { display: block; font-size: 12px; color: var(--muted); margin: 10px 0 4px; font-weight: 600; }
+.row { display: flex; gap: 12px; flex-wrap: wrap; }
+.row > * { flex: 1; min-width: 180px; }
+button {
+  font: inherit; font-size: 13px; font-weight: 700; padding: 9px 16px;
+  border-radius: 8px; border: 1px solid var(--line); background: var(--bg-2); color: var(--ink);
+  cursor: pointer; margin-top: 12px;
+}
+button:hover { border-color: var(--blue); color: var(--blue); }
+button.primary { background: var(--blue); border-color: var(--blue); color: #fff; }
+button.primary:hover { background: var(--blue-deep); color: #fff; }
+button.danger { background: #fff; border-color: #E8B4B4; color: var(--red); }
+button.danger:hover { background: var(--red); color: #fff; }
+button.small { padding: 5px 10px; font-size: 12px; margin-top: 0; }
+.tabs { display: flex; gap: 4px; margin-bottom: 20px; flex-wrap: wrap; }
+.tabs button { margin: 0; border-radius: 8px 8px 0 0; border-bottom: none; }
+.tabs button.active { background: var(--panel); border-color: var(--line); color: var(--blue); }
+.tabpane { display: none; }
+.tabpane.active { display: block; }
+.badge { display: inline-block; padding: 2px 8px; border-radius: 20px; font-size: 11px; font-weight: 700; }
+.badge.ok { background: #E3F6EC; color: var(--green); }
+.badge.bad { background: #FCE8E8; color: var(--red); }
+.badge.warn { background: #FFF3E1; color: var(--orange); }
+.mono { font-family: var(--mono); }
+#authbar { display: flex; align-items: center; gap: 10px; }
+#authbar input { width: 260px; }
+.msg { padding: 10px 14px; border-radius: 8px; font-size: 13px; margin-top: 12px; display: none; }
+.msg.ok { display: block; background: #E3F6EC; color: var(--green); }
+.msg.err { display: block; background: #FCE8E8; color: var(--red); }
+.spin { display: inline-block; width: 14px; height: 14px; border: 2px solid var(--faint); border-top-color: var(--blue); border-radius: 50%; animation: spin .8s linear infinite; vertical-align: -2px; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.hint { font-size: 12px; color: var(--muted); margin-top: 6px; }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>⚙ AI Classifier — Admin</h1>
+    <div class="sub">taxonomy · credentials · status · incidents · groups · tests</div>
+  </div>
+  <div id="authbar">
+    <input id="tokenInput" type="password" placeholder="Bearer token (INTEGRATION_API_TOKEN)" autocomplete="off">
+    <button class="primary" id="authBtn">Unlock</button>
+  </div>
+</header>
+<main>
+  <div class="tabs" id="tabs" style="display:none">
+    <button data-tab="status" class="active">Status</button>
+    <button data-tab="taxonomy">Taxonomy</button>
+    <button data-tab="env">Credentials</button>
+    <button data-tab="incidents">Add Incident</button>
+    <button data-tab="groups">Groups</button>
+    <button data-tab="tests">Run Tests</button>
+    <button data-tab="danger">Danger Zone</button>
+  </div>
+
+  <div id="statusTab" class="tabpane active"><div class="card"><h2>Overall status</h2><div id="statusBody"><span class="spin"></span> loading…</div></div></div>
+
+  <div id="taxonomyTab" class="tabpane">
+    <div class="card"><h2>Add service / offering</h2>
+      <div class="row">
+        <div><label>System</label><input id="txSystem" placeholder="Nusuk Masar Haj"></div>
+        <div><label>Service</label><input id="txService" placeholder="New Service Name"></div>
+        <div><label>Offerings (comma separated, optional)</label><input id="txOfferings" placeholder="Offering A, Offering B"></div>
+      </div>
+      <button class="primary" id="txAddService">Add service</button>
+      <div class="row">
+        <div><label>Service (existing)</label><input id="txOfferService" placeholder="Service to add offering to"></div>
+        <div><label>Offering</label><input id="txOffering" placeholder="New offering"></div>
+      </div>
+      <button id="txAddOffering">Add offering</button>
+      <div class="msg" id="txMsg"></div>
+    </div>
+    <div class="card"><h2>Effective taxonomy (frozen base + overrides)</h2><div id="taxonomyBody"><span class="spin"></span> loading…</div></div>
+  </div>
+
+  <div id="envTab" class="tabpane">
+    <div class="card"><h2>Environment credentials</h2>
+      <p class="hint">Writes go to the env file (<span class="mono" id="envFilePath"></span>). Settings are loaded at startup — <b>restart the container</b> for changes to take effect. Secrets are never displayed in full.</p>
+      <table id="envTable"><thead><tr><th>Key</th><th>Status</th><th>Masked</th><th>New value</th><th></th></tr></thead><tbody></tbody></table>
+    </div>
+  </div>
+
+  <div id="incidentsTab" class="tabpane">
+    <div class="card"><h2>Add incident</h2>
+      <label>Title</label><input id="incTitle" placeholder="e.g. Rawdah permit booking fails">
+      <label>Description</label><textarea id="incDescription" placeholder="What happened…"></textarea>
+      <label>Source ticket id (optional)</label><input id="incRef" placeholder="TKT-12345">
+      <button class="primary" id="incAdd">Classify &amp; store</button>
+      <div class="msg" id="incMsg"></div>
+      <div id="incResult" style="display:none; margin-top:14px"><h2 style="font-size:14px">Result</h2><pre id="incResultBody"></pre></div>
+    </div>
+  </div>
+
+  <div id="groupsTab" class="tabpane">
+    <div class="card"><h2>Add group</h2>
+      <label>Arabic name (name_ar)</label><input id="grpName" placeholder="خطأ في إصدار التصاريح">
+      <label>Description</label><textarea id="grpDesc" placeholder="One short sentence"></textarea>
+      <label>Member incident ids (comma separated, optional)</label><input id="grpMembers" placeholder="id1, id2">
+      <button class="primary" id="grpCreate">Create group</button>
+      <div class="msg" id="grpMsg"></div>
+    </div>
+    <div class="card"><h2>Existing groups</h2><div id="groupsBody"><span class="spin"></span> loading…</div></div>
+  </div>
+
+  <div id="testsTab" class="tabpane">
+    <div class="card"><h2>Run tests (in-container)</h2>
+      <button class="primary" id="runSmoke">▶ Run smoke_test.sh</button>
+      <button class="primary" id="runPytest" style="margin-left:8px">▶ Run full pytest suite</button>
+      <div class="hint">Smoke = curl checks against the live API. Pytest = full suite against ai_incidents_test (takes a few minutes). Both run as subprocesses in the API container with a 10-min timeout.</div>
+      <pre id="testOutput" style="margin-top:14px; display:none"></pre>
+    </div>
+  </div>
+
+  <div id="dangerTab" class="tabpane">
+    <div class="card"><h2>Danger zone</h2>
+      <p class="hint">Resets delete ALL incidents, clusters, the review queue, and ingestion jobs. This cannot be undone.</p>
+      <button class="danger" id="resetDb">🗑 Reset database</button>
+      <div class="msg" id="resetMsg"></div>
+    </div>
+  </div>
+</main>
+<script src="admin.js"></script>
+</body>
+</html>

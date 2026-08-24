@@ -271,6 +271,18 @@ class DBBase:
                         CREATE INDEX IF NOT EXISTS idx_assignment_log_incident
                         ON assignment_log (incident_id)
                     """)
+                    # ── Taxonomy overrides (admin console) ──────────────────
+                    # Admin-added services/offerings merged on top of the
+                    # FROZEN code taxonomy at runtime (domain/taxonomy.py
+                    # effective_* view). Never edits the base.
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS taxonomy_overrides (
+                            system   TEXT NOT NULL,
+                            service  TEXT NOT NULL,
+                            offering TEXT NOT NULL DEFAULT '',
+                            PRIMARY KEY (system, service, offering)
+                        )
+                    """)
                 conn.commit()
             finally:
                 self._pool.putconn(conn)

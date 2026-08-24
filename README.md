@@ -35,6 +35,13 @@ LLM-powered incident classification on the Nusuk Masar Haj service-offering mode
 nothing), `/api/v1/backfill` (batch ≤200), `/ready` (db/embedding/llm checks).
 Bearer auth (`INTEGRATION_API_TOKEN`). Full contract: `docs/INTEGRATION_GUIDE.md`.
 
+**Admin console (`/admin.html`, bearer auth):** overall status, taxonomy
+overrides (add services/offerings to the FROZEN base taxonomy — effective
+immediately, persisted in the `taxonomy_overrides` table), env credentials
+(write to the env file — restart required), add incident, full DB reset,
+cluster group add/adjust, and in-container smoke/pytest runners. All
+`/admin/*` endpoints require the same bearer token as `/api/v1/*`.
+
 **Bulk-ingest rule (applies everywhere):** bulk loads (>20 tickets) go through
 the **async integration API** (`POST /api/v1/backfill` or `/api/v1/incidents` →
 202 + poll) — it has a retry worker with backoff and never holds an HTTP

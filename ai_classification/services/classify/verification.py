@@ -9,7 +9,7 @@ from ai_classification.domain.models import ClassificationResult, OFFERING_GAP_S
 from ai_classification.domain.taxonomy import (
     IncidentType,
     Severity,
-    SERVICES_BY_SYSTEM,
+    effective_services_by_system,
 )
 from ai_classification.services.classify.llm import call_llm, strip_json_fences
 from ai_classification.services.classify.persistence import (
@@ -58,7 +58,7 @@ _VERIFIABLE_FIELDS = ("affected_system", "service", "incident_type", "severity")
 
 def _bare_service_key(result: ClassificationResult) -> str | None:
     """Resolve the BARE service key of a (possibly dot-path / OFFERING-GAP) value."""
-    services = SERVICES_BY_SYSTEM.get(result.affected_system, {})
+    services = effective_services_by_system().get(result.affected_system, {})
     svc = result.service
     if svc in services:
         return svc
@@ -74,7 +74,7 @@ def _build_verification_prompt(title: str, description: str, result: Classificat
     if key:
         offering_options = "\n".join(
             f"  - {key}.{o}"
-            for o in SERVICES_BY_SYSTEM.get(result.affected_system, {}).get(key, [])
+            for o in effective_services_by_system().get(result.affected_system, {}).get(key, [])
         )
     else:
         offering_options = f"  - {result.service}"

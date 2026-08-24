@@ -353,3 +353,50 @@ def flatten_services(
                 entries.append(f"{svc}.{sub}")
         flat[system] = entries
     return flat
+
+
+# --- Runtime overrides (admin console) --------------------------------
+# The code taxonomy above is the FROZEN base. The admin console can ADD
+# services/offerings at runtime; they are merged ON TOP of the base here
+# (never modifying the base). Overrides live in the taxonomy_overrides DB
+# table; the app loads them into this registry at startup and after each
+# admin edit, so the merge is call-time (prompts/validation see them
+# immediately, no restart).
+#
+# Shape: {system_value: {service: [offering, ...]}}
+_runtime_overrides: dict[str, dict[str, list[str]]] = {}
+
+
+def set_runtime_overrides(overrides: dict[str, dict[str, list[str]]]) -> None:
+    """Replace the runtime override registry (from the DB, admin edits)."""
+    _runtime_overrides.clear()
+    _runtime_overrides.update(overrides)
+
+
+def runtime_overrides() -> dict[str, dict[str, list[str]]]:
+    """Snapshot of the current override registry (for the admin console)."""
+    return {k: {s: list(o) for s, o in v.items()} for k, v in _runtime_overrides.items()}
+
+
+def effective_services_by_system() -> dict[AffectedSystem, dict[str, list[str]]]:
+    """Frozen base + runtime overrides merged (call-time, never cached)."""
+    merged: dict[AffectedSystem, dict[str, list[str]]] = {}
+    for system, services in SERVICES_BY_SYSTEM.items():
+        merged[system] = {s: list(o) for s, o in services.items()}
+    for system_value, services in _runtime_overrides.items():
+        try:
+            system = AffectedSystem(system_value)
+        except ValueError:
+            continue  # override for an unknown system — ignore, keep base
+        bucket = merged.setdefault(system, {})
+        for svc, offerings in services.items():
+            existing = bucket.setdefault(svc, [])
+            for o in offerings:
+                if o and o not in existing:
+                    existing.append(o)
+    return merged
+
+
+def effective_flatten_services() -> dict[AffectedSystem, list[str]]:
+    """flatten_services() over the merged hierarchy."""
+    return flatten_services(effective_services_by_system())
