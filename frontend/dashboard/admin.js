@@ -86,7 +86,7 @@ document.querySelectorAll(".tabs button").forEach((btn) => {
 });
 
 function loadAll() {
-  loadStatus(); loadTaxonomy(); loadSystems(); loadEnv(); loadGroups(); loadAssGroups();
+  loadStatus(); loadTaxonomy(); loadSystems(); loadEnv(); loadModels(); loadGroups(); loadAssGroups();
   loadAssGroupDropdown(); loadEndpoints();
 }
 
@@ -309,6 +309,55 @@ async function loadEnv() {
   } catch (e) {
     $("envTable").querySelector("tbody").innerHTML =
       `<tr><td colspan="5"><span class="badge bad">${esc(e.message)}</span></td></tr>`;
+  }
+}
+
+// ── Model registry (enable / disable) ─────────────────────────────────
+
+async function loadModels() {
+  try {
+    const d = await api("/admin/models");
+    const active = d.active || {};
+    const rows = d.models.map((m) => {
+      const isActive = active[m.role] === m.name;
+      return `
+      <tr>
+        <td class="mono">${esc(m.name)}</td>
+        <td>${esc(m.role)}</td>
+        <td>${m.enabled ? '<span class="badge ok">enabled</span>' : '<span class="badge bad">disabled</span>'}${isActive ? ' <span class="badge ok">● active</span>' : ""}</td>
+        <td class="mono">${esc(m.model_id)}</td>
+        <td class="mono">${esc(m.api_base || "(inherit)")}</td>
+        <td class="mono">${m.key_set ? esc(m.key_masked) : '<span class="hint">no key</span>'}</td>
+        <td>${m.enabled
+          ? `<button class="small" data-model-disable="${esc(m.name)}">disable</button>`
+          : `<button class="small" data-model-enable="${esc(m.name)}">enable</button>`}</td>
+      </tr>`;
+    });
+    const act = Object.entries(active).map(([r, n]) => n ? `${r}=${n}` : `${r}=<i>none</i>`).join(" · ");
+    $("modelsBody").innerHTML =
+      `<p class="hint">Active: ${act}</p>
+       <table><thead><tr><th>Model</th><th>Role</th><th>State</th><th>Model id</th><th>API base</th><th>Key</th><th></th></tr></thead>
+       <tbody>${rows.join("")}</tbody></table>`;
+    document.querySelectorAll("[data-model-enable]").forEach((b) => {
+      b.addEventListener("click", async () => {
+        try {
+          const r = await api(`/admin/models/${b.dataset.modelEnable}/enable`, { method: "POST", body: {} });
+          alert("Enabled. " + (r.note || ""));
+          loadModels();
+        } catch (e) { alert(e.message); }
+      });
+    });
+    document.querySelectorAll("[data-model-disable]").forEach((b) => {
+      b.addEventListener("click", async () => {
+        try {
+          const r = await api(`/admin/models/${b.dataset.modelDisable}/disable`, { method: "POST", body: {} });
+          alert("Disabled. " + (r.note || ""));
+          loadModels();
+        } catch (e) { alert(e.message); }
+      });
+    });
+  } catch (e) {
+    $("modelsBody").innerHTML = `<span class="badge bad">${esc(e.message)}</span>`;
   }
 }
 

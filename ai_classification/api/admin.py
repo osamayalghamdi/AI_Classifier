@@ -267,6 +267,81 @@ def admin_env_write(payload: dict):
             "note": "Restart the container for this to take effect."}
 
 
+# ── Model registry (enable/disable control) ────────────────────────────
+
+@router.get("/models")
+def admin_models():
+    """All registry models with enabled state + role + masked key.
+
+    The ENABLED flag is what the classifier/OCR/reranker read at startup.
+    Toggling writes MODEL_<NAME>_ENABLED to the env file — a restart is
+    required (Settings is a frozen import-time singleton).
+    """
+    from ai_classification.shared.config import MODEL_CATALOG, _build_model_registry
+
+    registry = _build_model_registry()
+    out = []
+    for name, (role, _default_id, desc) in MODEL_CATALOG.items():
+        entry = registry[name]
+        key = entry.api_key
+        out.append({
+            "name": entry.name,
+            "role": entry.role,
+            "enabled": entry.enabled,
+            "model_id": entry.model_id,
+            "api_base": entry.api_base,
+            "key_set": bool(key),
+            "key_masked": (key[:4] + "…" + key[-4:]) if len(key) > 10 else ("***" if key else ""),
+            "description": desc,
+        })
+    active = {
+        "classifier": settings.active_classifier_model.name if settings.active_classifier_model else None,
+        "ocr": settings.active_ocr_model.name if settings.active_ocr_model else None,
+        "reranker": settings.active_reranker_model.name if settings.active_reranker_model else None,
+    }
+    return {"models": out, "active": active,
+            "note": "Toggle writes MODEL_<NAME>_ENABLED to the env file; restart required."}
+
+
+def _set_model_enabled(name: str, enabled: bool) -> dict:
+    from ai_classification.shared.config import MODEL_CATALOG
+
+    if name not in MODEL_CATALOG:
+        raise HTTPException(422, f"unknown model '{name}'")
+    key = f"MODEL_{name}_ENABLED"
+    value = "1" if enabled else "0"
+    path = _env_file_path()
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+        new_lines, replaced = [], False
+        for ln in lines:
+            if ln.split("=", 1)[0].strip() == key:
+                new_lines.append(f"{key}={value}")
+                replaced = True
+            else:
+                new_lines.append(ln)
+        if not replaced:
+            new_lines.append(f"{key}={value}")
+        path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+    except OSError as exc:
+        raise HTTPException(500, f"failed to write env file: {exc}") from exc
+    return {"status": "ok", "model": name, "enabled": enabled,
+            "restart_required": True,
+            "note": f"Set {key}={value} in {str(path)}. Restart the container for it to take effect."}
+
+
+@router.post("/models/{name}/enable")
+def admin_model_enable(name: str):
+    """Enable a model (write MODEL_<NAME>_ENABLED=1 to the env file)."""
+    return _set_model_enabled(name, True)
+
+
+@router.post("/models/{name}/disable")
+def admin_model_disable(name: str):
+    """Disable a model (write MODEL_<NAME>_ENABLED=0 to the env file)."""
+    return _set_model_enabled(name, False)
+
+
 # ── System activation (call-centre-covered systems) ───────────────────
 
 @router.get("/systems")

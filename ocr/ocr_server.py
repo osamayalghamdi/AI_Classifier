@@ -1,12 +1,24 @@
-"""OCR server — extracts text from images and PDFs using EasyOCR.
+"""OCR server — extracts text from images and PDFs.
 
-Supports English and Arabic with GPU acceleration.
+Two engines, selected per deployment via env (same pattern as the LLM
+model registry in the main app — enable/disable by configuration):
+
+  1. EasyOCR (local, free) — default when OCR_USE_ELM is not set.
+  2. ELM vision model (company provider) — when OCR_USE_ELM=1 the server
+     sends the image to the ELM chat-completions endpoint and returns the
+     model's transcription. This is the deployment choice for the company
+     (everything local through the ELM provider, same as the classifier).
+
+Supports English and Arabic with GPU acceleration (EasyOCR path).
 """
 
 import asyncio
+import base64
 import io
+import json
 import os
 import logging
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 
@@ -21,13 +33,69 @@ from PIL import Image
 
 _executor = ThreadPoolExecutor(max_workers=2)
 
+# ── ELM vision model config (enable/disable via env) ──────────────────
+# Same provider approach as the classifier's model registry: the deployment
+# sets OCR_USE_ELM=1 plus the ELM endpoint/model/key, and OCR runs through
+# the company provider instead of local EasyOCR.
+OCR_USE_ELM = os.getenv("OCR_USE_ELM", "0").strip().lower() in ("1", "true", "yes", "on")
+ELM_API_URL = os.getenv("ELM_API_URL", "https://llms.elm.sa/v1/chat/completions")
+ELM_MODEL = os.getenv("ELM_MODEL", "openai/qwen3-vl:32b")
+ELM_API_KEY = os.getenv("ELM_API_KEY", "").strip()
+OCR_ELM_TIMEOUT_S = float(os.getenv("OCR_ELM_TIMEOUT_S", "60"))
+
+_ELM_SYSTEM_PROMPT = (
+    "You are a document OCR engine. Transcribe ALL visible text from the "
+    "image exactly as written, preserving layout and line breaks. Return only "
+    "the transcription — no commentary, no markdown."
+)
+
+
+def _ocr_via_elm(pil_img: Image.Image) -> str:
+    """Send one image to the ELM vision endpoint and return its text."""
+    if not ELM_API_KEY:
+        raise RuntimeError("OCR_USE_ELM=1 but ELM_API_KEY is not set")
+    buf = io.BytesIO()
+    pil_img.save(buf, format="PNG")
+    b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+    payload = {
+        "model": ELM_MODEL,
+        "messages": [
+            {"role": "system", "content": _ELM_SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Transcribe this image:"},
+                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}},
+                ],
+            },
+        ],
+        "temperature": 0.0,
+        "max_tokens": 2048,
+        "stream": False,
+    }
+    req = urllib.request.Request(
+        ELM_API_URL,
+        data=json.dumps(payload).encode("utf-8"),
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {ELM_API_KEY}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=OCR_ELM_TIMEOUT_S) as resp:  # noqa: S310 — configured ELM URL
+        data = json.loads(resp.read().decode("utf-8"))
+    return data["choices"][0]["message"]["content"].strip()
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Eagerly load both language models so the first request doesn't time out."""
-    loop = asyncio.get_running_loop()
-    await loop.run_in_executor(_executor, _get_reader, "en")
-    await loop.run_in_executor(_executor, _get_reader, "ar")
+    """Eagerly load EasyOCR models so the first request doesn't time out —
+    skipped when the ELM vision model is in use (no local OCR needed)."""
+    if not OCR_USE_ELM:
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(_executor, _get_reader, "en")
+        await loop.run_in_executor(_executor, _get_reader, "ar")
     yield
 
 
@@ -96,6 +164,28 @@ def _run_ocr(raw: bytes, filename: str, langs: list[str]) -> dict:
     """Synchronous OCR runner — called in thread pool."""
     images = _load_pages(raw, filename)
 
+    # ELM vision model path — the company deployment choice (everything
+    # through the ELM provider, same as the classifier).
+    if OCR_USE_ELM:
+        pages_text = []
+        for page_num, img in enumerate(images):
+            try:
+                text = _ocr_via_elm(img)
+            except Exception as exc:  # noqa: BLE001 — report, don't kill the request
+                pages_text.append(f"<page {page_num + 1} OCR error: {exc}>")
+                continue
+            if text:
+                pages_text.append(f"<page {page_num + 1}>\n{text}")
+        full_text = "\n\n".join(pages_text)
+        return {
+            "engine": "elm",
+            "model": ELM_MODEL,
+            "text": full_text,
+            "words": [],
+            "low_confidence_words": [],
+            "has_low_confidence": False,
+        }
+
     if len(langs) == 1:
         raw_results = _ocr_single_lang(_get_reader(langs[0]), images)
     else:
@@ -114,6 +204,7 @@ def _run_ocr(raw: bytes, filename: str, langs: list[str]) -> dict:
     low_conf = [w for w in words if w["confidence"] < 0.6]
 
     return {
+        "engine": "easyocr",
         "text": full_text,
         "words": words,
         "low_confidence_words": low_conf,

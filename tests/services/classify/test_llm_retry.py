@@ -199,3 +199,59 @@ def test_timeout_kwarg_passed_to_completion(fake_completion):
     queue, calls = fake_completion
     mod_llm.call_llm([{"role": "user", "content": "hi"}], max_tokens=10)
     assert calls[0]["timeout"] == 60
+
+
+# ── Model registry enable/disable ─────────────────────────────────────
+
+def test_call_llm_uses_active_classifier_model(monkeypatch):
+    """With an enabled classifier model, call_llm uses its model id."""
+    import ai_classification.services.classify.llm as llm_mod
+    from ai_classification.shared.config import ModelEntry
+
+    entry = ModelEntry(name="QWEN3_6", role="classifier", enabled=True,
+                       model_id="openai/qwen3.6", api_base="https://llms.elm.sa/v1",
+                       api_key="k")
+    fake_settings = _settings_with(active_classifier_model=entry, llm_api_key="")
+    monkeypatch.setattr(llm_mod, "settings", fake_settings)
+    seen = {}
+
+    def fake_completion(**kwargs):
+        seen.update(kwargs)
+        return _FakeResponse()
+
+    monkeypatch.setattr(llm_mod, "completion", fake_completion)
+    out = llm_mod.call_llm([{"role": "user", "content": "hi"}], max_tokens=10)
+    assert out == "ok"
+    assert seen["model"] == "openai/qwen3.6"
+    assert seen["api_base"] == "https://llms.elm.sa/v1"
+    assert seen["api_key"] == "k"
+
+
+def test_call_llm_raises_when_no_classifier_enabled(monkeypatch):
+    """All classifier models disabled → fail fast with a clear message."""
+    import ai_classification.services.classify.llm as llm_mod
+
+    fake_settings = _settings_with(active_classifier_model=None)
+    monkeypatch.setattr(llm_mod, "settings", fake_settings)
+
+    with pytest.raises(ValueError, match="No classifier model is ENABLED"):
+        llm_mod.call_llm([{"role": "user", "content": "hi"}], max_tokens=10)
+
+
+def test_call_llm_explicit_model_override(monkeypatch):
+    """The model= argument bypasses registry resolution entirely."""
+    import ai_classification.services.classify.llm as llm_mod
+
+    fake_settings = _settings_with(active_classifier_model=None, llm_api_key="")
+    monkeypatch.setattr(llm_mod, "settings", fake_settings)
+    seen = {}
+
+    def fake_completion(**kwargs):
+        seen.update(kwargs)
+        return _FakeResponse()
+
+    monkeypatch.setattr(llm_mod, "completion", fake_completion)
+    out = llm_mod.call_llm([{"role": "user", "content": "hi"}], max_tokens=10,
+                           model="openai/other-model")
+    assert out == "ok"
+    assert seen["model"] == "openai/other-model"

@@ -91,6 +91,7 @@ button.small { padding: 5px 10px; font-size: 12px; margin-top: 0; }
     <button data-tab="status" class="active">Status</button>
     <button data-tab="taxonomy">Taxonomy</button>
     <button data-tab="env">Credentials</button>
+    <button data-tab="models">Models</button>
     <button data-tab="incidents">Add Incident</button>
     <button data-tab="assgroups">Assignment Groups</button>
     <button data-tab="groups">Cluster Groups</button>
@@ -142,6 +143,13 @@ button.small { padding: 5px 10px; font-size: 12px; margin-top: 0; }
     <div class="card"><h2>Environment credentials</h2>
       <p class="hint">Writes go to the env file (<span class="mono" id="envFilePath"></span>). Settings are loaded at startup — <b>restart the container</b> for changes to take effect. Secrets are never displayed in full.</p>
       <table id="envTable"><thead><tr><th>Key</th><th>Status</th><th>Masked</th><th>New value</th><th></th></tr></thead><tbody></tbody></table>
+    </div>
+  </div>
+
+  <div id="modelsTab" class="tabpane">
+    <div class="card"><h2>Model registry (enable / disable)</h2>
+      <p class="hint">Each model from the provider (ELM company endpoint by default) can be enabled or disabled. The classifier uses the first <b>enabled</b> model with role <span class="mono">classifier</span>; OCR uses the enabled <span class="mono">ocr</span> model (falls back to local EasyOCR when none is enabled). Toggles write <span class="mono">MODEL_&lt;NAME&gt;_ENABLED</span> to the env file — <b>restart the container</b> for them to take effect.</p>
+      <div id="modelsBody"><span class="spin"></span> loading…</div>
     </div>
   </div>
 
