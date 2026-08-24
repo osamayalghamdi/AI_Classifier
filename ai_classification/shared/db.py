@@ -283,6 +283,35 @@ class DBBase:
                             PRIMARY KEY (system, service, offering)
                         )
                     """)
+                    # ── Assignment groups (admin console) ────────────────────
+                    # The managed list of TEAMS an incident is routed to
+                    # (assign_group on incidents) — Payments, Infrastructure,
+                    # Operations, App Support... Admin CRUD; the Add-Incident
+                    # form offers these as a dropdown. Free-text assign_group
+                    # values from imports remain as-is (mapped by the
+                    # frontend's mapTeam keywords); this list is the canonical
+                    # set for NEW manual incidents.
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS assignment_groups (
+                            id         SERIAL PRIMARY KEY,
+                            name       TEXT NOT NULL UNIQUE,
+                            description TEXT NOT NULL DEFAULT '',
+                            sort_order INTEGER NOT NULL DEFAULT 0,
+                            active     BOOLEAN NOT NULL DEFAULT TRUE,
+                            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                        )
+                    """)
+                    # Seed the four teams the dashboard already knows.
+                    cur.execute("""
+                        INSERT INTO assignment_groups (name, description, sort_order)
+                        SELECT * FROM (VALUES
+                            ('Payments',      'Payment, billing and visa issues', 1),
+                            ('Infrastructure','Network, infra and gate problems',  2),
+                            ('Operations',    'Transport, accommodation, health and field ops', 3),
+                            ('App Support',   'Application support (default)',      4)
+                        ) AS seed(name, description, sort_order)
+                        WHERE NOT EXISTS (SELECT 1 FROM assignment_groups)
+                    """)
                 conn.commit()
             finally:
                 self._pool.putconn(conn)

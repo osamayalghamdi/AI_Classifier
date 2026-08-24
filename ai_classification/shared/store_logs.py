@@ -223,3 +223,87 @@ class LogsMixin:
             if row["offering"]:
                 bucket[row["service"]].append(row["offering"])
         set_runtime_overrides(merged)
+
+    # ── Assignment groups (admin console) ──────────────────────────────
+    # Managed list of TEAMS incidents are routed to (assign_group).
+
+    def list_assignment_groups(self, active_only: bool = False) -> list[dict]:
+        if not self._ready or self._pool is None:
+            return []
+        conn = self._getconn()
+        try:
+            with conn.cursor() as cur:
+                sql = ("SELECT id, name, description, sort_order, active, created_at "
+                       "FROM assignment_groups")
+                if active_only:
+                    sql += " WHERE active = TRUE"
+                sql += " ORDER BY sort_order, name"
+                cur.execute(sql)
+                cols = ("id", "name", "description", "sort_order", "active", "created_at")
+                return [dict(zip(cols, r)) for r in cur.fetchall()]
+        finally:
+            self._putconn(conn)
+
+    def add_assignment_group(self, name: str, description: str = "",
+                             sort_order: int = 0) -> dict | None:
+        if not self._ready or self._pool is None:
+            return None
+        conn = self._getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO assignment_groups (name, description, sort_order) "
+                    "VALUES (%s, %s, %s) "
+                    "ON CONFLICT (name) DO UPDATE SET description = EXCLUDED.description, "
+                    "    sort_order = EXCLUDED.sort_order, active = TRUE "
+                    "RETURNING id, name, description, sort_order, active, created_at",
+                    (name, description, sort_order))
+                row = cur.fetchone()
+            conn.commit()
+            cols = ("id", "name", "description", "sort_order", "active", "created_at")
+            return dict(zip(cols, row)) if row else None
+        finally:
+            self._putconn(conn)
+
+    def update_assignment_group(self, group_id: int, *,
+                                name: str | None = None,
+                                description: str | None = None,
+                                sort_order: int | None = None,
+                                active: bool | None = None) -> bool:
+        if not self._ready or self._pool is None:
+            return False
+        sets, args = [], []
+        if name is not None:
+            sets.append("name = %s"); args.append(name)
+        if description is not None:
+            sets.append("description = %s"); args.append(description)
+        if sort_order is not None:
+            sets.append("sort_order = %s"); args.append(sort_order)
+        if active is not None:
+            sets.append("active = %s"); args.append(active)
+        if not sets:
+            return False
+        args.append(group_id)
+        conn = self._getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(f"UPDATE assignment_groups SET {', '.join(sets)} "
+                            "WHERE id = %s", args)
+            conn.commit()
+            return cur.rowcount > 0
+        finally:
+            self._putconn(conn)
+
+    def delete_assignment_group(self, group_id: int) -> bool:
+        """Hard-delete a group. Incidents already carrying the name keep it
+        (assign_group is a plain text column — the list only feeds the UI)."""
+        if not self._ready or self._pool is None:
+            return False
+        conn = self._getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM assignment_groups WHERE id = %s", (group_id,))
+            conn.commit()
+            return cur.rowcount > 0
+        finally:
+            self._putconn(conn)
