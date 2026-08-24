@@ -1,0 +1,23 @@
+AI Classifier deployed.
+
+1. Wait for the API to become ready (model load takes up to ~5 min cold):
+     kubectl -n {{ .Release.Namespace }} rollout status deploy/{{ include "ai-classifier.fullname" . }}-api
+
+2. Smoke test:
+     kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "ai-classifier.fullname" . }}-api {{ .Values.api.port }}
+     curl -fsS http://localhost:{{ .Values.api.port }}/health
+     curl -fsS http://localhost:{{ .Values.api.port }}/ready
+     curl -fsS http://localhost:{{ .Values.api.port }}/test/all   # full battery: db → embedding → llm → classify
+
+{{- if .Values.ingress.enabled }}
+3. Dashboard / API: http(s)://{{ .Values.ingress.host }}/
+{{- end }}
+
+Required secrets (create before install if missing):
+  - {{ .Values.api.existingSecret }} : LLM_API_KEY, INTEGRATION_API_TOKEN, TICKETING_API_TOKEN{{ if not .Values.postgres.enabled }}, PG_PASSWORD{{ end }}
+{{- if .Values.postgres.enabled }}
+  - {{ .Values.postgres.auth.existingSecret }} : POSTGRES_PASSWORD
+{{- end }}
+
+IMPORTANT: keep api.replicas=1 (in-process background workers). See
+DEPLOYMENT_GUIDE.md §Scaling before increasing it.

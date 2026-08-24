@@ -1,0 +1,123 @@
+{{- define "ai-classifier.frontendConf" -}}
+server {
+    listen       {{ .Values.frontend.port }};
+    server_name  _;
+
+    root   /usr/share/nginx/html;
+    index  index.html;
+
+    location = /index.html {
+        add_header Cache-Control "no-cache, no-store, must-revalidate";
+    }
+    location = / {
+        add_header Cache-Control "no-cache, no-store, must-revalidate";
+    }
+
+    # Dangerous unauthenticated endpoints — hard-blocked at the proxy
+    # (DEPLOYMENT_GUIDE §6, gotcha #7). POST /reset deletes ALL incidents;
+    # /test/llm lets anyone spend LLM tokens. Exact-match locations take
+    # precedence over the proxy regex and the SPA fallback below.
+    location = /reset {
+        return 403;
+    }
+    location = /test/llm {
+        return 403;
+    }
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    # Proxy ALL API/backend paths to the API Service (cluster DNS)
+    location ~ ^/(api/|health|ready|status|classify|incidents|import|reports|docs|openapi\.json|review-queue|cluster-proposals|taxonomy-gaps|clusters|all-incidents) {
+        proxy_pass http://{{ include "ai-classifier.fullname" . }}-api:{{ .Values.api.port }};
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 300s;    # LLM classification can be slow
+        client_max_body_size 50m;
+    }
+}
+{{- end -}}
+
+{{- if .Values.frontend.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "ai-classifier.fullname" . }}-nginx
+  labels:
+    {{- include "ai-classifier.labels" . | nindent 4 }}
+    app.kubernetes.io/component: frontend
+data:
+  default.conf: |
+{{ include "ai-classifier.frontendConf" . | indent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "ai-classifier.fullname" . }}-frontend
+  labels:
+    {{- include "ai-classifier.labels" . | nindent 4 }}
+    app.kubernetes.io/component: frontend
+spec:
+  replicas: {{ .Values.frontend.replicas }}
+  selector:
+    matchLabels:
+      {{- include "ai-classifier.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: frontend
+  template:
+    metadata:
+      labels:
+        {{- include "ai-classifier.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: frontend
+      annotations:
+        # Restart pods when the nginx proxy config changes (hashes the
+        # actual rendered conf — subPath-mounted ConfigMaps don't hot-reload)
+        checksum/nginx-conf: {{ include "ai-classifier.frontendConf" . | sha256sum | trunc 32 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: nginx
+          image: "{{ .Values.frontend.image.repository }}:{{ .Values.frontend.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.frontend.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.frontend.port }}
+          volumeMounts:
+            - name: nginx-conf
+              mountPath: /etc/nginx/conf.d/default.conf
+              subPath: default.conf
+          readinessProbe:
+            httpGet: { path: /, port: http }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /, port: http }
+            periodSeconds: 15
+          resources:
+            {{- toYaml .Values.frontend.resources | nindent 12 }}
+      volumes:
+        - name: nginx-conf
+          configMap:
+            name: {{ include "ai-classifier.fullname" . }}-nginx
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "ai-classifier.fullname" . }}-frontend
+  labels:
+    {{- include "ai-classifier.labels" . | nindent 4 }}
+    app.kubernetes.io/component: frontend
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: {{ .Values.frontend.port }}
+      targetPort: http
+  selector:
+    {{- include "ai-classifier.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: frontend
+{{- end }}

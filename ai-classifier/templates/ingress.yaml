@@ -1,0 +1,45 @@
+{{- if .Values.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "ai-classifier.fullname" . }}
+  labels:
+    {{- include "ai-classifier.labels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- with .Values.ingress.tls }}
+  tls:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.ingress.host | quote }}
+      http:
+        paths:
+          {{- if .Values.frontend.enabled }}
+          # Everything → frontend nginx, which serves the dashboard and
+          # proxies API paths to the api Service (single entry point,
+          # same behavior as the compose stack).
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "ai-classifier.fullname" . }}-frontend
+                port:
+                  number: {{ .Values.frontend.port }}
+          {{- else }}
+          # No frontend → expose the API directly.
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "ai-classifier.fullname" . }}-api
+                port:
+                  number: {{ .Values.api.port }}
+          {{- end }}
+{{- end }}
