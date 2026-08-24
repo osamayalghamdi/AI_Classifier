@@ -28,6 +28,17 @@ class Settings:
     llm_api_key: str | None = getenv("LLM_API_KEY")
     llm_api_base: str | None = getenv("LLM_API_BASE")
 
+    # ── LLM resilience (call_llm) ────────────────────────────────────────
+    # Request timeout per LLM call, seconds (0 = provider default).
+    llm_timeout_s: float = float(getenv("LLM_TIMEOUT_S", "60"))
+    # Retries for TRANSIENT failures only (429 / 500 / 502 / 503 / 504 /
+    # connection & read timeouts) — exponential backoff + jitter, honouring
+    # Retry-After. Auth (401/403), credits (402), unknown model (404), and
+    # bad request (400) fail FAST (zero retries — retrying masks a config
+    # error). Total attempts = 1 + llm_max_retries.
+    llm_max_retries: int = int(getenv("LLM_MAX_RETRIES", "3"))
+    llm_retry_base_s: float = float(getenv("LLM_RETRY_BASE_S", "2"))
+
     host: str = getenv("HOST", "0.0.0.0")
     port: int = int(getenv("PORT", "8000"))
 
@@ -45,6 +56,13 @@ class Settings:
     # temperature 0.7 and majority-voted per field; no majority → the
     # low-confidence result is kept and flagged needs_review=true.
     classify_self_consistency: bool = _is_truthy(getenv("CLASSIFY_SELF_CONSISTENCY", "false"))
+
+    # Inter-ticket delay in classify_batch (seconds). 0 = unchanged (no
+    # sleep). Lets operators pace a synchronous bulk run to stay under
+    # provider rate limits without code edits. For real bulk ingest use the
+    # async integration API (/api/v1/backfill, /api/v1/incidents) — see
+    # docs/INTEGRATION_GUIDE.md.
+    classify_batch_sleep_s: float = float(getenv("CLASSIFY_BATCH_SLEEP_S", "0"))
 
     # ── Intake field mapping ─────────────────────────────────────────────
     # Payload keys tried in order when mapping a raw ticket to title /

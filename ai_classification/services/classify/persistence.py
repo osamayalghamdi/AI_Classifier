@@ -5,6 +5,7 @@ store hooks, content hash, classify_and_store, classify_batch.
 import json
 import logging
 import re
+import time
 
 from datetime import datetime, timezone
 
@@ -265,8 +266,18 @@ def classify_and_store(
 
 
 def classify_batch(incidents: list[dict]) -> ClassifyBatchResponse:
+    """Classify many incidents serially (NO concurrency — deliberate).
+
+    For bulk ingest (>20 tickets) prefer the async integration API
+    (POST /api/v1/backfill / /api/v1/incidents → 202 + poll), which has a
+    retry worker with backoff and never holds an HTTP connection for the
+    whole run. This endpoint is for small interactive batches. The optional
+    CLASSIFY_BATCH_SLEEP_S inter-ticket delay lets operators pace a run
+    under provider rate limits without code edits (0 = no delay).
+    """
     results = []
     failed = 0
+    sleep_s = getattr(settings, "classify_batch_sleep_s", 0.0) or 0.0
     for inc in incidents:
         try:
             r = classify_and_store(
@@ -288,5 +299,7 @@ def classify_batch(incidents: list[dict]) -> ClassifyBatchResponse:
         except Exception as e:
             _log.error("Batch classify failed for '%s': %s", inc.get("title", "")[:40], e)
             failed += 1
+        if sleep_s:
+            time.sleep(sleep_s)
     _log.info("Batch classify — %d/%d succeeded", len(results), len(incidents))
     return ClassifyBatchResponse(results=results, total=len(incidents), failed=failed)
