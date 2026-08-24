@@ -38,70 +38,98 @@ def _map_write_back(value: str) -> str:
 
 
 # ── Model registry ─────────────────────────────────────────────────────
-# Per-model enable/disable control (same provider, e.g. the ELM company
-# endpoint). Each named model is a registry entry with an ENABLED flag;
-# the classifier / OCR / reranker pick the ACTIVE entry for their role.
+# Per-model enable/disable control across providers. The classifier uses
+# the first ENABLED role=classifier entry; OCR the enabled role=ocr; the
+# reranker role=reranker. The admin console → Models tab toggles
+# MODEL_<NAME>_ENABLED (writes to the env file, restart applies).
 #
-# Env surface per model (<NAME> = the registry key, e.g. QWEN3_6):
-#   MODEL_<NAME>_ENABLED=1|0     — the toggle (default: off)
-#   MODEL_<NAME>_ID=openai/qwen3.6            — litellm model id (optional)
-#   MODEL_<NAME>_API_BASE=...                 — optional per-model base URL
-#   MODEL_<NAME>_API_KEY=...                  — optional per-model key
+# Providers: each catalog entry is wired to OpenRouter (dev/testing —
+# reachable from this box) or ELM (company endpoint — used at deploy;
+# llms.elm.sa is NXDOMAIN from dev boxes, resolves on the deployment VM).
 #
-# Legacy wiring stays: LLM_MODEL / LLM_API_KEY / LLM_API_BASE are the
-# classifier entry's fallback values when MODEL_* overrides are unset.
+# Env surface per model (<NAME> = registry key, e.g. QWEN3_6):
+#   MODEL_<NAME>_ENABLED=1|0            — the toggle (default: off)
+#   MODEL_<NAME>_ID=openai/qwen3.6      — litellm model id (optional)
+#   MODEL_<NAME>_API_BASE=...           — optional per-model base URL
+#   MODEL_<NAME>_API_KEY=...            — optional per-model key
+#
+# Provider wiring (used when a model has no per-model override):
+#   openrouter → api_base = LLM_API_BASE (empty = OpenRouter default),
+#                api_key  = LLM_API_KEY
+#   elm        → api_base = BASE_URL (https://llms.elm.sa/v1) or LLM_API_BASE,
+#                api_key  = UNIVERSAL_API_KEY or LLM_API_KEY
+#
+# Backward compat: when the legacy LLM_MODEL is set, the matching provider's
+# classifier entry defaults to ENABLED (openrouter/... → OpenRouter entry,
+# openai/... → ELM entry) so existing .env files keep working unchanged.
 
-# Registry catalog: key -> (role, default litellm id, description).
-# Pre-seeded from the company provider's model list (see .env).
-MODEL_CATALOG: dict[str, tuple[str, str, str]] = {
-    "QWEN3_6":              ("classifier", "openai/qwen3.6", "Qwen3.6 — primary classifier"),
-    "GEMMA_4":              ("classifier", "openai/gemma-4", "Gemma 4 — classifier alternative"),
-    "GPT_OSS_120B":         ("classifier", "openai/gpt-oss-120b", "GPT-OSS 120B — classifier alternative"),
-    "QWEN3_32B":            ("classifier", "openai/qwen3:32b", "Qwen3 32B — classifier alternative"),
-    "QWEN2_5_14B_INSTRUCT": ("classifier", "openai/qwen2.5:14b-instruct", "Qwen2.5 14B — classifier alternative"),
-    "QWEN3_CODER":          ("classifier", "openai/qwen3-coder", "Qwen3 Coder — classifier alternative"),
-    "QWEN3_VL_32B":         ("ocr",        "openai/qwen3-vl:32b", "Qwen3 VL 32B — vision/OCR"),
-    "OLMOCR_2_7B":          ("ocr",        "openai/olmOCR-2-7B", "olmOCR 2.7B — document OCR"),
-    "BGE_RERANKER":         ("reranker",   "openai/bge-reranker", "BGE Reranker — retrieval rerank"),
+# Registry catalog: key -> (role, provider, default litellm id, description).
+MODEL_CATALOG: dict[str, tuple[str, str, str, str]] = {
+    # ── OpenRouter (dev/testing — reachable from this box) ──────────────
+    "QWEN3_6_OR": ("classifier", "openrouter", "openrouter/qwen/qwen3.6-35b-a3b",
+                   "Qwen3.6 via OpenRouter — dev/testing classifier"),
+    # ── ELM company endpoint (used at deploy) ───────────────────────────
+    "QWEN3_6":              ("classifier", "elm", "openai/qwen3.6", "Qwen3.6 — primary classifier (ELM)"),
+    "GEMMA_4":              ("classifier", "elm", "openai/gemma-4", "Gemma 4 — classifier alternative (ELM)"),
+    "GPT_OSS_120B":         ("classifier", "elm", "openai/gpt-oss-120b", "GPT-OSS 120B — classifier alternative (ELM)"),
+    "QWEN3_32B":            ("classifier", "elm", "openai/qwen3:32b", "Qwen3 32B — classifier alternative (ELM)"),
+    "QWEN2_5_14B_INSTRUCT": ("classifier", "elm", "openai/qwen2.5:14b-instruct", "Qwen2.5 14B — classifier alternative (ELM)"),
+    "QWEN3_CODER":          ("classifier", "elm", "openai/qwen3-coder", "Qwen3 Coder — classifier alternative (ELM)"),
+    "QWEN3_VL_32B":         ("ocr",        "elm", "openai/qwen3-vl:32b", "Qwen3 VL 32B — vision/OCR (ELM)"),
+    "OLMOCR_2_7B":          ("ocr",        "elm", "openai/olmOCR-2-7B", "olmOCR 2.7B — document OCR (ELM)"),
+    "BGE_RERANKER":         ("reranker",   "elm", "openai/bge-reranker", "BGE Reranker — retrieval rerank (ELM)"),
 }
 
 
 @dataclass(frozen=True)
 class ModelEntry:
-    """One registry entry: enabled flag + how to reach it (optional
-    per-model overrides; empty = inherit the shared LLM_* wiring)."""
+    """One registry entry: enabled flag + provider wiring (optional
+    per-model overrides; empty = inherit the provider defaults)."""
 
     name: str
     role: str
+    provider: str
     enabled: bool
     model_id: str
     api_base: str
     api_key: str
 
 
+def _provider_wiring(provider: str) -> tuple[str, str]:
+    """Default (api_base, api_key) for a provider, when a model has no
+    per-model override. Provider-specific so an OpenRouter model never
+    inherits the ELM base (and vice versa)."""
+    if provider == "openrouter":
+        return getenv("LLM_API_BASE", ""), getenv("LLM_API_KEY", "")
+    # elm — company endpoint
+    base = getenv("BASE_URL", "") or getenv("LLM_API_BASE", "")
+    key = getenv("UNIVERSAL_API_KEY", "") or getenv("LLM_API_KEY", "")
+    return base, key
+
+
 def _build_model_registry() -> dict[str, ModelEntry]:
-    shared_base = getenv("LLM_API_BASE", "") or getenv("BASE_URL", "")
-    shared_key = getenv("LLM_API_KEY", "") or getenv("UNIVERSAL_API_KEY", "")
     registry: dict[str, ModelEntry] = {}
-    # Backward compatibility: when the legacy LLM_MODEL is set (existing
-    # .env), QWEN3_6 defaults to ENABLED so current deployments keep
-    # classifying without adding MODEL_* vars. New MODEL_<NAME>_ENABLED
-    # explicitly overrides; an explicit MODEL_<NAME>_ENABLED=0 wins.
-    legacy_model_set = bool(getenv("LLM_MODEL", ""))
-    for name, (role, default_id, _desc) in MODEL_CATALOG.items():
-        # The classifier's legacy wiring (LLM_MODEL) doubles as the
-        # QWEN3_6 default so existing .env files keep working unchanged.
+    legacy_model = getenv("LLM_MODEL", "").strip().lower()
+    for name, (role, provider, default_id, _desc) in MODEL_CATALOG.items():
         default_model = default_id
-        if name == "QWEN3_6" and getenv("LLM_MODEL", ""):
+        # Backward compat: an existing LLM_MODEL overrides the matching
+        # provider's classifier default id, and that entry defaults ENABLED.
+        legacy_match = False
+        if provider == "openrouter" and legacy_model.startswith("openrouter/"):
             default_model = getenv("LLM_MODEL", default_id)
-        enabled_default = "1" if (name == "QWEN3_6" and legacy_model_set) else "0"
+            legacy_match = True
+        elif provider == "elm" and legacy_model.startswith(("openai/", "elm/")):
+            legacy_match = True
+        enabled_default = "1" if (name in ("QWEN3_6_OR", "QWEN3_6") and legacy_match) else "0"
+        default_base, default_key = _provider_wiring(provider)
         registry[name] = ModelEntry(
             name=name,
             role=role,
+            provider=provider,
             enabled=_is_truthy(getenv(f"MODEL_{name}_ENABLED", enabled_default)),
             model_id=getenv(f"MODEL_{name}_ID", default_model),
-            api_base=getenv(f"MODEL_{name}_API_BASE", shared_base),
-            api_key=getenv(f"MODEL_{name}_API_KEY", shared_key),
+            api_base=getenv(f"MODEL_{name}_API_BASE", default_base),
+            api_key=getenv(f"MODEL_{name}_API_KEY", default_key),
         )
     return registry
 

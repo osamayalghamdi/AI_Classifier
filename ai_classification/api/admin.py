@@ -281,12 +281,13 @@ def admin_models():
 
     registry = _build_model_registry()
     out = []
-    for name, (role, _default_id, desc) in MODEL_CATALOG.items():
+    for name, (role, provider, _default_id, desc) in MODEL_CATALOG.items():
         entry = registry[name]
         key = entry.api_key
         out.append({
             "name": entry.name,
             "role": entry.role,
+            "provider": entry.provider,
             "enabled": entry.enabled,
             "model_id": entry.model_id,
             "api_base": entry.api_base,

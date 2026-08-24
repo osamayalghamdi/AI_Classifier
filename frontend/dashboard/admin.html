@@ -148,7 +148,7 @@ button.small { padding: 5px 10px; font-size: 12px; margin-top: 0; }
 
   <div id="modelsTab" class="tabpane">
     <div class="card"><h2>Model registry (enable / disable)</h2>
-      <p class="hint">Each model from the provider (ELM company endpoint by default) can be enabled or disabled. The classifier uses the first <b>enabled</b> model with role <span class="mono">classifier</span>; OCR uses the enabled <span class="mono">ocr</span> model (falls back to local EasyOCR when none is enabled). Toggles write <span class="mono">MODEL_&lt;NAME&gt;_ENABLED</span> to the env file — <b>restart the container</b> for them to take effect.</p>
+      <p class="hint">Each model is wired to a provider: <b>OpenRouter</b> (dev/testing — reachable from this box) or <b>ELM</b> (company endpoint, used at deploy). Enable the classifier model you want — the first enabled <span class="mono">classifier</span> is used; OCR uses the enabled <span class="mono">ocr</span> model (falls back to local EasyOCR when none is enabled). Toggles write <span class="mono">MODEL_&lt;NAME&gt;_ENABLED</span> to the env file — <b>restart the container</b> for them to take effect. To switch provider, disable the current classifier and enable the other.</p>
       <div id="modelsBody"><span class="spin"></span> loading…</div>
     </div>
   </div>

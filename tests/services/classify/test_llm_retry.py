@@ -208,9 +208,9 @@ def test_call_llm_uses_active_classifier_model(monkeypatch):
     import ai_classification.services.classify.llm as llm_mod
     from ai_classification.shared.config import ModelEntry
 
-    entry = ModelEntry(name="QWEN3_6", role="classifier", enabled=True,
-                       model_id="openai/qwen3.6", api_base="https://llms.elm.sa/v1",
-                       api_key="k")
+    entry = ModelEntry(name="QWEN3_6", role="classifier", provider="elm",
+                       enabled=True, model_id="openai/qwen3.6",
+                       api_base="https://llms.elm.sa/v1", api_key="k")
     fake_settings = _settings_with(active_classifier_model=entry, llm_api_key="")
     monkeypatch.setattr(llm_mod, "settings", fake_settings)
     seen = {}

@@ -132,8 +132,9 @@ def call_llm(
             or when no classifier model is enabled.
     """
     if model:
-        entry = ModelEntry(name="explicit", role="classifier", enabled=True,
-                           model_id=model, api_base=settings.llm_api_base or "",
+        entry = ModelEntry(name="explicit", role="classifier", provider="openrouter",
+                           enabled=True, model_id=model,
+                           api_base=settings.llm_api_base or "",
                            api_key=settings.llm_api_key or "")
     else:
         entry = settings.active_classifier_model
