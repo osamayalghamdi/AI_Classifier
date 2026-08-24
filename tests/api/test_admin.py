@@ -205,6 +205,40 @@ def test_groups_crud(client):
     assert r.status_code == 404
 
 
+def test_group_delete(client):
+    r = client.post("/admin/groups", headers=AUTH, json={"name_ar": "to delete"})
+    cid = r.json()["cluster"]["id"]
+    r = client.delete(f"/admin/groups/{cid}", headers=AUTH)
+    assert r.status_code == 200, r.text
+    assert r.json()["deleted"] is True
+    # gone from listing
+    r = client.get("/admin/groups", headers=AUTH)
+    assert not any(g["cluster_id"] == cid for g in r.json()["groups"])
+    # deleting a missing group -> 404
+    r = client.delete("/admin/groups/does-not-exist", headers=AUTH)
+    assert r.status_code == 404
+
+
+def test_taxonomy_json_import(client):
+    payload = {"CRM": {"Imported Svc": ["Off 1", "Off 2"], "Imported Bare": []}}
+    r = client.post("/admin/taxonomy/import", headers=AUTH, json=payload)
+    assert r.status_code == 200, r.text
+    assert r.json()["services_added"] == 2
+    assert r.json()["offerings_added"] == 2
+    # effective immediately
+    r = client.get("/admin/taxonomy", headers=AUTH)
+    syss = {s["system"]: s for s in r.json()["systems"]}
+    svcs = {s["service"]: s for s in syss["CRM"]["services"]}
+    assert "Imported Svc" in svcs
+    assert svcs["Imported Svc"]["offerings"] == ["Off 1", "Off 2"]
+    assert "Imported Bare" in svcs
+    # invalid payloads rejected
+    r = client.post("/admin/taxonomy/import", headers=AUTH, json={})
+    assert r.status_code == 422
+    r = client.post("/admin/taxonomy/import", headers=AUTH, json=[])
+    assert r.status_code == 422
+
+
 def test_group_member_add_remove(client):
     r = client.post("/admin/groups", headers=AUTH, json={"name_ar": "grp"})
     cid = r.json()["cluster"]["id"]

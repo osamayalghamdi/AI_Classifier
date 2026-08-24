@@ -225,6 +225,25 @@ class ClustersMixin:
         finally:
             self._putconn(conn)
 
+    def delete_cluster(self, cluster_id: str) -> bool:
+        """Delete a cluster row AND its members (admin group delete).
+
+        Membership rows are removed first (cluster_members has no FK to
+        clusters, so order matters only for the unassigned-pool invariant:
+        members of a deleted cluster go back to the unassigned pool)."""
+        if not self._ready or self._pool is None:
+            return False
+        conn = self._getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM cluster_members WHERE cluster_id = %s",
+                            (cluster_id,))
+                cur.execute("DELETE FROM clusters WHERE id = %s", (cluster_id,))
+            conn.commit()
+            return cur.rowcount > 0
+        finally:
+            self._putconn(conn)
+
     def incident_cluster(self, incident_id: str) -> dict | None:
         """The cluster (any status) this incident currently belongs to, or None."""
         if not self._ready or self._pool is None:

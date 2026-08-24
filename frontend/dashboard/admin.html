@@ -97,7 +97,15 @@ button.small { padding: 5px 10px; font-size: 12px; margin-top: 0; }
     <button data-tab="danger">Danger Zone</button>
   </div>
 
-  <div id="statusTab" class="tabpane active"><div class="card"><h2>Overall status</h2><div id="statusBody"><span class="spin"></span> loading…</div></div></div>
+  <div id="statusTab" class="tabpane active">
+    <div class="card">
+      <h2>Overall status
+        <button class="small" id="statusRefresh" style="float:right;margin:0">↻ Refresh</button>
+        <span id="statusUpdated" class="hint" style="float:right;margin:0 10px 0 0;line-height:26px"></span>
+      </h2>
+      <div id="statusBody"><span class="hint">Enter your bearer token above and click Unlock to load status (auto-refreshes every 15s).</span></div>
+    </div>
+  </div>
 
   <div id="taxonomyTab" class="tabpane">
     <div class="card"><h2>Add service / offering</h2>
@@ -113,6 +121,13 @@ button.small { padding: 5px 10px; font-size: 12px; margin-top: 0; }
       </div>
       <button id="txAddOffering">Add offering</button>
       <div class="msg" id="txMsg"></div>
+    </div>
+    <div class="card"><h2>Adjust by JSON (bulk import)</h2>
+      <p class="hint">Paste a JSON object — <span class="mono">{"System": {"Service": ["Offering A", "Offering B"], "Other": []}}</span> — every service/offering is added as an override. Existing keys are kept; nothing is deleted here (use the remove buttons in the table below).</p>
+      <textarea id="txJson" placeholder='{"Nusuk Masar Haj": {"New Admin Service": ["Offering A"]}}'></textarea>
+      <button class="primary" id="txImportJson">Import JSON</button>
+      <button id="txExportJson">⬇ Export current taxonomy as JSON</button>
+      <div class="msg" id="txJsonMsg"></div>
     </div>
     <div class="card"><h2>Effective taxonomy (frozen base + overrides)</h2><div id="taxonomyBody"><span class="spin"></span> loading…</div></div>
   </div>

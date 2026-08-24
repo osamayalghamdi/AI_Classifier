@@ -177,6 +177,44 @@ def admin_taxonomy_delete_offering(payload: dict):
     return {"status": "ok" if ok else "not-found", "deleted": ok}
 
 
+@router.post("/taxonomy/import")
+def admin_taxonomy_import(payload: dict):
+    """Bulk-add taxonomy by pasting JSON.
+
+    Payload shape (same as the effective view):
+        {"system": {"service": ["offering", ...], "other": []}, ...}
+
+    Every service/offering in the payload is upserted as an override.
+    Existing overrides for those keys are kept; nothing is deleted by
+    this endpoint (use the per-service DELETE for removals).
+    """
+    from ai_classification.shared.store import store
+    if not isinstance(payload, dict) or not payload:
+        raise HTTPException(422, "payload must be a non-empty JSON object: "
+                                '{"System": {"Service": ["Offering", ...]}}')
+    services_added = 0
+    offerings_added = 0
+    for system, services in payload.items():
+        system = str(system).strip()
+        if not isinstance(services, dict):
+            continue
+        for service, offerings in services.items():
+            service = str(service).strip()
+            if not service:
+                continue
+            store.upsert_taxonomy_override(system, service, "")
+            services_added += 1
+            if isinstance(offerings, list):
+                for o in offerings:
+                    o = str(o).strip()
+                    if o:
+                        store.upsert_taxonomy_override(system, service, o)
+                        offerings_added += 1
+    store.reload_taxonomy_overrides()
+    return {"status": "ok", "services_added": services_added,
+            "offerings_added": offerings_added}
+
+
 # ── Env credentials (write to .env overrides file; restart required) ──
 
 def _env_file_path() -> Path:
@@ -328,6 +366,16 @@ def admin_group_adjust(cluster_id: str, payload: dict):
     if fields:
         store.update_cluster_fields(cluster_id, **fields)
     return {"status": "ok", "cluster": store.get_cluster(cluster_id)}
+
+
+@router.delete("/groups/{cluster_id}")
+def admin_group_delete(cluster_id: str):
+    """Delete a group AND its members (members return to the unassigned pool)."""
+    from ai_classification.shared.store import store
+    if store.get_cluster(cluster_id) is None:
+        raise HTTPException(404, "cluster not found")
+    ok = store.delete_cluster(cluster_id)
+    return {"status": "ok" if ok else "not-found", "deleted": ok}
 
 
 @router.post("/groups/{cluster_id}/members")
