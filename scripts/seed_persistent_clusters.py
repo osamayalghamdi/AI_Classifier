@@ -36,19 +36,23 @@ def seed_from_snapshot(snapshot_path: str) -> dict:
         stats["clusters_seen"] += 1
         name = c.get("name") or "Cluster"
         description = c.get("description") or name
+        # v4: every cluster carries its ONE system (from the legacy report's
+        # dominant label; unknown -> 'Unknown' bucket).
+        affected_system = (c.get("affected_system") or "Unknown").strip() or "Unknown"
         member_ids = [i.get("id") for i in c.get("incidents", []) if i.get("id")]
-        cid = _cluster_id(name, member_ids)
+        cid = _cluster_id(affected_system, name, member_ids)
 
         if store.get_cluster(cid) is not None:
             stats["skipped_existing"] += 1
             continue
 
-        store.create_cluster(cid, name, description, status="active")
+        store.create_cluster(cid, name, description, status="active",
+                             affected_system=affected_system)
         for mid in member_ids:
             store.add_cluster_member(cid, mid, assigned_by="seed", confidence="seed")
             stats["members_seeded"] += 1
         stats["clusters_created"] += 1
-        print(f"seeded {cid} — {name} ({len(member_ids)} members)")
+        print(f"seeded {cid} — {name} ({affected_system}, {len(member_ids)} members)")
 
     stats["unassigned_pool"] = len(store.unassigned_incident_ids())
     print(json.dumps(stats, ensure_ascii=False, indent=2))

@@ -63,11 +63,17 @@ _log = logging.getLogger(__name__)
 
 # ── Versioning / constants ────────────────────────────────────────────────
 
-PROMPT_VERSION = "clustering-v3-2026-08"  # v3: strict same-service/same-failure sweep rule
+PROMPT_VERSION = "clustering-v4-2026-09"  # v4: system-scoped clusters (Hajj/Umrah never mix)
 MAX_CANDIDATES = 5          # active clusters shown to the LLM per assignment
 SWEEP_BATCH_SIZE = 20       # tickets per Flow-B grouping call
 PROPOSAL_MIN_SIZE = 2       # a proposal needs >= 2 tickets
-AUDIT_PRUNE_FLOOR = 0.6     # audit may not remove >60% of a coherent cluster
+AUDIT_PRUNE_FLOOR = 0.85     # audit may not remove >85% of a cluster
+# Why 0.85 and not 0.6: a genuinely mixed cluster needs most members removed
+# (the prod reports-page cluster: audit wanted to remove 8-9 of 11 = 73-82%
+# every night — all discarded at 60%, so the backstop NEVER fired: 8/8 audit
+# runs discarded, zero fixes applied). The two real hallucination guards are
+# ID reconciliation and the <2-member demote path — the floor only needs to
+# block "remove everything", which 0.85 still does.
 AUDIT_MAX_MEMBERS = 40      # cap member cards in one audit call
 REPRESENTATIVE_MEMBERS = 3  # member texts per cluster card
 _CARD_TITLE_MAX = 120
@@ -81,6 +87,11 @@ A cluster = ONE specific underlying problem, not a service area.
 Same feature + same failure = same cluster. Same feature + different failure = different cluster.
 Example: "cannot enter pilgrim numbers" and "registration rejects numbers not starting with 4"
 are BOTH in Registration but are DIFFERENT problems → different clusters.
+
+SYSTEM RULE: every cluster belongs to ONE system (affected_system), and the
+ticket has a system too — "Nusuk Masar Haj" and "Nusuk Masar Umrah" are
+DIFFERENT teams. The candidate clusters are already filtered to the ticket's
+system, so ONLY assign to a candidate whose system matches the ticket's.
 
 Ticket: {ticket}
 Candidate clusters: {cards}
@@ -112,11 +123,14 @@ Never invent IDs. Every input ID appears exactly once across groups and singleto
 
 AUDIT_PROMPT = """You are auditing an incident cluster on a NOC dashboard for purity.
 
+System (affected_system): {system}
 Cluster description: {description}
 
 Here are ALL tickets currently in the cluster. Each ticket must describe the
-SAME underlying problem as the cluster description. A ticket about a different
-problem — even in the same service, screen, or system — must be REMOVED.
+SAME underlying problem as the cluster description AND belong to the SAME
+system. A ticket about a different problem — even in the same service, screen,
+or system — must be REMOVED. A ticket from a DIFFERENT system (e.g. Umrah in a
+Hajj cluster) is ALWAYS removed — the two are different teams.
 
 Tickets:
 {tickets}
@@ -124,7 +138,7 @@ Tickets:
 Return JSON only:
 {{"keep": ["<ids that belong>"],
  "remove": [{{"id": "<id>", "reason": "<one sentence — what makes it different>"}}],
- "description": "<optionally refined cluster description — ONE short clear sentence, max 9 words — or the original>"}}
+ "description": "<optionally refined cluster description — ONE short clear ARABIC sentence, max 9 words — or the original>"}}
 Rules: Every input ID appears in exactly one of keep or remove. Never invent or
 omit an ID. Be precise: same feature + different failure = remove."""
 
@@ -162,6 +176,15 @@ def _cap_description(text: str) -> str:
     return " ".join(words[:_DESC_MAX_WORDS])
 
 
+def _has_arabic(text: str) -> bool:
+    """True when the text contains Arabic-script characters.
+
+    USER RULE: every user-facing cluster label (name and description) is in
+    Arabic — an LLM answer without Arabic script is rejected and replaced by
+    the Arabic fallback, never stored as-is."""
+    return any("\u0600" <= ch <= "\u06FF" for ch in (text or ""))
+
+
 # ── Small helpers ─────────────────────────────────────────────────────────
 
 def _cos(a: np.ndarray, b: np.ndarray) -> float:
@@ -172,9 +195,14 @@ def _cos(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.dot(a, b) / (na * nb))
 
 
-def _cluster_id(name_ar: str, member_ids: list[str]) -> str:
-    """Stable cluster id: cl_<sha256(name|sorted member ids)[:12]>."""
-    key = f"{name_ar}|{','.join(sorted(member_ids))}"
+def _cluster_id(affected_system: str, name_ar: str, member_ids: list[str]) -> str:
+    """Stable cluster id: cl_<sha256(system|name|sorted member ids)[:12]>.
+
+    The system is part of the key (v4): Hajj and Umrah often have IDENTICAL
+    problems/names (same service surfaces, different teams) — without the
+    system in the key, two same-name clusters in different systems would
+    collide on the same id."""
+    key = f"{affected_system or 'Unknown'}|{name_ar}|{','.join(sorted(member_ids))}"
     return "cl_" + hashlib.sha256(key.encode("utf-8")).hexdigest()[:12]
 
 
@@ -186,6 +214,14 @@ def _json_class(inc: dict) -> dict:
         return json.loads(inc.get("classification_json") or "{}")
     except Exception:
         return {}
+
+
+def _system_of_inc(inc: dict) -> str:
+    """The ONE system an incident belongs to ('Nusuk Masar Haj', 'Nusuk Masar
+    Umrah', …). Empty / missing -> 'Unknown'. System-scoping rule (v4): two
+    incidents cluster together ONLY when their systems match — Hajj and Umrah
+    are different teams and must never share a cluster."""
+    return (_json_class(inc).get("affected_system") or "Unknown").strip() or "Unknown"
 
 
 def _offering_of_inc(inc: dict) -> str:
@@ -202,16 +238,24 @@ def _chunks(items: list, size: int):
 def retrieve_candidates(incident: dict, top_k: int = MAX_CANDIDATES) -> list[dict]:
     """Top-K active clusters by max cosine(ticket, member centroid / members).
 
-    All offerings. Each card carries the cluster name, description, member
-    offerings and 3 representative member texts — everything the LLM needs
-    to decide membership. No threshold: candidates are ranked, not gated.
+    SYSTEM-SCOPED (v4): only clusters of the INCIDENT'S OWN system are
+    candidates — a Hajj ticket never sees an Umrah cluster (different teams).
+    The incident's system comes from its classification; clusters with an
+    empty system are treated as 'Unknown' and match only 'Unknown' incidents
+    (legacy rows, migrated by the DB backfill where possible). Each card
+    carries the cluster name, description, system, member offerings and 3
+    representative member texts — everything the LLM needs to decide
+    membership. No threshold: candidates are ranked, not gated.
     """
     emb = embed_pure(incident.get("title", ""), incident.get("description", ""))
     if emb is None:
         return []
+    system = _system_of_inc(incident)
     active = store.list_clusters(status="active")
     scored: list[tuple[float, dict]] = []
     for c in active:
+        if ((c.get("affected_system") or "Unknown").strip() or "Unknown") != system:
+            continue  # different system -> never a candidate
         members = store.cluster_member_embeddings(c["id"])
         if members:
             vecs = np.stack([m["embedding"] for m in members])
@@ -245,6 +289,7 @@ def retrieve_candidates(incident: dict, top_k: int = MAX_CANDIDATES) -> list[dic
             "cluster_id": c["id"],
             "name_ar": c["name_ar"],
             "description": c.get("description") or "",
+            "affected_system": (c.get("affected_system") or "Unknown"),
             "offerings": offerings,
             "representative_members": reps,
             "retrieval_score": round(score, 3),
@@ -270,6 +315,7 @@ def assign_incident(incident_id: str) -> dict:
         "title": inc.get("title", ""),
         "description": inc.get("description", ""),
         "canonical_statement": _extract_canonical_statement(inc),
+        "affected_system": _system_of_inc(inc),
         "offering": _offering_of_inc(inc),
     }
     cards = retrieve_candidates(inc)
@@ -350,10 +396,12 @@ def _demote_small_clusters() -> int:
                       c["id"][:10], len(members), _MIN_CLUSTER_MEMBERS)
     return demoted
 
-def _sweep_batch(batch_ids: list[str]) -> list[dict] | None:
+def _sweep_batch(batch_ids: list[str], affected_system: str = "Unknown") -> list[dict] | None:
     """Group one batch via the LLM. Returns groups, or None when the batch is
     discarded (ID mismatch — validate_group safeguard: returned IDs must equal
-    input IDs, else discard batch and log)."""
+    input IDs, else discard batch and log). ``affected_system`` is the ONE
+    system every ticket in the batch belongs to (v4: sweep batches are
+    partitioned per system, so the LLM never groups Hajj + Umrah tickets)."""
     incs = {i["id"]: i for i in store.list_incidents()}
     tickets = [
         {"id": iid,
@@ -367,7 +415,7 @@ def _sweep_batch(batch_ids: list[str]) -> list[dict] | None:
         raw = call_llm(
             [{"role": "system", "content": SWEEP_PROMPT},
              {"role": "user", "content": json.dumps(
-                 {"tickets": tickets}, ensure_ascii=False)}],
+                 {"system": affected_system, "tickets": tickets}, ensure_ascii=False)}],
             max_tokens=2500, temperature=0.0,
         )
         result = json.loads(strip_json_fences(raw))
@@ -393,6 +441,22 @@ def _sweep_batch(batch_ids: list[str]) -> list[dict] | None:
     return groups
 
 
+def _cluster_eligible_pool() -> list[str]:
+    """Unassigned incident ids restricted to cluster-input kinds.
+
+    v3 gate: only incident/service_request tickets feed clusters — the
+    unassigned pool also holds administrative/inquiry/feature_request/
+    content_thin tickets (classified for routing only). Flow A's entry gate
+    covers new arrivals; the sweep applies the same rule here so the grouping
+    LLM never mints non-problem clusters from them."""
+    out = []
+    for iid in store.unassigned_incident_ids():
+        inc = store.get_incident(iid)
+        if inc is None or _kind_of(inc) in _CLUSTER_TICKET_KINDS:
+            out.append(iid)
+    return out
+
+
 def sweep_pool(*, dry_run: bool = False) -> dict:
     """Flow B — give unassigned tickets second chances as clusters grow.
 
@@ -400,16 +464,22 @@ def sweep_pool(*, dry_run: bool = False) -> dict:
     2. Batch-group the remainder (<= SWEEP_BATCH_SIZE per LLM call); each
        returned group of >= 2 becomes a PROPOSAL (status='proposed' with
        members attached) — surfaced in the review UI, human-gated.
+
+    v3 gate: only incident/service_request tickets are cluster input — the
+    pool is filtered by kind BEFORE Flow A and Flow B run (Flow A's entry
+    gate covers new arrivals, but the sweep must not hand
+    administrative/inquiry/feature tickets to the grouping LLM — that minted
+    non-problem clusters like the inquiry and closure ones in prod).
     """
     stats = {"pool_before": 0, "demoted": 0, "flow_a_assigned": 0, "batches": 0,
              "proposals_created": 0, "discarded_batches": 0,
              "pool_after": 0, "dry_run": dry_run}
     if not dry_run:
         stats["demoted"] = _demote_small_clusters()
-    pool = store.unassigned_incident_ids()
+    pool = _cluster_eligible_pool()
     stats["pool_before"] = len(pool)
     if not pool:
-        stats["pool_after"] = len(store.unassigned_incident_ids())
+        stats["pool_after"] = len(_cluster_eligible_pool())
         return stats
 
     if not dry_run:
@@ -421,37 +491,60 @@ def sweep_pool(*, dry_run: bool = False) -> dict:
             except Exception as exc:  # noqa: BLE001 — one bad ticket must not kill the sweep
                 _log.warning("Flow A failed for %s during sweep: %s", iid[:10], exc)
 
-    remaining = store.unassigned_incident_ids()
+    remaining = _cluster_eligible_pool()
     if dry_run:
         stats["pool_after"] = len(remaining)
         return stats
 
-    for batch in _chunks(remaining, SWEEP_BATCH_SIZE):
-        stats["batches"] += 1
-        groups = _sweep_batch(batch)
-        if groups is None:
-            stats["discarded_batches"] += 1
-            continue
-        batch_set = set(batch)
-        for g in groups:
-            members = [m for m in g.get("member_ids", []) if m in batch_set]
-            if len(members) < PROPOSAL_MIN_SIZE:
+    # v4 SYSTEM SCOPING: partition the pool by affected_system so every
+    # grouping batch is single-system — the LLM can never mint a cluster
+    # mixing Hajj + Umrah tickets (different teams). Each partition is
+    # batched independently; minted clusters carry the partition's system.
+    by_system: dict[str, list[str]] = {}
+    for iid in remaining:
+        inc = store.get_incident(iid)
+        by_system.setdefault(_system_of_inc(inc) if inc else "Unknown", []).append(iid)
+
+    for system, sys_ids in by_system.items():
+        for batch in _chunks(sys_ids, SWEEP_BATCH_SIZE):
+            stats["batches"] += 1
+            groups = _sweep_batch(batch, affected_system=system)
+            if groups is None:
+                stats["discarded_batches"] += 1
                 continue
-            name_ar = (g.get("name_ar") or "").strip()[:120]
-            description = _cap_description(g.get("description") or "")[:1000]
-            cid = _cluster_id(name_ar or "مقترح جديد", members)
-            if store.get_cluster(cid) is not None:
-                continue  # id collision — a cluster for these members exists
-            # Human gate (spec default): mint as 'proposed' for review.
-            # CLUSTER_AUTO_ACTIVATE=1 (user's choice): mint straight to
-            # 'active' — the nightly audit is the purity backstop.
-            status = "active" if getattr(settings, "cluster_auto_activate", False) else "proposed"
-            store.create_cluster(cid, name_ar or "مقترح جديد", description,
-                                 status=status)
-            for m in members:
-                store.add_cluster_member(cid, m, assigned_by="llm", confidence="proposed")
-            stats["proposals_created"] += 1
-            _log.info("Flow B %s %s — %d members: %s", status, cid, len(members), name_ar)
+            batch_set = set(batch)
+            for g in groups:
+                members = [m for m in g.get("member_ids", []) if m in batch_set]
+                if len(members) < PROPOSAL_MIN_SIZE:
+                    continue
+                name_ar = (g.get("name_ar") or "").strip()[:120]
+                description = _cap_description(g.get("description") or "")[:1000]
+                # USER RULE: every cluster label is Arabic — reject an English
+                # name_ar/description from the sweep LLM instead of storing it.
+                # Name falls back to the first member's title (the same fallback
+                # _arabic_cluster_name uses); description falls back to '' so the
+                # report shows the Arabic name.
+                if not _has_arabic(name_ar):
+                    first = store.get_incident(members[0]) if members else None
+                    name_ar = ((first or {}).get("title") or "").strip()[:_CARD_TITLE_MAX]
+                    if not name_ar:
+                        name_ar = "مقترح جديد"
+                if description and not _has_arabic(description):
+                    description = ""
+                cid = _cluster_id(system, name_ar or "مقترح جديد", members)
+                if store.get_cluster(cid) is not None:
+                    continue  # id collision — a cluster for these members exists
+                # Human gate (spec default): mint as 'proposed' for review.
+                # CLUSTER_AUTO_ACTIVATE=1 (user's choice): mint straight to
+                # 'active' — the nightly audit is the purity backstop.
+                status = "active" if getattr(settings, "cluster_auto_activate", False) else "proposed"
+                store.create_cluster(cid, name_ar or "مقترح جديد", description,
+                                     status=status, affected_system=system)
+                for m in members:
+                    store.add_cluster_member(cid, m, assigned_by="llm", confidence="proposed")
+                stats["proposals_created"] += 1
+                _log.info("Flow B %s %s (%s) — %d members: %s",
+                          status, cid, system, len(members), name_ar)
 
     stats["pool_after"] = len(store.unassigned_incident_ids())
     return stats
@@ -487,6 +580,7 @@ def audit_cluster(cluster_id: str) -> dict:
     try:
         raw = call_llm(
             [{"role": "system", "content": AUDIT_PROMPT.format(
+                system=(cluster.get("affected_system") or "Unknown"),
                 description=cluster.get("description") or cluster["name_ar"],
                 tickets=json.dumps(prompt_tickets, ensure_ascii=False))}],
             max_tokens=2500, temperature=0.0,
@@ -538,6 +632,10 @@ def audit_cluster(cluster_id: str) -> dict:
     changed = bool(removed)
     refined = verdict.get("description")
     refined = _cap_description(refined) if isinstance(refined, str) else None
+    # USER RULE: descriptions are Arabic — an English refinement is discarded
+    # so the stored Arabic description/name stays intact.
+    if refined and not _has_arabic(refined):
+        refined = None
     if refined and refined.strip() and refined.strip() != (cluster.get("description") or ""):
         store.update_cluster_fields(cluster_id, description=refined.strip())
         changed = True
@@ -589,7 +687,11 @@ def regenerate_name(cluster_id: str) -> str:
 def _arabic_cluster_name(member_incidents: list[dict]) -> str:
     """Cache-free version of the legacy naming behavior (the fingerprint cache
     dies with the rebuild loop — names now live on the cluster row)."""
-    name = member_incidents[0].get("title", "") if member_incidents else "Cluster"
+    name = member_incidents[0].get("title", "") if member_incidents else "مجموعة"
+    # USER RULE: the fallback itself must be Arabic — a non-Arabic ticket
+    # title (e.g. an English ticket) degrades to a generic Arabic label.
+    if not _has_arabic(name):
+        name = "مجموعة"
     try:
         tickets = []
         for inc in member_incidents[:_AR_NAME_MAX_TICKETS]:
@@ -607,7 +709,7 @@ def _arabic_cluster_name(member_incidents: list[dict]) -> str:
         label = label.splitlines()[0].strip() if label else ""
         # Guard (user rule): require Arabic script, short, and at most 9 words
         # — a longer label is rejected and the fallback title is used.
-        if any("\u0600" <= ch <= "\u06FF" for ch in label) \
+        if _has_arabic(label) \
                 and len(label) <= 60 and len(label.split()) <= _AR_NAME_MAX_WORDS:
             name = label
         else:
@@ -648,7 +750,13 @@ def _cluster_report(cluster: dict, incidents_by_id: dict[str, dict]) -> dict | N
     if len(m_incs) < _MIN_CLUSTER_MEMBERS:
         return None
     worst_sev = _worst_severity(m_incs)
+    # v4: the cluster's system is stored ON the row (system-scoped); the
+    # dominant-label fallback covers legacy rows that predate the column and
+    # have no backfilled system.
     top_sys, top_svc = _dominant_labels(m_incs)
+    cluster_sys = (cluster.get("affected_system") or "").strip()
+    if not cluster_sys:
+        cluster_sys = top_sys
     _, sims = _centroid_and_sims(store.cluster_member_embeddings(cluster["id"]))
 
     incidents = []
@@ -681,7 +789,7 @@ def _cluster_report(cluster: dict, incidents_by_id: dict[str, dict]) -> dict | N
         "cluster_id": cluster["id"],
         "name": name,
         "description": cluster.get("description") or name,
-        "affected_system": top_sys,
+        "affected_system": cluster_sys,
         "affected_service": top_svc,
         "worst_severity": worst_sev,
         "count": len(incidents),
