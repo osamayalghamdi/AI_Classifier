@@ -24,6 +24,13 @@ os.environ["CLUSTER_ASSIGN_ON_ARRIVAL"] = "0"
 # (user's zero-friction override). Tests exercise the human-gate path by
 # default; the auto-activate path is tested via a settings monkeypatch.
 os.environ["CLUSTER_AUTO_ACTIVATE"] = "0"
+# Self-healing (heal.py): the worker runs reclassify_fallback_incidents
+# IMMEDIATELY on startup, and every TestClient lifespan (integration/webhook
+# tests) starts one. That background sweep fires REAL LLM calls against the
+# shared test DB and races the heal tests' own rows (flaky
+# test_heal_llm_down_fails_open). Forced off here — heal tests drive
+# reclassify_fallback_incidents synchronously (production default stays ON).
+os.environ["RECLASSIFY_ENABLED"] = "0"
 
 # SAFETY GUARD: integration tests operate on settings.pg_database and can
 # wipe rows. Never let them run against the production DB (ai_incidents) —

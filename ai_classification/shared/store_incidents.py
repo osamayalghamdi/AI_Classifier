@@ -18,6 +18,30 @@ from ai_classification.domain.models import ClassificationResult
 
 _log = logging.getLogger(__name__)
 
+# ── Status domain ─────────────────────────────────────────────────────
+# Incidents keep TWO statuses:
+#   - `status`        — the LOCAL view: "active" | "resolved". Drives dedupe
+#                       (only active incidents are dedupe candidates) and the
+#                       dashboard filters.
+#   - `source_status` — the RAW status exactly as the ticketing system
+#                       reported it (SMAX webhook / ingestion). DYNAMIC: any
+#                       value is accepted and stored verbatim, so a new
+#                       upstream status never breaks ingestion.
+# The local view is DERIVED from the source status by this rule; the raw
+# value is never lost. Extend the set freely — unknown statuses default to
+# "active" (the safe default for dedupe).
+_RESOLVED_LIKE = frozenset({
+    "resolved", "closed", "verified", "cancelled", "canceled", "rejected",
+    "duplicate", "completed", "done", "fixed", "withdrawn", "invalid",
+})
+
+
+def to_local_status(source_status: str | None) -> str:
+    """Map a raw (external) status to the local active/resolved view."""
+    if not source_status:
+        return "active"
+    return "resolved" if source_status.strip().lower() in _RESOLVED_LIKE else "active"
+
 
 class IncidentsMixin:
     """Incident CRUD, dedupe hashes, occurrence, similarity, review queue."""
@@ -79,6 +103,7 @@ class IncidentsMixin:
         assignee: str = "",
         priority: str = "medium",
         status: str = "active",
+        source_status: str | None = None,
         notes: str | None = None,
         discussion_history: list[dict] | None = None,
         escalation_info: str | None = None,
@@ -104,11 +129,11 @@ class IncidentsMixin:
                 cur.execute(
                     "INSERT INTO incidents "
                     "(id, title, description, extracted_text, embedding, classification_json, "
-                    "status, created_at, documents, assign_group, assignee, priority, notes, "
+                    "status, source_status, created_at, documents, assign_group, assignee, priority, notes, "
                     "discussion_history, escalation_info, completion_code, "
                     "ticket_kind, classification_status, "
                     "content_hash, occurrence_count, first_seen, last_seen, source_ticket_ids) "
-                    "VALUES (%s, %s, %s, %s, %s::vector, %s, %s, %s, "
+                    "VALUES (%s, %s, %s, %s, %s::vector, %s, %s, %s, %s, "
                     "%s::jsonb, %s, %s, %s, %s, %s::jsonb, %s, %s, "
                     "%s, %s, "
                     "%s, 1, %s, %s, %s::jsonb) "
@@ -130,6 +155,7 @@ class IncidentsMixin:
                         embedding.tolist() if embedding is not None else None,
                         classification.model_dump_json(),
                         status,
+                        source_status,
                         datetime.now(timezone.utc),
                         json.dumps(documents or []),
                         assign_group,
@@ -169,21 +195,53 @@ class IncidentsMixin:
             self._putconn(conn)
 
     def set_status(self, incident_id: str, new_status: str) -> bool:
-        """Update incident status. Maps external statuses to internal active/resolved."""
+        """Update an incident's status from a raw (external) status value.
+
+        Derives the local active/resolved view (to_local_status) and stores
+        the raw value verbatim in source_status so nothing upstream reported
+        is lost. Touches last_seen so the update is visible as activity."""
         if not self._ready or self._pool is None:
             return False
-        local_status = "active" if new_status in ("open", "in_progress", "third_party") else "resolved"
+        local_status = to_local_status(new_status)
         conn = self._getconn()
         try:
             with conn.cursor() as cur:
                 cur.execute(
-                    "UPDATE incidents SET status = %s WHERE id = %s",
-                    (local_status, incident_id),
+                    "UPDATE incidents SET status = %s, source_status = %s, last_seen = NOW() "
+                    "WHERE id = %s",
+                    (local_status, new_status, incident_id),
                 )
             conn.commit()
             return cur.rowcount > 0
         finally:
             self._putconn(conn)
+
+    def update_status_by_reference(self, source_reference: str, source_status: str) -> dict | None:
+        """SMAX webhook path: status-only update keyed on the SOURCE reference.
+
+        Same reference → same incident row: updates status + source_status
+        WITHOUT re-classifying and WITHOUT creating a new row. Returns the
+        updated incident dict, or None when no incident carries that
+        reference (caller decides: 404 or treat as new)."""
+        if not self._ready or self._pool is None:
+            return None
+        existing = self.get_incident_by_source_ticket_id(source_reference)
+        if existing is None:
+            return None
+        incident_id = existing["id"]
+        local_status = to_local_status(source_status)
+        conn = self._getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE incidents SET status = %s, source_status = %s, last_seen = NOW() "
+                    "WHERE id = %s",
+                    (local_status, source_status, incident_id),
+                )
+            conn.commit()
+        finally:
+            self._putconn(conn)
+        return self.get_incident(incident_id)
 
     def resolve_incident(self, incident_id: str) -> bool:
         if not self._ready or self._pool is None:
@@ -383,7 +441,7 @@ class IncidentsMixin:
             with conn.cursor() as cur:
                 cur.execute(
                     "SELECT id, title, description, extracted_text, classification_json, "
-                    "status, created_at, documents, assign_group, assignee, priority, notes, "
+                    "status, source_status, created_at, documents, assign_group, assignee, priority, notes, "
                     "discussion_history, escalation_info, completion_code, "
                     "ticket_kind, classification_status, "
                     "content_hash, occurrence_count, first_seen, last_seen, source_ticket_ids "
@@ -408,7 +466,7 @@ class IncidentsMixin:
             with conn.cursor() as cur:
                 cur.execute(
                     "SELECT id, title, description, extracted_text, classification_json, "
-                    "status, created_at, documents, assign_group, assignee, priority, notes, "
+                    "status, source_status, created_at, documents, assign_group, assignee, priority, notes, "
                     "discussion_history, escalation_info, completion_code, "
                     "ticket_kind, classification_status, "
                     "content_hash, occurrence_count, first_seen, last_seen, source_ticket_ids "
@@ -436,7 +494,7 @@ class IncidentsMixin:
         try:
             with conn.cursor() as cur:
                 cols = ("id, title, description, extracted_text, classification_json, "
-                        "status, created_at, documents, assign_group, assignee, priority, "
+                        "status, source_status, created_at, documents, assign_group, assignee, priority, "
                         "notes, discussion_history, escalation_info, completion_code, "
                         "ticket_kind, classification_status")
                 where = []
@@ -470,7 +528,7 @@ class IncidentsMixin:
             with conn.cursor() as cur:
                 cur.execute(
                     "SELECT id, title, description, extracted_text, classification_json, "
-                    "status, created_at, documents, assign_group, assignee, "
+                    "status, source_status, created_at, documents, assign_group, assignee, "
                     "priority, notes, discussion_history, escalation_info, completion_code, "
                     "ticket_kind, classification_status, "
                     "embedding::text "
@@ -480,7 +538,7 @@ class IncidentsMixin:
                 rows = cur.fetchall()
             result = []
             for r in rows:
-                emb_str = r[17]
+                emb_str = r[18]
                 emb = None
                 if emb_str:
                     emb = np.array([float(x) for x in emb_str.strip("[]").split(",")], dtype=np.float32)
@@ -525,12 +583,12 @@ class IncidentsMixin:
         """Convert a DB row to an incident dict.
 
         Handles three query shapes:
-          - Base (17 cols): list_incidents
-          - Extended (22 cols, extended=True): get_incident
-          - Embedding (18 cols, embedding_str set): list_incidents_with_embeddings
+          - Base (18 cols): list_incidents
+          - Extended (23 cols, extended=True): get_incident
+          - Embedding (19 cols, embedding_str set): list_incidents_with_embeddings
 
-        The 17 base columns are always at indices 0–16.
-        Extended fields are at 17–21.
+        The 18 base columns are always at indices 0–17.
+        Extended fields are at 18–22.
         Embedding text is passed separately (appended to SELECT as last col).
         """
         d = {
@@ -540,17 +598,18 @@ class IncidentsMixin:
             "extracted_text": row[3],
             "classification": row[4],
             "status": row[5],
-            "created_at": row[6].isoformat() if row[6] else "",
-            "documents": row[7] if isinstance(row[7], list) else (json.loads(row[7]) if row[7] else []),
-            "assign_group": row[8] or "",
-            "assignee": row[9] or "",
-            "priority": row[10] or "medium",
-            "notes": row[11],
-            "discussion_history": row[12] if isinstance(row[12], list) else (json.loads(row[12]) if row[12] else []),
-            "escalation_info": row[13],
-            "completion_code": row[14],
-            "ticket_kind": row[15],
-            "classification_status": row[16],
+            "source_status": row[6],
+            "created_at": row[7].isoformat() if row[7] else "",
+            "documents": row[8] if isinstance(row[8], list) else (json.loads(row[8]) if row[8] else []),
+            "assign_group": row[9] or "",
+            "assignee": row[10] or "",
+            "priority": row[11] or "medium",
+            "notes": row[12],
+            "discussion_history": row[13] if isinstance(row[13], list) else (json.loads(row[13]) if row[13] else []),
+            "escalation_info": row[14],
+            "completion_code": row[15],
+            "ticket_kind": row[16],
+            "classification_status": row[17],
         }
         # Parse classification_json once → classification_dict
         raw = row[4]
@@ -563,11 +622,11 @@ class IncidentsMixin:
             d["classification_dict"] = raw or {}
         if extended:
             d.update({
-                "content_hash": row[17],
-                "occurrence_count": row[18] or 1,
-                "first_seen": row[19].isoformat() if row[19] else "",
-                "last_seen": row[20].isoformat() if row[20] else "",
-                "source_ticket_ids": row[21] if isinstance(row[21], list) else (json.loads(row[21]) if row[21] else []),
+                "content_hash": row[18],
+                "occurrence_count": row[19] or 1,
+                "first_seen": row[20].isoformat() if row[20] else "",
+                "last_seen": row[21].isoformat() if row[21] else "",
+                "source_ticket_ids": row[22] if isinstance(row[22], list) else (json.loads(row[22]) if row[22] else []),
             })
         if embedding_str is not None:
             d["_embedding_raw"] = embedding_str

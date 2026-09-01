@@ -16,7 +16,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from ai_classification.api.auth import require_token
 from ai_classification.shared.config import settings
 from ai_classification.services.jobs.integration import enqueue, get_job, list_jobs, worker_tick
-from ai_classification.services.jobs.integration.schemas import Err, IntegrationBatch, IntegrationIncident, error_body
+from ai_classification.services.jobs.integration.schemas import (
+    Err,
+    IntegrationBatch,
+    IntegrationIncident,
+    StatusUpdate,
+    error_body,
+)
 from ai_classification.seams.port import Incident
 from ai_classification.seams.pipeline import persist_result, process_incident
 
@@ -39,6 +45,36 @@ def ingest_incident(inc: IntegrationIncident):
         "reference": inc.source_reference,
         "status": job["status"],
         "location": f"/api/v1/incidents/{inc.source_reference}",
+    }
+
+
+# ── E10: status update by reference ─────────────────────────────────
+# The SMAX "same ID → change the status" rule, as a normalized contract
+# endpoint: an incident already ingested under a source_reference gets a
+# STATUS-ONLY update — no re-classification, no new row. The raw status is
+# dynamic (any value accepted) and stored verbatim in source_status; the
+# local active/resolved view is derived. 404 when the reference is unknown
+# (ingest it first via E1).
+
+@router.post("/incidents/{reference}/status", dependencies=[Depends(require_token)])
+def update_incident_status(reference: str, update: StatusUpdate):
+    from ai_classification.shared.store import store
+
+    updated = store.update_status_by_reference(reference, update.status)
+    if updated is None:
+        raise HTTPException(
+            status_code=404,
+            detail=error_body(Err.NOT_FOUND, f"No incident with reference '{reference}'", reference),
+        )
+    _log.info("Integration status update — reference=%s status=%r local=%s",
+              reference, updated.get("source_status"), updated.get("status"))
+    return {
+        "action": "updated",
+        "reference": reference,
+        "incident_id": updated["id"],
+        "status": updated.get("status"),
+        "source_status": updated.get("source_status"),
+        "updated_at": update.updated_at.isoformat() if update.updated_at else None,
     }
 
 

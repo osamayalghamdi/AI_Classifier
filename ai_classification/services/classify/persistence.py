@@ -13,6 +13,7 @@ from pydantic import TypeAdapter
 
 from ai_classification.api.schemas import ClassifyBatchResponse, ClassifyResponse
 from ai_classification.domain.models import ClassificationResult, SimilarOpenIncident
+from ai_classification.shared.store_incidents import to_local_status
 
 
 _log = logging.getLogger(__name__)
@@ -94,6 +95,7 @@ def classify_and_store(
     assignee: str = "",
     priority: str | None = None,
     status: str = "active",
+    source_status: str | None = None,
     notes: str | None = None,
     discussion_history: list[dict] | None = None,
     escalation_info: str | None = None,
@@ -219,7 +221,12 @@ def classify_and_store(
         assign_group=assign_group,
         assignee=assignee,
         priority=priority,
-        status=status,
+        # Raw status (possibly an upstream value like "verified") is mapped
+        # to the local active/resolved view; the raw value is kept verbatim
+        # in source_status (SMAX webhook requirement — never lose what the
+        # ticketing system reported).
+        status=to_local_status(status),
+        source_status=source_status,
         notes=notes,
         discussion_history=discussion_history or [],
         escalation_info=escalation_info,

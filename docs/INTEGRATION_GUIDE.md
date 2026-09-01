@@ -32,8 +32,10 @@ curl -s -X POST http://localhost:8000/api/v1/incidents \
 |---|---|---|---|
 | POST | `/api/v1/incidents` | yes | **Ingest ONE incident** (async) — returns immediately |
 | GET | `/api/v1/incidents/{reference}` | yes | Fetch result/status by reference |
+| POST | `/api/v1/incidents/{reference}/status` | yes | **Status-only update** of an ingested incident (same reference → same row) |
 | POST | `/api/v1/incidents/dry-run` | yes | Same contract, synchronous, writes nothing |
 | POST | `/api/v1/backfill` | yes | Batch ingest (≤200) / one-time historical run |
+| POST | `/api/v1/smax/webhook` | yes | **SMAX push receiver** — new incident OR status change in one URL |
 | GET | `/api/v1/jobs?limit=20` | yes | Ops view of the queue |
 | POST | `/api/v1/worker/tick?limit=10` | yes | Advance the queue manually |
 | GET | `/health` | **no** | Liveness |
@@ -63,6 +65,14 @@ Request payload — **strict** (unknown fields are rejected, see §4):
   "updated_at": null
 }
 ```
+
+> **`status` is DYNAMIC by design** (SMAX webhook requirement). Any value is
+> accepted — `active`, `verified`, `resolved`, `closed`, or a status SMAX
+> adds next week; a new value never causes a 422. The raw value is stored
+> verbatim in the incident's `source_status`; the system derives its local
+> `active`/`resolved` view from it (resolved-like values: resolved, closed,
+> verified, cancelled, rejected, duplicate, …; everything else stays
+> active).
 
 Response `202 Accepted` — the caller never waits on the LLM:
 
@@ -167,6 +177,91 @@ GET /ready      -> 200/503 {"status":"ok|degraded|unhealthy","checks":{...}}
   (a company endpoint that is unreachable from the caller's network shows
   as `unreachable` while db/embedding stay `ok` — degraded, not down)
 
+### 2.6 E10 — Status-only update by reference
+
+The **"same ID → change the status"** rule as a normalized endpoint: an
+incident already ingested under a `source_reference` gets a **status-only
+update** — the same incident row is updated, nothing is re-classified and
+no new row/duplicate is created.
+
+```
+POST /api/v1/incidents/{reference}/status
+Authorization: Bearer <INTEGRATION_TOKEN>
+```
+
+```json
+{
+  "status": "verified",
+  "updated_at": "2025-01-11T12:00:00Z"
+}
+```
+
+- `status` is dynamic (same rule as E1 — any value accepted, stored raw).
+- Response `200`:
+  ```json
+  {
+    "action": "updated",
+    "reference": "TKT-1001",
+    "incident_id": "8fe666825145",
+    "status": "resolved",
+    "source_status": "verified",
+    "updated_at": "2025-01-11T12:00:00+00:00"
+  }
+  ```
+- `404 NOT_FOUND` when the reference was never ingested — ingest it first
+  via E1 (or the webhook below).
+
+### 2.7 SMAX webhook — one URL for new incidents AND status changes
+
+Configure SMAX's outbound notification to POST to:
+
+```
+POST /api/v1/smax/webhook
+Authorization: Bearer <INTEGRATION_TOKEN>
+Content-Type: application/json
+```
+
+The endpoint accepts SMAX's **raw payload** — field-name translation is
+tolerant (id/title/description/status/timestamp aliases are recognized,
+unknown fields ignored, wrappers like `{"event": {"record": {...}}}`
+unwrapped). Dispatch is by **source reference** (the SMAX ticket id):
+
+| Situation | Action | Response |
+|---|---|---|
+| reference **unknown** | enqueue for **async classification** (E1 path) | `202` `{"action":"created", ...}` |
+| reference **known** | **status-only update** of the existing row | `200` `{"action":"updated", ...}` |
+| no usable id in payload | — | `400 INVALID_PAYLOAD` |
+
+Example push (new incident):
+
+```json
+{
+  "ticket_id": "SMAX-1001",
+  "title": "Rawdah permit date error",
+  "description": "Error when selecting a date for the pilgrim group",
+  "status": "Active",
+  "created": "2025-01-10T08:00:00Z"
+}
+```
+
+Example push (status change — same id, new status):
+
+```json
+{ "ticket_id": "SMAX-1001", "status": "Verified" }
+```
+
+Notes:
+
+- **Statuses are dynamic**: `Active`, `Verified`, `Resolved`, `Closed` or
+  any future value are all accepted and stored verbatim in
+  `source_status`; only the local `active`/`resolved` view is derived.
+- A status change for a reference still sitting in the job queue (pushed
+  "created" then immediately "status changed" before classification ran)
+  refreshes the queued payload, so the worker persists the **latest**
+  status.
+- The raw status is visible wherever incidents are served
+  (`source_status` field on incident payloads).
+
 ## 3. Write-back default (SAFEST)
 
 `INTEGRATION_WRITE_BACK` (default **`suggestions`**): processed results and
@@ -268,6 +363,10 @@ imports that talks to the classifier only over HTTP:
 - `submit(incident)` → `POST /api/v1/incidents` (Bearer, 202 + reference)
 - `result(ref)` → `GET /api/v1/incidents/{ref}` (polls to a terminal state)
 - `backfill(incidents)` → `POST /api/v1/backfill` (chunked ≤200)
+
+Since the SMAX **push** flow (webhook, §2.7) is the receive path, the
+connector's poller path no longer needs to handle status changes — but when
+it does, the endpoint to call is E10 (§2.6): `POST /api/v1/incidents/{ref}/status`.
 
 Run it (see `integrations/smax/README.md` for the full env table):
 
