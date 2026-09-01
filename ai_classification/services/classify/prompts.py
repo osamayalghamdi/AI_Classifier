@@ -166,6 +166,7 @@ def _build_system_prompt() -> str:
 ## Key Rules
 - incident_type = WHAT HAPPENED (symptom). category = WHY IT HAPPENED (root cause type). Never mix them.
 - service must be a single string from the chosen system's service list.
+- affected_system "Other" is the LAST RESORT. Nusuk Masar Haj / Nusuk Masar Umrah cover the Haj & Umrah platforms, CRM covers CRM, OldSM covers the legacy system — choose "Other" only when the ticket is genuinely outside all of them (infrastructure, third-party, unrelated). A Nusuk-screen problem is never "Other" just because the exact service is unclear — pick the closest service instead and set confidence "low".
 - If unsure, pick the closest match and set confidence "low".
 - Respond with JSON only — no markdown, no commentary.
 
@@ -315,6 +316,7 @@ _CASCADE_JSON_SCHEMA = """\
 ## Key Rules
 - incident_type = WHAT HAPPENED (symptom). category = WHY IT HAPPENED (root cause type). Never mix them.
 - service MUST be one of the allowed values EXACTLY as written — never invent, never rephrase, never shorten a service or offering name.
+- 'Other' affected_system is the LAST RESORT — never for a Nusuk/CRM-screen problem just because the service is unclear; pick the closest match and set confidence "low".
 - Respond with JSON only — no markdown, no commentary.
 - If unsure, pick the closest match and set confidence "low".
 """
