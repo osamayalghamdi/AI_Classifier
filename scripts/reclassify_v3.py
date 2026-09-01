@@ -25,11 +25,19 @@ Safety guards (added after the 52-row LLM-outage pollution incident):
 --dry-run prints the per-ticket old→new diff (ticket_kind, service,
 incident_type) and writes NOTHING. --limit N caps the sweep for testing.
 
+--only-system X targets tickets whose CURRENT affected_system equals X
+(e.g. --only-system Other to re-run the misclassified "Other" bucket after
+a prompt fix) — filtered in memory, safe at this dataset size.
+
 Usage (inside the API container, which has LLM keys + DB access):
     docker exec ai_classifier-api-1 python -m scripts.reclassify_v3 \
         --only-failed --dry-run
     docker exec ai_classifier-api-1 python -m scripts.reclassify_v3 \
         --only-failed --sleep 1
+    docker exec ai_classifier-api-1 python -m scripts.reclassify_v3 \
+        --only-system Other --dry-run
+    docker exec ai_classifier-api-1 python -m scripts.reclassify_v3 \
+        --only-system Other --sleep 1
 """
 from __future__ import annotations
 
@@ -48,13 +56,18 @@ def _parse_args(argv: list[str]) -> dict:
     opts = {
         "dry_run": "--dry-run" in argv,
         "only_failed": "--only-failed" in argv,
+        "only_system": None,
         "limit": None,
         "offset": 0,
         "sleep": None,          # None → derived from only_failed
         "stop_after": _DEFAULT_STOP_AFTER,
     }
     for i, arg in enumerate(argv):
-        if arg == "--limit" and i + 1 < len(argv):
+        if arg == "--only-system" and i + 1 < len(argv):
+            opts["only_system"] = argv[i + 1]
+        elif arg.startswith("--only-system="):
+            opts["only_system"] = arg.split("=", 1)[1]
+        elif arg == "--limit" and i + 1 < len(argv):
             opts["limit"] = int(argv[i + 1])
         elif arg.startswith("--limit="):
             opts["limit"] = int(arg.split("=", 1)[1])
@@ -79,6 +92,7 @@ def _kind_value(cls) -> str:
 
 
 def run_reclassify(*, dry_run: bool = False, only_failed: bool = False,
+                   only_system: str | None = None,
                    limit: int | None = None, offset: int = 0,
                    sleep_s: float | None = None,
                    stop_after_failures: int = _DEFAULT_STOP_AFTER) -> dict:
@@ -88,6 +102,9 @@ def run_reclassify(*, dry_run: bool = False, only_failed: bool = False,
     # SQL-level filter — never pull every row just to keep a few.
     incidents = store.list_incidents(
         classification_status="failed" if only_failed else None)
+    if only_system:
+        incidents = [i for i in incidents
+                     if (i.get("classification_dict") or {}).get("affected_system") == only_system]
     if offset:
         incidents = incidents[offset:]
     if limit is not None:
@@ -168,6 +185,7 @@ if __name__ == "__main__":
     store.setup()
     stats = run_reclassify(
         dry_run=opts["dry_run"], only_failed=opts["only_failed"],
+        only_system=opts["only_system"],
         limit=opts["limit"], offset=opts["offset"],
         sleep_s=opts["sleep"], stop_after_failures=opts["stop_after"],
     )

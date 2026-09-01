@@ -213,6 +213,9 @@ def _stage_system_llm(
     rules = (
         "This is stage 1 of 3 (system resolution).\n"
         "- affected_system MUST be exactly one of the 4 allowed values below — pick the system the ticket is about.\n"
+        "- 'Other' is the LAST RESORT — only when the ticket is genuinely outside Nusuk Masar Haj / Nusuk Masar Umrah / "
+        "CRM / OldSM (infrastructure, third-party, unrelated). A Nusuk-screen problem is never 'Other' just because the "
+        "exact service is unclear — pick the closest system and set confidence 'low'.\n"
         "- CRM: choose ONLY when the ticket text explicitly mentions CRM (the CRM application/system). Never pick CRM "
         "for contracts, accommodation, licensing, reporting, or other inquiries that do not mention CRM.\n"
         "- Tax/VAT data tickets (ضريب/فوترة/VAT/tax invoice): choose Nusuk Masar Haj — tax invoice data is managed "

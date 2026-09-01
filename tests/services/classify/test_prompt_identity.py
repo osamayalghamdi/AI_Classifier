@@ -33,7 +33,9 @@ from ai_classification.services.classify.prompts import (
 
 # SHA-256 of the payload above, computed from the current prompts module
 # (2026-08-22, post C-2 split — byte-identical to the pre-split classifier).
-FROZEN_PROMPT_SHA = "8ab42cdcb1d364bc926bd1f30d71eb5a8b182f65dd3c59bde84cc279a9da5b3b"
+# 2026-08-31: v3.2 — 'Other' is a last-resort affected_system (never for
+# Nusuk-screen problems); recomputed after the prompt change.
+FROZEN_PROMPT_SHA = "508e8ea0cd851bec69a78ee15b228ebbb8d9b210400e621a4686a8c838c503f2"
 
 
 def _frozen_payload() -> str:

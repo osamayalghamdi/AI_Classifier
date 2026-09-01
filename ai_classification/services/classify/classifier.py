@@ -29,7 +29,7 @@ _log = logging.getLogger(__name__)
 
 # Identity of _SYSTEM_PROMPT — recorded on persisted classifications by the
 # seams pipeline (provenance). Bump when the prompt content changes.
-PROMPT_VERSION = "2026-08-v3.1"  # v3.1: stage-1 routing rules (tax→Haj invoicing, CRM only when explicit)
+PROMPT_VERSION = "2026-08-v3.2"  # v3.2: 'Other' is a last-resort system — never for Nusuk-screen problems
 
 
 # ── Public API ────────────────────────────────────────────────────────
