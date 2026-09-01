@@ -22,6 +22,7 @@ from ai_classification.api.diagnostics import router as diagnostics_router
 from ai_classification.api.incidents import router as incidents_router
 from ai_classification.api.integration import router as integration_router, ready_router
 from ai_classification.api.reports import router as reports_router
+from ai_classification.api.webhooks import router as webhooks_router
 from ai_classification.services.jobs.integration.schemas import Err
 from ai_classification.services.jobs.sync import start_sync_worker
 from ai_classification.services.review.cluster_proposal_routes import router as cluster_proposal_router
@@ -164,6 +165,8 @@ app.include_router(taxonomy_gaps_router)
 # E1-E9 integration API (+ app-level /ready and /status)
 app.include_router(integration_router)
 app.include_router(ready_router)
+# Webhook receivers (SMAX push — new incidents + status changes)
+app.include_router(webhooks_router)
 # Incident / report / diagnostics endpoints
 app.include_router(incidents_router)
 app.include_router(reports_router)

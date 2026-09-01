@@ -145,6 +145,31 @@ def get_job(reference: str) -> dict | None:
     return _job_from_row(row) if row else None
 
 
+def update_pending_job_status(reference: str, status: str) -> bool:
+    """Refresh the status inside a still-queued job's payload.
+
+    Webhook race fix: SMAX may push "created" then quickly "status changed"
+    before the worker classified the first one — the incident row doesn't
+    exist yet, so the webhook's known-reference branch can't fire. Updating
+    the queued payload's status means the worker persists the LATEST
+    upstream status when it finally processes. Only non-terminal jobs are
+    touched (a succeeded job's payload stays immutable); returns True when
+    the payload actually changed."""
+    ensure_jobs_table()
+    with _connect() as conn:
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE ingestion_jobs "
+                "SET payload = jsonb_set(payload, '{status}', to_jsonb(%s::text)), updated_at = now() "
+                "WHERE source_reference = %s AND status IN (%s, %s, %s) "
+                "AND payload->>'status' IS DISTINCT FROM %s",
+                (status, reference, STATUS_PENDING, STATUS_PROCESSING,
+                 STATUS_RETRYABLE, status),
+            )
+            return cur.rowcount > 0
+
+
 def list_jobs(limit: int = 20) -> list[dict]:
     ensure_jobs_table()
     with _connect() as conn:

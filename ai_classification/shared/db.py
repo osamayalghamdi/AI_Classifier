@@ -73,6 +73,7 @@ class DBBase:
                             embedding vector(%d),
                             classification_json TEXT NOT NULL DEFAULT '{}',
                             status TEXT NOT NULL DEFAULT 'active',
+                            source_status TEXT,
                             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                             documents JSONB NOT NULL DEFAULT '[]',
                             assign_group TEXT NOT NULL DEFAULT '',
@@ -107,6 +108,11 @@ class DBBase:
                         "ALTER TABLE incidents ADD COLUMN IF NOT EXISTS source_ticket_ids JSONB NOT NULL DEFAULT '[]'",
                         "ALTER TABLE incidents ADD COLUMN IF NOT EXISTS ticket_kind TEXT NOT NULL DEFAULT 'incident'",
                         "ALTER TABLE incidents ADD COLUMN IF NOT EXISTS classification_status TEXT NOT NULL DEFAULT 'ok'",
+                        # SMAX webhook: the raw status exactly as the ticketing
+                        # system reported it (dynamic — any value is stored
+                        # verbatim); `status` above stays the derived
+                        # active/resolved view used for dedupe + dashboards.
+                        "ALTER TABLE incidents ADD COLUMN IF NOT EXISTS source_status TEXT",
                     ]:
                         try:
                             cur.execute(col_sql)

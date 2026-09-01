@@ -115,6 +115,7 @@ def persist_result(result: PipelineResult, *, dry_run: bool = False) -> dict:
     """
     from ai_classification.services.classify.classifier import classify_and_store
     from ai_classification.shared.store import store
+    from ai_classification.shared.store_incidents import to_local_status
 
     if result.error:
         return {"action": "skipped", "reason": result.error}
@@ -131,6 +132,12 @@ def persist_result(result: PipelineResult, *, dry_run: bool = False) -> dict:
             result.title,
             result.description,
             precomputed=result.classification,
+            # Reference + raw upstream status ride along so the stored row
+            # (a) is findable again by source_reference (SMAX webhook
+            # status updates) and (b) keeps the exact status SMAX reported.
+            source_ticket_id=result.source_reference,
+            status=result.status,
+            source_status=result.status,
         )
         return {
             "action": "new",
@@ -141,15 +148,12 @@ def persist_result(result: PipelineResult, *, dry_run: bool = False) -> dict:
     # Seen → dedupe semantics: +1 occurrence, status-only propagation.
     if result.incident_id:
         store.increment_occurrence(result.incident_id)
-        # Status propagation mirrors the legacy sync mapping verbatim.
-        local_status = (
-            "active"
-            if result.status in ("open", "in_progress", "third_party")
-            else "resolved"
-        )
+        # Status propagation mirrors the legacy sync mapping — now through
+        # the shared to_local_status rule; the RAW upstream status is passed
+        # so set_status stores it verbatim in source_status.
         current = store.get_incident(result.incident_id)
-        if current and current.get("status") != local_status:
-            store.set_status(result.incident_id, local_status)
+        if current and current.get("status") != to_local_status(result.status):
+            store.set_status(result.incident_id, result.status)
     return {
         "action": "seen",
         "incident_id": result.incident_id,

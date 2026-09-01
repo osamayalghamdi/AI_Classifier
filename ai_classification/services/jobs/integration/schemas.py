@@ -39,12 +39,24 @@ class IntegrationIncident(BaseModel):
     source_reference: str = Field(min_length=1, max_length=128)
     title: str = Field(min_length=1, max_length=300)
     description: str = Field(default="", max_length=8000)
-    status: str = Field(
-        default="active",
-        pattern="^(active|resolved|open|in_progress|third_party|closed)$",
-    )
+    # DYNAMIC by design (SMAX webhook requirement): the ticketing system's
+    # status is accepted verbatim — active, verified, resolved, closed, or
+    # any value SMAX adds later. No fixed enum: a new upstream status must
+    # never 422. The system stores it raw in incidents.source_status and
+    # derives the local active/resolved view from it.
+    status: str = Field(default="active", min_length=1, max_length=64)
     attachments: list[dict] = Field(default_factory=list, max_length=20)
     created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class StatusUpdate(BaseModel):
+    """Status-only update for an already-ingested incident (same reference →
+    same incident row; no re-classification). Status is dynamic, like E1."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: str = Field(min_length=1, max_length=64)
     updated_at: datetime | None = None
 
 
