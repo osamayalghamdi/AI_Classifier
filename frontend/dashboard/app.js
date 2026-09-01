@@ -38,7 +38,14 @@ let ROLE = localStorage.getItem("dash_role") || "employee";
 let FLAT = localStorage.getItem("dash_flat") === "true";
 let EMP_GROUP_FILTER = localStorage.getItem("dash_group_filter") || "all";
 let EMP_SEV_FILTER = localStorage.getItem("dash_sev_filter") || "";
+let EMP_SYS_FILTER = localStorage.getItem("dash_sys_filter") || "";
 let LEAD_TEAM_FILTER = localStorage.getItem("dash_lead_team") || "";
+let LEAD_SYS_FILTER = localStorage.getItem("dash_lead_sys") || "";
+
+// The known systems (AffectedSystem taxonomy). Hajj and Umrah are DIFFERENT
+// teams — clusters are system-scoped, so these options filter the view per
+// system (a Hajj cluster never contains Umrah tickets and vice versa).
+const SYSTEMS = ["Nusuk Masar Haj", "Nusuk Masar Umrah", "OldSM", "CRM", "Other", "Unknown"];
 
 const TEAMS = {
   "App Support":    ["Ahmed K.", "Sara M.", "Layla R."],
@@ -83,7 +90,7 @@ async function loadData() {
       fetch(`${API}/incidents`, { headers: apiHeaders() }).then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); }),
     ]);
     const clusters = (rep.clusters || []).map((c) => ({
-      cluster_id: c.cluster_id, name: c.description || c.name || c.summary?.slice(0, 60) || "Cluster",
+      cluster_id: c.cluster_id, name: c.name || c.description || c.summary?.slice(0, 60) || "Cluster",
       affected_system: c.affected_system, affected_service: c.affected_service,
       worst_severity: c.worst_severity, count: c.count, summary: c.summary,
       incidents: (c.incidents || []).map((i) => {
@@ -94,6 +101,7 @@ async function loadData() {
           similarity_pct: i.similarity_pct, description: i.description,
           assignee: full.assignee || "Unassigned", assign_group: mapTeam(full.assign_group || ""), team: mapTeam(full.assign_group || ""),
           status: full.status || "active", created_hours_ago: full.created_hours_ago,
+          system: c.affected_system || "Unknown", // system-scoped: all members share it
         };
       }),
     }));
@@ -102,7 +110,8 @@ async function loadData() {
     const individuals = list.filter((i) => !inClusters.has(i.id)).map((i) => ({
       id: i.id, title: i.title, lang: isAr(i.title) ? "ar" : "en",
       severity: safeSev(i), assignee: i.assignee || "Unassigned",
-      assign_group: mapTeam(i.assign_group || ""), team: mapTeam(i.assign_group || ""), system: "—", service: "—", status: i.status || "active",
+      assign_group: mapTeam(i.assign_group || ""), team: mapTeam(i.assign_group || ""),
+      system: safeSystem(i), service: "—", status: i.status || "active",
     }));
     DATA = {
       clusters, individuals,
@@ -161,6 +170,17 @@ function safeSev(i) {
   catch { return "Minor"; }
 }
 
+/* The system an incident belongs to (Hajj / Umrah / …) — read from its
+   classification; unclassified legacy rows degrade to "Unknown". */
+function safeSystem(i) {
+  try {
+    let c = i.classification || i.classification_json || {};
+    if (typeof c === "string") c = JSON.parse(c);
+    return c.affected_system || i.affected_system || "Unknown";
+  }
+  catch { return "Unknown"; }
+}
+
 /* map simulator assign groups → 4 teams */
 function mapTeam(g) {
   if (!g) return "App Support";
@@ -183,7 +203,9 @@ function saveState() {
   localStorage.setItem("dash_flat", String(FLAT));
   localStorage.setItem("dash_group_filter", EMP_GROUP_FILTER);
   localStorage.setItem("dash_sev_filter", EMP_SEV_FILTER);
+  localStorage.setItem("dash_sys_filter", EMP_SYS_FILTER);
   localStorage.setItem("dash_lead_team", LEAD_TEAM_FILTER);
+  localStorage.setItem("dash_lead_sys", LEAD_SYS_FILTER);
   localStorage.setItem("dash_search", $("#empSearch")?.value || "");
   const open = [...document.querySelectorAll(".cluster.open")].map((el) => el.dataset.cid).filter(Boolean);
   localStorage.setItem("dash_open_clusters", JSON.stringify(open));
@@ -203,10 +225,14 @@ function restoreState() {
   document.getElementById("vtFlat")?.classList.toggle("active", FLAT);
   const sevEl = document.getElementById("empSevFilter");
   if (sevEl) sevEl.value = EMP_SEV_FILTER;
+  const sysEl = document.getElementById("empSysFilter");
+  if (sysEl) sysEl.value = EMP_SYS_FILTER;
   const groupEl = document.getElementById("empGroupFilter");
   if (groupEl) groupEl.value = EMP_GROUP_FILTER === "my" ? "my" : EMP_GROUP_FILTER;
   const teamEl = document.getElementById("leadTeamFilter");
   if (teamEl) teamEl.value = LEAD_TEAM_FILTER;
+  const leadSysEl = document.getElementById("leadSysFilter");
+  if (leadSysEl) leadSysEl.value = LEAD_SYS_FILTER;
   const searchEl = document.getElementById("empSearch");
   if (searchEl) searchEl.value = localStorage.getItem("dash_search") || "";
 }
@@ -245,6 +271,11 @@ $("#empSevFilter").addEventListener("change", function () {
   saveState();
   renderEmployee();
 });
+$("#empSysFilter").addEventListener("change", function () {
+  EMP_SYS_FILTER = this.value;
+  saveState();
+  renderEmployee();
+});
 $("#empGroupFilter").addEventListener("change", function () {
   EMP_GROUP_FILTER = this.value;
   saveState();
@@ -252,6 +283,11 @@ $("#empGroupFilter").addEventListener("change", function () {
 });
 $("#leadTeamFilter").addEventListener("change", function () {
   LEAD_TEAM_FILTER = this.value;
+  saveState();
+  renderLead();
+});
+$("#leadSysFilter").addEventListener("change", function () {
+  LEAD_SYS_FILTER = this.value;
   saveState();
   renderLead();
 });
@@ -283,12 +319,14 @@ function groupClusters() {
   const q = $("#empSearch").value.trim().toLowerCase();
   const sev = EMP_SEV_FILTER;
   const g = activeGroup();
+  const sys = EMP_SYS_FILTER;
   return DATA.clusters
     .map((c) => ({
       ...c,
       incidents: g ? c.incidents.filter((i) => i.assign_group === g) : c.incidents,
     }))
     .filter((c) => c.incidents.length > 0)
+    .filter((c) => !sys || c.affected_system === sys)
     .filter((c) => !sev || c.worst_severity === sev)
     .filter((c) => !q || c.name.toLowerCase().includes(q) || c.incidents.some((i) =>
       (i.title || "").toLowerCase().includes(q) || (i.id || "").toLowerCase().includes(q)
@@ -297,13 +335,15 @@ function groupClusters() {
 }
 
 function renderEmployee() {
-  const all = groupTickets();
+  const sys = EMP_SYS_FILTER;
+  const all = groupTickets().filter((t) => !sys || t.system === sys);
   const clusters = groupClusters();
   const g = activeGroup();
   const groupName = g || "All groups";
-  const gIndiv = g
+  const gIndiv = (g
     ? DATA.individuals.filter((t) => t.assign_group === g)
-    : DATA.individuals;
+    : DATA.individuals)
+    .filter((t) => !sys || t.system === sys);
   const inGroups = clusters.reduce((s, c) => s + c.incidents.length, 0);
   const crit = clusters.filter((c) => c.worst_severity === "Critical").length;
   const myInGroup = all.filter((t) => t.assignee === CURRENT_USER).length;
@@ -351,7 +391,9 @@ function renderEmployee() {
 /* ═════════ SHIFT LEAD ═════════ */
 function renderLead() {
   const teamSel = LEAD_TEAM_FILTER;
+  const sysSel = LEAD_SYS_FILTER;
   const clusters = DATA.clusters
+    .filter((c) => !sysSel || c.affected_system === sysSel)
     .filter((c) => !teamSel || c.incidents.some((i) => i.team === teamSel))
     .sort((a, b) => b.count - a.count || (SEV_RANK[b.worst_severity] || 0) - (SEV_RANK[a.worst_severity] || 0));
   const crit = clusters.filter((c) => c.worst_severity === "Critical");

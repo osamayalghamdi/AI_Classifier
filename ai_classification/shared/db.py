@@ -248,6 +248,38 @@ class DBBase:
                         CREATE INDEX IF NOT EXISTS idx_clusters_status
                         ON clusters (status)
                     """)
+                    # System scoping (2026-09): a cluster belongs to ONE
+                    # affected_system (Hajj / Umrah / …) — incidents from
+                    # different systems must NEVER share a cluster (different
+                    # teams). The column is first-class so the invariant is
+                    # enforced at the store layer (add_cluster_member), not
+                    # just derived from members. '' = legacy / unscoped rows
+                    # (migrated by the backfill below, or Unknown-equivalent).
+                    cur.execute("""
+                        ALTER TABLE clusters ADD COLUMN IF NOT EXISTS affected_system
+                        TEXT NOT NULL DEFAULT ''
+                    """)
+                    # Backfill: assign each existing empty-system cluster the
+                    # dominant system among its members' classifications (the
+                    # same rule _dominant_labels used before the column). Rows
+                    # with no classifiable members stay '' (treated as Unknown).
+                    cur.execute("""
+                        UPDATE clusters c SET affected_system = sub.sys
+                        FROM (
+                            SELECT cm.cluster_id AS cid,
+                                   (i.classification_json::jsonb)->>'affected_system' AS sys,
+                                   COUNT(*) AS n,
+                                   ROW_NUMBER() OVER (
+                                       PARTITION BY cm.cluster_id
+                                       ORDER BY COUNT(*) DESC
+                                   ) AS rn
+                            FROM cluster_members cm
+                            JOIN incidents i ON i.id = cm.incident_id
+                            WHERE (i.classification_json::jsonb)->>'affected_system' <> ''
+                            GROUP BY cm.cluster_id, (i.classification_json::jsonb)->>'affected_system'
+                        ) sub
+                        WHERE c.id = sub.cid AND sub.rn = 1 AND c.affected_system = ''
+                    """)
                     cur.execute("""
                         CREATE TABLE IF NOT EXISTS cluster_members (
                             cluster_id    TEXT NOT NULL REFERENCES clusters(id) ON DELETE CASCADE,

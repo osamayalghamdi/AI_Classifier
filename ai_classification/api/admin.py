@@ -520,6 +520,7 @@ def admin_groups():
             "name_en": c.get("name_en") or "",
             "description": c.get("description") or "",
             "status": c["status"],
+            "affected_system": c.get("affected_system") or "",
             "member_count": len(members),
             "members": [{"incident_id": m["incident_id"], "title": m.get("title", "")}
                         for m in members],
@@ -529,21 +530,32 @@ def admin_groups():
 
 @router.post("/groups")
 def admin_group_create(payload: dict):
-    """Create a cluster group (optionally with member incident ids)."""
+    """Create a cluster group (optionally with member incident ids).
+
+    ``affected_system`` is optional: when set, every member must belong to
+    that system (system-scoping invariant — Hajj and Umrah never mix). When
+    empty the cluster is unscoped ('' = Unknown bucket)."""
     from ai_classification.shared.store import store
     name_ar = str(payload.get("name_ar", "")).strip()
     if not name_ar:
         raise HTTPException(422, "name_ar is required")
     description = str(payload.get("description", "") or "")
     status = str(payload.get("status", "active"))
+    affected_system = str(payload.get("affected_system", "") or "").strip()
     cluster_id = store.generate_id()
     cluster = store.create_cluster(cluster_id, name_ar, description,
-                                   status=status)
+                                   status=status, affected_system=affected_system)
     if cluster is None:
         raise HTTPException(500, "failed to create cluster")
+    rejected = []
     for iid in payload.get("member_ids") or []:
-        store.add_cluster_member(cluster_id, str(iid))
-    return {"status": "ok", "cluster": cluster}
+        ok = store.add_cluster_member(cluster_id, str(iid))
+        if not ok:
+            rejected.append(str(iid))
+    if rejected:
+        _log.warning("admin group %s: %d member(s) refused (system mismatch): %s",
+                     cluster_id[:10], len(rejected), rejected[:5])
+    return {"status": "ok", "cluster": cluster, "rejected_members": rejected}
 
 
 @router.patch("/groups/{cluster_id}")

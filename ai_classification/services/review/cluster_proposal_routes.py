@@ -34,6 +34,9 @@ def _enrich(cluster: dict) -> dict:
     cluster["member_ids"] = [m["incident_id"] for m in members]
     cluster["members"] = [{"id": m["incident_id"], "title": m["title"],
                            "description": m["description"]} for m in members]
+    # v4 system scoping: every proposal carries its ONE system so the review
+    # UI can verify the members belong to it (Hajj vs Umrah = different teams).
+    cluster["affected_system"] = cluster.get("affected_system") or ""
     return cluster
 
 

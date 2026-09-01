@@ -26,17 +26,25 @@ class ClustersMixin:
     #     cluster; approval = status flip to 'active' (no copy)
 
     def create_cluster(self, cluster_id: str, name_ar: str, description: str,
-                       name_en: str = "", status: str = "proposed") -> dict | None:
+                       name_en: str = "", status: str = "proposed",
+                       affected_system: str = "") -> dict | None:
+        """Create a cluster row. ``affected_system`` is the ONE system this
+        cluster serves (system-scoped clustering): every member must belong
+        to it (enforced in add_cluster_member). '' = legacy / unscoped — the
+        first member claims it (see add_cluster_member); retrieval treats it
+        as the 'Unknown' bucket until then."""
         if not self._ready or self._pool is None:
             return None
         conn = self._getconn()
         try:
             with conn.cursor() as cur:
                 cur.execute(
-                    "INSERT INTO clusters (id, name_ar, name_en, description, status) "
-                    "VALUES (%s, %s, %s, %s, %s) "
-                    "RETURNING id, name_ar, name_en, description, status, created_at, updated_at",
-                    (cluster_id, name_ar, name_en, description, status),
+                    "INSERT INTO clusters (id, name_ar, name_en, description, status, affected_system) "
+                    "VALUES (%s, %s, %s, %s, %s, %s) "
+                    "RETURNING id, name_ar, name_en, description, status, affected_system, "
+                    "created_at, updated_at",
+                    (cluster_id, name_ar, name_en, description, status,
+                     (affected_system or "").strip()),
                 )
                 row = cur.fetchone()
             conn.commit()
@@ -51,25 +59,35 @@ class ClustersMixin:
         try:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT id, name_ar, name_en, description, status, created_at, updated_at "
+                    "SELECT id, name_ar, name_en, description, status, affected_system, "
+                    "created_at, updated_at "
                     "FROM clusters WHERE id = %s", (cluster_id,))
                 row = cur.fetchone()
             return self._row_to_cluster(row) if row else None
         finally:
             self._putconn(conn)
 
-    def list_clusters(self, status: str | None = None) -> list[dict]:
+    def list_clusters(self, status: str | None = None,
+                      affected_system: str | None = None) -> list[dict]:
+        """List clusters, optionally filtered by status and/or the cluster's
+        system (system-scoped retrieval: Flow A only pulls same-system
+        clusters as candidates)."""
         if not self._ready or self._pool is None:
             return []
         conn = self._getconn()
         try:
             with conn.cursor() as cur:
-                sql = ("SELECT id, name_ar, name_en, description, status, created_at, updated_at "
-                       "FROM clusters")
+                sql = ("SELECT id, name_ar, name_en, description, status, affected_system, "
+                       "created_at, updated_at FROM clusters")
+                conds, args = [], []
                 if status is not None:
-                    sql += " WHERE status = %s"
+                    conds.append("status = %s"); args.append(status)
+                if affected_system is not None:
+                    conds.append("affected_system = %s"); args.append(affected_system)
+                if conds:
+                    sql += " WHERE " + " AND ".join(conds)
                 sql += " ORDER BY created_at ASC"
-                cur.execute(sql, (status,) if status is not None else ())
+                cur.execute(sql, tuple(args))
                 return [self._row_to_cluster(r) for r in cur.fetchall()]
         finally:
             self._putconn(conn)
@@ -178,12 +196,56 @@ class ClustersMixin:
                            assigned_by: str = "llm", confidence: str | None = None) -> bool:
         """Insert a member, enforcing the one-cluster-per-incident invariant:
         the incident is removed from ANY other cluster first (same transaction).
-        Returns True on insert, False if the row already existed."""
+
+        SYSTEM-SCOPING INVARIANT (2026-09): a cluster serves ONE system — an
+        incident from a different system (Hajj vs Umrah = different teams) is
+        REFUSED here, whatever the caller asked for. The cluster's system is
+        read from the row; the incident's from its stored classification. An
+        UNSCOPED cluster (affected_system = '') is claimed by its first
+        member (row stamped with that system), so legacy rows and manual
+        groups keep working while never mixing systems. 'Unknown' is its own
+        bucket (unclassified incidents cluster together). Returns True on
+        insert, False if refused or already there.
+        """
         if not self._ready or self._pool is None:
             return False
         conn = self._getconn()
         try:
             with conn.cursor() as cur:
+                # ── System check — refuse cross-system membership ──────────
+                cur.execute("SELECT affected_system FROM clusters WHERE id = %s",
+                            (cluster_id,))
+                row = cur.fetchone()
+                if row is None:
+                    conn.rollback()  # close the read transaction before returning
+                    return False
+                cluster_sys = (row[0] or "").strip()
+                cur.execute("SELECT classification_json FROM incidents WHERE id = %s",
+                            (incident_id,))
+                row = cur.fetchone()
+                inc_sys = "Unknown"
+                if row is not None:
+                    try:
+                        cls = json.loads(row[0] or "{}")
+                    except Exception:
+                        cls = {}
+                    inc_sys = (cls.get("affected_system") or "Unknown").strip() or "Unknown"
+                if cluster_sys == "":
+                    # Unscoped cluster (legacy row / admin group without a
+                    # declared system): the FIRST member claims it — the row
+                    # is stamped with the member's system so every later
+                    # member must match (Hajj and Umrah can never mix).
+                    cur.execute(
+                        "UPDATE clusters SET affected_system = %s, updated_at = NOW() "
+                        "WHERE id = %s", (inc_sys, cluster_id))
+                elif cluster_sys != inc_sys:
+                    _log.warning(
+                        "add_cluster_member REFUSED: %s (%s) -> cluster %s (%s) — "
+                        "cross-system membership blocked (one cluster = one system)",
+                        incident_id[:10], inc_sys, cluster_id[:10], cluster_sys)
+                    conn.rollback()  # nothing changed — close the transaction
+                    return False
+                # ── One-cluster-per-incident + insert (same transaction) ───
                 cur.execute(
                     "DELETE FROM cluster_members WHERE incident_id = %s AND cluster_id <> %s",
                     (incident_id, cluster_id))
@@ -252,14 +314,15 @@ class ClustersMixin:
         try:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT c.id, c.name_ar, c.name_en, c.description, c.status "
+                    "SELECT c.id, c.name_ar, c.name_en, c.description, c.status, c.affected_system "
                     "FROM cluster_members cm JOIN clusters c ON c.id = cm.cluster_id "
                     "WHERE cm.incident_id = %s", (incident_id,))
                 row = cur.fetchone()
             if row is None:
                 return None
             return {"id": row[0], "name_ar": row[1], "name_en": row[2],
-                    "description": row[3], "status": row[4]}
+                    "description": row[3], "status": row[4],
+                    "affected_system": row[5] or ""}
         finally:
             self._putconn(conn)
 
@@ -327,7 +390,8 @@ class ClustersMixin:
     def _row_to_cluster(row) -> dict:
         return {"id": row[0], "name_ar": row[1], "name_en": row[2],
                 "description": row[3], "status": row[4],
-                "created_at": row[5], "updated_at": row[6]}
+                "affected_system": row[5] or "", "created_at": row[6],
+                "updated_at": row[7]}
 
     @staticmethod
     def _row_to_cluster_member(row) -> dict:

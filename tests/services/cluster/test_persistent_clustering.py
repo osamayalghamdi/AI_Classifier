@@ -7,7 +7,7 @@ deterministic. Coverage:
   Flow A — assign (high/medium), none_fit, assign+low, hallucinated cluster id,
            assignment_log row with prompt_version
   Flow B — grouping -> proposals, 2-member birth, ID-mismatch discard
-  Flow C — member removal -> pool, refined description, ID mismatch + 60% floor
+  Flow C — member removal -> pool, refined description, ID mismatch + 85% floor
   Invariants — one cluster per incident (enforced in add_cluster_member)
   Review gate — approve -> active, reject -> members back to pool
   API shape — /clusters + /api/reports from tables (dashboard-compatible fields)
@@ -73,10 +73,13 @@ def _cleanup():
 
 def _save_incident(iid: str, title: str, description: str = "",
                    service: str = "Nusuk Masar Haj.Service Unavailability",
-                   status: str = "active") -> str:
+                   status: str = "active", system: str | None = None) -> str:
     """Insert an incident directly (no LLM classification) with a fake
-    classification_json carrying the service + a canonical statement."""
-    cls = {"affected_system": "Nusuk Masar Haj", "service": service,
+    classification_json carrying the service + a canonical statement. The
+    incident's system defaults to 'Nusuk Masar Haj' (the pre-v4 tests were
+    all Hajj); pass ``system`` for cross-system scenarios."""
+    cls = {"affected_system": system if system is not None else "Nusuk Masar Haj",
+           "service": service,
            "severity": "Major", "confidence": "high",
            "canonical_statement": f"Incident reported: {title}",
            "incident_type": "", "urgency": "", "category": ""}
@@ -105,8 +108,17 @@ class _FakeResult:
 
 
 def _seed_cluster(cid: str, name_ar: str, description: str,
-                  member_ids: list[str], status: str = "active") -> str:
-    store.create_cluster(cid, name_ar, description, status=status)
+                  member_ids: list[str], status: str = "active",
+                  affected_system: str | None = None) -> str:
+    """Create a cluster row + members. ``affected_system`` defaults to the
+    first member's system (v4: a cluster serves ONE system — members must
+    belong to it, enforced by add_cluster_member). Empty-member clusters are
+    seeded UNSCOPED ('') so the first added member claims them."""
+    if affected_system is None:
+        first = store.get_incident(member_ids[0]) if member_ids else None
+        affected_system = pc._system_of_inc(first) if first else ""
+    store.create_cluster(cid, name_ar, description, status=status,
+                         affected_system=affected_system)
     for m in member_ids:
         store.add_cluster_member(cid, m, assigned_by="seed", confidence="seed")
     return cid
@@ -435,7 +447,9 @@ class TestFlowC:
         assert r["demoted"] is False  # still 2 members — stays a cluster
         assert store.cluster_member_ids("cl_tst_audit2") == ["tst-k1", "tst-k2"]
 
-        # now remove 2 of 3 = 67% > 60% — verdict discarded, members untouched
+        # 67% removal (2 of 3) is a REAL cleanup of a mixed cluster — now
+        # under the 85% floor it passes; keep=1 leaves it below the 2-member
+        # rule, so the cluster demotes (members back to the individual pool).
         _save_incident("tst-k4", "four", service="Nusuk Masar Haj.Service Unavailability")
         store.add_cluster_member("cl_tst_audit2", "tst-k4", assigned_by="llm")
         _json_llm(monkeypatch, {"keep": ["tst-k1"],
@@ -443,8 +457,26 @@ class TestFlowC:
                                            {"id": "tst-k2", "reason": "b"}],
                                 "description": "d"})
         r = pc.audit_cluster("cl_tst_audit2")
+        assert r["demoted"] is True
+        assert store.get_cluster("cl_tst_audit2")["status"] == "retired"
+        assert store.cluster_member_ids("cl_tst_audit2") == []
+
+    def test_audit_pruning_floor_still_blocks_near_total_removal(self, monkeypatch):
+        """Remove 6 of 7 = 86% > 85% — still discarded whole (the floor only
+        blocks 'remove everything', the demote path handles real cleanups)."""
+        ids = [f"tst-p{i}" for i in range(7)]
+        for iid in ids:
+            _save_incident(iid, f"ticket {iid}",
+                           service="Nusuk Masar Haj.Service Unavailability")
+        _seed_cluster("cl_tst_floor", "مجموعة", "desc", ids)
+
+        _json_llm(monkeypatch, {
+            "keep": ids[:1],
+            "remove": [{"id": iid, "reason": "different"} for iid in ids[1:]],
+            "description": "d"})
+        r = pc.audit_cluster("cl_tst_floor")
         assert r["discarded"] == "pruning floor"
-        assert store.cluster_member_ids("cl_tst_audit2") == ["tst-k1", "tst-k2", "tst-k4"]
+        assert set(store.cluster_member_ids("cl_tst_floor")) == set(ids)
 
 
 # ── Invariants + review gate + API shape ─────────────────────────────────
@@ -545,3 +577,169 @@ class TestInvariantsAndGate:
         _seed_cluster("cl_tst_pool1", "مجموعة", "d", ["tst-o2"])
         pool = store.unassigned_incident_ids()
         assert "tst-o1" in pool and "tst-o2" not in pool
+
+
+# ── v4 SYSTEM SCOPING — Hajj and Umrah never share a cluster ──────────────
+
+class TestSystemScoping:
+    """One cluster = ONE system (different teams): an incident may only join
+    clusters of its own affected_system. Enforced at THREE layers:
+      * retrieval (Flow A candidates are pre-filtered per system),
+      * minting (Flow B batches the pool per system),
+      * the store (add_cluster_member refuses cross-system inserts)."""
+
+    def test_umrah_ticket_never_sees_hajj_cluster_as_candidate(self, monkeypatch):
+        """Only a Hajj cluster exists — an Umrah ticket gets ZERO candidates
+        (the LLM is never even called with a cross-system cluster)."""
+        _save_incident("tst-sys-a1", "Rawdah permit fails", service="Nusuk Masar Haj.Issue Permits")
+        _save_incident("tst-sys-a2", "Rawdah permit booking error", service="Nusuk Masar Haj.Issue Permits")
+        _seed_cluster("cl_tst_hajj1", "فشل إصدار تصريح الروضة", "Rawdah permit issuance fails",
+                      ["tst-sys-a1", "tst-sys-a2"], affected_system="Nusuk Masar Haj")
+        # Same wording as the Hajj problem — but an Umrah ticket (different team).
+        _save_incident("tst-sys-a3", "Rawdah permit fails on date selection", "date picker broken",
+                       service="Nusuk Masar Umrah.System/Application", system="Nusuk Masar Umrah")
+
+        called = []
+        _fake_llm(monkeypatch, lambda messages, **kw: called.append(1) or "{}")
+        r = pc.assign_incident("tst-sys-a3")
+
+        assert r["action"] == "none_fit"
+        assert r.get("reason") == "no active clusters"  # zero same-system candidates
+        assert called == []                              # LLM never invoked
+        assert store.incident_cluster("tst-sys-a3") is None
+
+    def test_flow_a_candidate_list_is_system_filtered(self, monkeypatch):
+        """With BOTH a Hajj and an Umrah cluster present, an Umrah ticket only
+        sees the Umrah cluster — a hallucinated Hajj id is not among the
+        candidates and hits the none_fit safeguard."""
+        _save_incident("tst-sys-b1", "Rawdah permit fails", service="Nusuk Masar Umrah.Registration",
+                       system="Nusuk Masar Umrah")
+        _save_incident("tst-sys-b2", "Rawdah permit booking error", service="Nusuk Masar Umrah.Registration",
+                       system="Nusuk Masar Umrah")
+        _seed_cluster("cl_tst_umrah1", "فشل إصدار تصريح الروضة", "Rawdah permit issuance fails",
+                      ["tst-sys-b1", "tst-sys-b2"], affected_system="Nusuk Masar Umrah")
+        _save_incident("tst-sys-b3", "Hajj permit stuck", service="Nusuk Masar Haj.Issue Permits")
+        _seed_cluster("cl_tst_hajj1", "فشل إصدار تصريح الروضة", "Rawdah permit issuance fails",
+                      ["tst-sys-b3"], affected_system="Nusuk Masar Haj")
+        # a NEW unassigned Umrah ticket — the assignment target
+        _save_incident("tst-sys-b4", "Rawdah permit fails on date selection",
+                       service="Nusuk Masar Umrah.Registration", system="Nusuk Masar Umrah")
+
+        seen = []
+
+        def responder(messages, **kw):
+            seen.append(messages[-1]["content"])
+            return json.dumps({"action": "assign", "cluster_id": "cl_tst_hajj1",
+                               "confidence": "high", "reason": "same"})
+
+        _fake_llm(monkeypatch, responder)
+        r = pc.assign_incident("tst-sys-b4")
+
+        # the Hajj cluster never reached the LLM prompt nor the assignment log
+        assert "cl_tst_hajj1" not in seen[0]
+        log = store.list_assignment_log(incident_id="tst-sys-b4")
+        assert "cl_tst_hajj1" not in log[0]["candidates"]
+        assert log[0]["candidates"] == ["cl_tst_umrah1"]
+        # hallucinated id -> not a candidate -> safeguard -> none_fit
+        assert r["action"] == "none_fit"
+        assert store.incident_cluster("tst-sys-b4") is None
+
+    def test_store_refuses_cross_system_membership(self):
+        """The hard invariant: add_cluster_member refuses an Umrah incident in
+        a Hajj cluster even when called directly (not via Flow A)."""
+        _save_incident("tst-sys-c1", "hajj ticket", service="Nusuk Masar Haj.X")
+        _save_incident("tst-sys-c2", "umrah ticket", service="Nusuk Masar Umrah.X",
+                       system="Nusuk Masar Umrah")
+        _save_incident("tst-sys-c3", "another hajj ticket", service="Nusuk Masar Haj.X")
+        _seed_cluster("cl_tst_hajj2", "مجموعة", "d", ["tst-sys-c1"],
+                      affected_system="Nusuk Masar Haj")
+
+        assert store.add_cluster_member("cl_tst_hajj2", "tst-sys-c2") is False
+        assert store.cluster_member_ids("cl_tst_hajj2") == ["tst-sys-c1"]
+        # same-system join still works
+        assert store.add_cluster_member("cl_tst_hajj2", "tst-sys-c3") is True
+        assert set(store.cluster_member_ids("cl_tst_hajj2")) == {"tst-sys-c1", "tst-sys-c3"}
+
+    def test_sweep_batches_pool_per_system(self, monkeypatch):
+        """Flow B partitions the pool by system: each LLM grouping call sees
+        ONE system only, and the minted clusters carry the right system —
+        no batch can ever produce a mixed Hajj+Umrah cluster."""
+        _save_incident("tst-sys-d0", "hajj payment fails", service="Nusuk Masar Haj.Bill Payment")
+        _save_incident("tst-sys-d1", "hajj transfer rejected", service="Nusuk Masar Haj.Bill Payment")
+        _save_incident("tst-sys-d2", "umrah payment fails", service="Nusuk Masar Umrah.Bill Payment",
+                       system="Nusuk Masar Umrah")
+        _save_incident("tst-sys-d3", "umrah transfer rejected", service="Nusuk Masar Umrah.Bill Payment",
+                       system="Nusuk Masar Umrah")
+
+        sweep_systems = []
+
+        def responder(messages, **kw):
+            body = messages[-1]["content"]
+            if "candidate_clusters" in body:
+                return json.dumps({"action": "none_fit", "cluster_id": None,
+                                   "confidence": "low", "reason": "x"})
+            payload = json.loads(body)
+            sys_name = payload.get("system", "Unknown")
+            ids = [t["id"] for t in payload["tickets"]]
+            sweep_systems.append(sys_name)
+            if len(ids) >= 2:
+                return json.dumps({
+                    "groups": [{"member_ids": ids, "name_ar": f"مجموعة {sys_name}",
+                                "description": "d"}],
+                    "singletons": []})
+            return json.dumps({"groups": [], "singletons": ids})
+
+        _fake_llm(monkeypatch, responder)
+        stats = pc.sweep_pool()
+
+        # every grouping call saw exactly ONE system — the pool was split
+        # (the test DB is shared with other modules, so other systems may
+        # appear too; the guarantee is that NO single call mixes systems)
+        assert {"Nusuk Masar Haj", "Nusuk Masar Umrah"} <= set(sweep_systems)
+        assert stats["proposals_created"] >= 2
+        props = store.list_clusters(status="proposed")
+        by_sys = {c["affected_system"]: set(store.cluster_member_ids(c["id"])) for c in props}
+        assert by_sys["Nusuk Masar Haj"] == {"tst-sys-d0", "tst-sys-d1"}
+        assert by_sys["Nusuk Masar Umrah"] == {"tst-sys-d2", "tst-sys-d3"}
+        # every member belongs to its cluster's system (no mixed cluster)
+        for c in props:
+            for mid in store.cluster_member_ids(c["id"]):
+                assert pc._system_of_inc(store.get_incident(mid)) == c["affected_system"]
+
+    def test_report_emits_cluster_system_from_row(self):
+        """The dashboard report carries the cluster's stored system — the
+        system filter on the dashboard groups by this value."""
+        _save_incident("tst-sys-e1", "umrah permit fails", service="Nusuk Masar Umrah.X",
+                       system="Nusuk Masar Umrah")
+        _save_incident("tst-sys-e2", "umrah permit error", service="Nusuk Masar Umrah.X",
+                       system="Nusuk Masar Umrah")
+        _seed_cluster("cl_tst_sysrep", "فشل إصدار تصريح العمرة", "Umrah permit issuance fails",
+                      ["tst-sys-e1", "tst-sys-e2"], affected_system="Nusuk Masar Umrah")
+
+        rep = pc.build_clusters("daily")
+        clusters = {c["cluster_id"]: c for c in rep["clusters"]}
+        assert "cl_tst_sysrep" in clusters
+        assert clusters["cl_tst_sysrep"]["affected_system"] == "Nusuk Masar Umrah"
+
+    def test_cluster_id_includes_system(self):
+        """Hajj and Umrah often have identical problems/names — the id must
+        not collide across systems."""
+        a = pc._cluster_id("Nusuk Masar Haj", "مجموعة", ["x", "y"])
+        b = pc._cluster_id("Nusuk Masar Umrah", "مجموعة", ["x", "y"])
+        assert a != b
+
+    def test_unknown_system_incidents_cluster_together(self):
+        """Incidents with no classified system form their own 'Unknown'
+        bucket — they never join a known-system cluster either."""
+        _save_incident("tst-sys-f1", "no system ticket 1", system="")
+        _save_incident("tst-sys-f2", "no system ticket 2", system="")
+        _seed_cluster("cl_tst_unk1", "مجموعة", "d", ["tst-sys-f1"],
+                      affected_system="Unknown")
+
+        # unknown incident CAN join the unknown cluster
+        assert store.add_cluster_member("cl_tst_unk1", "tst-sys-f2") is True
+        # ...but a known-system incident CANNOT (even though the cluster is
+        # unscoped, the invariant treats '' as 'Unknown')
+        _save_incident("tst-sys-f3", "hajj ticket", service="Nusuk Masar Haj.X")
+        assert store.add_cluster_member("cl_tst_unk1", "tst-sys-f3") is False
+        assert "tst-sys-f3" not in store.cluster_member_ids("cl_tst_unk1")
