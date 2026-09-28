@@ -35,7 +35,14 @@ from ai_classification.services.classify.prompts import (
 # (2026-08-22, post C-2 split — byte-identical to the pre-split classifier).
 # 2026-08-31: v3.2 — 'Other' is a last-resort affected_system (never for
 # Nusuk-screen problems); recomputed after the prompt change.
-FROZEN_PROMPT_SHA = "508e8ea0cd851bec69a78ee15b228ebbb8d9b210400e621a4686a8c838c503f2"
+# 2026-09-23: v3.3 — (a) Haj vs Umrah system rule (Umrah only with Umrah
+# evidence — the two teams must never be split by a guess), (b) triage
+# counter-examples for tickets that LOOK administrative/service_request but
+# report broken behaviour (unapplied closure, missing reply field, stuck
+# approval), (c) unmarked Nusuk tickets default to Nusuk Masar Haj (the
+# operator/group platform), (d) few-shot/triage examples for Rawdah group
+# permits and question-shaped defect reports; recomputed after the prompt change.
+FROZEN_PROMPT_SHA = "6576c27ab3be9e6dc9a3fefc7b39fbe009d424a95e54d0c7e36a62bd5c4594ea"
 
 
 def _frozen_payload() -> str:

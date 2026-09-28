@@ -5,6 +5,10 @@ CASCADE_CLASSIFICATION off (see the autouse fixture below). The cascade path
 has its own suite in test_cascade.py. With the flag off, classify() must be
 byte-identical to the pre-cascade behavior — this file is the regression
 guard for that contract.
+
+ONE deliberate exception: confidence honesty (_enforce_confidence_honesty) is
+not cascade-specific and runs on this path too, so a 'high' confidence on a
+"General / Unspecified" guess is downgraded to 'low' here as well.
 """
 
 import json
@@ -119,7 +123,9 @@ class TestClassifyHappyPath:
         assert result.severity == "Major"
         assert result.urgency == "High"
         assert result.category == "Software"
-        assert result.confidence == "high"
+        # Confidence honesty applies to the single-shot path too: the LLM asked
+        # for 'high' on a guess ("General / Unspecified") and is downgraded.
+        assert result.confidence == "low"
         assert result.reasoning == "CRM portal slow under load"
 
     def test_valid_minimal_no_reasoning(self, _patch_completion):

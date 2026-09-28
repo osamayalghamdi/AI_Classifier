@@ -183,9 +183,17 @@ def call_llm(
             )
             time.sleep(delay)
 
-    content = resp.choices[0].message.content
-    if not content or not content.strip():
-        raise ValueError("LLM returned empty response")
+    choices = getattr(resp, "choices", None) or []
+    message = getattr(choices[0], "message", None) if choices else None
+    content = getattr(message, "content", None)
+    # Providers do return an empty choices list (content filtered / quota
+    # shim) or a message without content; that used to surface as a raw
+    # IndexError/AttributeError. The documented contract is ValueError, and
+    # the cascade turns it into the stage failure.
+    if not isinstance(content, str) or not content.strip():
+        raise ValueError(
+            f"LLM returned empty response (model={entry.model_id}, choices={len(choices)})"
+        )
     return content
 
 

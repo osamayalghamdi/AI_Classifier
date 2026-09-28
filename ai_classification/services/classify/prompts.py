@@ -24,6 +24,22 @@ from ai_classification.domain.taxonomy import (
 
 FEW_SHOT_EXAMPLES = [
     {
+        "title": "RAWDAH APPOINTMENT ERROR",
+        "description": "the NUSUK Rawdha Permit showing the Error on taking Appointment for Rawdha Sharif in Madinah, as our group is there only for 2 days from 31st May onwards.",
+        "output": {
+            "affected_system": "Nusuk Masar Haj",
+            "service": "pilgrim groups and issue permit - Nusuk Masar Haj.Issue Permits",
+            "incident_type": "Unavailability",
+            "severity": "Major",
+            "urgency": "High",
+            "category": "Software",
+            "confidence": "medium",
+            "reasoning": "A Rawdah permit/appointment failure for a GROUP (our group, limited days in Madinah) is a Nusuk Masar Haj operator problem — the group-permit surface. The Umrah platform is for individual pilgrim bookings (باقة زيارة / حجز موعد). No Umrah marker in the ticket, so Haj is the evidenced system.",
+            "canonical_statement": "Rawdah permit appointment fails with an error for a pilgrim group staying 2 days in Madinah from 31 May.",
+            "signature": "Rawdah permit appointment error for pilgrim group",
+        },
+    },
+    {
         "title": "Login SMS code not arriving — user waiting 20+ min",
         "description": "SMS OTP not delivered after 5 resend attempts. Cannot complete 2FA login via Nusuk Application.",
         "output": {
@@ -167,6 +183,8 @@ def _build_system_prompt() -> str:
 - incident_type = WHAT HAPPENED (symptom). category = WHY IT HAPPENED (root cause type). Never mix them.
 - service must be a single string from the chosen system's service list.
 - affected_system "Other" is the LAST RESORT. Nusuk Masar Haj / Nusuk Masar Umrah cover the Haj & Umrah platforms, CRM covers CRM, OldSM covers the legacy system — choose "Other" only when the ticket is genuinely outside all of them (infrastructure, third-party, unrelated). A Nusuk-screen problem is never "Other" just because the exact service is unclear — pick the closest service instead and set confidence "low".
+- "Nusuk Masar Haj" and "Nusuk Masar Umrah" are DIFFERENT teams, so pick the one the ticket EVIDENCES. Choose "Nusuk Masar Umrah" only when the ticket names an Umrah surface (عمرة / معتمر / Umrah companies / an Umrah-only service from the list). Shared screens exist in both (Rawdah زيارة الروضة booking, company evaluation, permits, contracts): a ticket that says حج / حاج / حجاج (Hajj, pilgrims of Hajj), names the Masar platform without an Umrah marker, or carries Hajj-season/contract context belongs to "Nusuk Masar Haj". Never split two tickets about the same failing screen across Haj and Umrah.
+- When a Nusuk-platform ticket carries NO Hajj/Umrah marker at all, pick "Nusuk Masar Haj": the Hajj platform is the operator/group one (permits, groups, contracts, manifests) and the overwhelming majority of unmarked Nusuk tickets are Hajj. In particular a Rawdah visit PERMIT or appointment for a GROUP (مجموعة / بعثة / شركة / وكلاء / "our group") is a Nusuk Masar Haj problem; individual pilgrim visit bookings (حجز موعد / باقة زيارة) are the Umrah surface.
 - If unsure, pick the closest match and set confidence "low".
 - Respond with JSON only — no markdown, no commentary.
 
@@ -256,6 +274,30 @@ TRIAGE_EXAMPLES = [
         "title": "ERROR (10036015) IN ISSUING RAWDAH PERMITS",
         "description": "PLEASE FIND ENCLOSED SCREENSHOT OF ERROR WHILE SAVING PILGRIMS IN RAWDAH PERMIT. IT IS SHOWING ERROR NUMBER 10036015.",
         "reason": "An error blocks permit issuance — something is broken.",
+    },
+    {
+        "kind": "incident",
+        "title": "لم يتم اغلاق البلاغ الخارجي رقم 2026-2079993",
+        "description": "مقدم الطلب اغلق الشكوى من طرفه، وحتى الان لم يتم اغلاق البلاغ الخارجي رقم 2026-2079993 نأمل الدعم واغلاق البلاغ الخارجي.",
+        "reason": "Looks like housekeeping ('please close it') but it reports a platform behaviour failure — the closure the applicant performed was not applied — so it is broken behaviour, not administration.",
+    },
+    {
+        "kind": "incident",
+        "title": "حلل تقني",
+        "description": "(2073221) لا يوجد خانة رد للبلاغ وجاري العمل على الحالة",
+        "reason": "A missing reply field on the report screen is a broken/missing function of the product, not administration.",
+    },
+    {
+        "kind": "incident",
+        "title": "اعتماد طلبات التنقل معلقة",
+        "description": "ارجو انهاء اعتماد طلبات تنقل معلقة رقم 135217 و رقم 135218 — الطلبات مقدمة منذ يومين ولم تصدر.",
+        "reason": "Asks for action, but the submitted approval is stuck: the workflow is failing, so it is an incident rather than a service_request.",
+    },
+    {
+        "kind": "incident",
+        "title": "مطلوب رقم سجل تجاري يبدا برقم 4",
+        "description": "بعد التواصل مع الموظف المختص وتم سؤاله عن المقصود برقم السجل التجاري يبدا برقم 4 حيث عادة السجل التجاري يبدا برقم 2 او رقم 700 وطلب ارسال صورة من السجل والمشكلة مستمرة.",
+        "reason": "Reads like a question, but it reports that the platform rejects a VALID commercial-registration number (a validation defect) and the user is still blocked — the rule 'anything broken = incident' applies.",
     },
 ]
 

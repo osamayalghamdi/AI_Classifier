@@ -270,6 +270,43 @@ class TestCascadeFallback:
         result = classifier_mod.classify("anything", "at all")  # must not raise
         assert isinstance(result, ClassificationResult)
 
+    def test_catch_all_fallback_keeps_the_resolved_system(self, monkeypatch):
+        """A crash AFTER stage 1 resolved the system must not store 'Other'.
+
+        The catch-all except used to call the fallback without the resolved
+        system, so a Nusuk Masar Haj ticket whose service stage blew up was
+        persisted as Other / "General / Unspecified" — a wrong classification
+        instead of the honest failure.
+        """
+        import ai_classification.services.classify.cascade as cascade_mod
+
+        def boom(*a, **k):
+            raise RuntimeError("service stage blew up")
+
+        monkeypatch.setattr(cascade_mod, "_stage_service_llm", boom)
+        result = cascade_mod._run_cascade(
+            "Nusuk Masar Haj regression", "nusuk masar haj broken"
+        )
+        assert result.classification_status == "failed"
+        assert result.affected_system == AffectedSystem.nusuk_masar_haj   # NOT Other
+        assert result.service == "System/Application - Nusuk Masar Haj"  # generic service
+        assert result.confidence == "low"
+        assert "Classification failed after 2 attempts" in (result.reasoning or "")
+
+    def test_catch_all_fallback_keeps_a_pinned_system(self, monkeypatch):
+        import ai_classification.services.classify.cascade as cascade_mod
+
+        monkeypatch.setattr(
+            cascade_mod, "_stage_service_llm",
+            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("stage blew up")),
+        )
+        result = cascade_mod._run_cascade(
+            "random ticket", "no system hints", pinned_system=AffectedSystem.crm
+        )
+        assert result.classification_status == "failed"
+        assert result.affected_system == AffectedSystem.crm          # pin survives
+        assert result.service == "System/Application - CRM"
+
     def test_cascade_retry_rescues_flaky_stage2(self, monkeypatch):
         """CLASSIFY_CASCADE_RETRIES: the FIRST stage-2 (service) call returns
         garbage (transient bad response); the cascade retries and succeeds —
@@ -452,4 +489,31 @@ class TestFlagOff:
         ))
         result = classifier_mod.classify("test", "test")
         assert len(calls) == 2
-        assert result.confidence == "high"
+        # Retry still succeeds; the confidence is 'low' because confidence
+        # honesty runs on this path too (General / Unspecified is a guess).
+        assert result.confidence == "low"
+
+    def test_flag_off_applies_confidence_honesty(self, monkeypatch, fake_completion):
+        """CASCADE_CLASSIFICATION=false must not re-enable 'high' on a guess.
+
+        The rule is not cascade-specific (it applies to routed kinds too) —
+        a 'General / Unspecified' pick is a guess, so confidence is 'low'.
+        """
+        monkeypatch.setattr(classifier_mod, "settings", _settings_with(False))
+        outputs, calls = fake_completion
+        outputs.append(_full_result_json(
+            affected_system="Other", service="General / Unspecified", confidence="high"
+        ))
+        result = classifier_mod.classify("test", "test")
+        assert len(calls) == 1
+        assert result.service == "General / Unspecified"
+        assert result.confidence == "low"
+
+    def test_flag_off_keeps_confidence_on_a_real_service(self, monkeypatch, fake_completion):
+        monkeypatch.setattr(classifier_mod, "settings", _settings_with(False))
+        outputs, calls = fake_completion
+        outputs.append(_full_result_json(
+            affected_system="OldSM", service="OldSM", confidence="high"
+        ))
+        result = classifier_mod.classify("OldSM email down", "cannot send email")
+        assert result.confidence == "high"  # a real taxonomy service keeps its confidence

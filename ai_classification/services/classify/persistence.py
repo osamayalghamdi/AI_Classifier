@@ -25,6 +25,19 @@ _log = logging.getLogger(__name__)
 # merge; failures are logged, never raised.
 
 
+def _provenance_model(settings) -> str:
+    """Model id recorded as provenance for a classification.
+
+    The call is served by the ACTIVE classifier model
+    (settings.active_classifier_model.model_id — see call_llm), so that is
+    what belongs in the record; settings.llm_model is only the legacy id and
+    can name a different (even disabled) model. Falls back to it when no
+    classifier model is resolvable.
+    """
+    entry = getattr(settings, "active_classifier_model", None)
+    return getattr(entry, "model_id", None) or settings.llm_model
+
+
 def _log_classification(
     incident_ref: str | None,
     stage: str,
@@ -42,7 +55,7 @@ def _log_classification(
         if fn is None:
             _log.debug("store.log_classification not available — skipping log (stage=%s)", stage)
             return
-        fn(incident_ref, stage, PROMPT_VERSION, settings.llm_model, raw, extra=extra)
+        fn(incident_ref, stage, PROMPT_VERSION, _provenance_model(settings), raw, extra=extra)
     except Exception as e:
         _log.warning("log_classification failed (stage=%s): %s", stage, e)
 
@@ -192,8 +205,10 @@ def classify_and_store(
     # ── Provenance (report fix 2026-08-19): every stored classification
     # carries which model + prompt version produced it. The seams pipeline
     # sets these; the direct API path must too, or drift can't be debugged.
+    # The model is the ACTIVE classifier model — settings.llm_model is only
+    # the legacy id and may name a different (even disabled) model.
     if not result.model_version:
-        result.model_version = settings.llm_model
+        result.model_version = _provenance_model(settings)
     if not result.prompt_version:
         result.prompt_version = PROMPT_VERSION
 

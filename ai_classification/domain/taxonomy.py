@@ -373,9 +373,16 @@ _active_systems: set[str] | None = None
 
 
 def set_runtime_overrides(overrides: dict[str, dict[str, list[str]]]) -> None:
-    """Replace the runtime override registry (from the DB, admin edits)."""
-    _runtime_overrides.clear()
-    _runtime_overrides.update(overrides)
+    """Replace the runtime override registry (from the DB, admin edits).
+
+    Rebinds the module global in ONE assignment (same as set_active_systems)
+    instead of clear()+update(): readers iterate the registry while a reload
+    is in flight (request threads build prompts / validate services), and
+    mutating the live dict raised "dictionary changed size during iteration" —
+    which failed the ticket being classified.
+    """
+    global _runtime_overrides
+    _runtime_overrides = dict(overrides)
 
 
 def set_active_systems(systems: set[str] | None) -> None:

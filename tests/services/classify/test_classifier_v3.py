@@ -327,6 +327,30 @@ class TestVerification:
         assert result.classification_status == "ok"  # never fails the ticket
         assert any(e["stage"] == "verification" for e in fake_store.logged)
 
+    @pytest.mark.parametrize("shape", [["service", "severity"], "service=CRM", True, 17])
+    def test_non_dict_corrections_keep_the_result(self, fake_completion, fake_store, caplog,
+                                                  shape):
+        """A list/string/bool 'corrections' must not fail the ticket.
+
+        It used to reach .items() INSIDE the correction loop — outside any
+        try — and raised AttributeError, violating the module contract
+        "Verifier failure never fails the ticket".
+        """
+        outputs, calls = fake_completion
+        outputs.append(_triage_json())
+        outputs.append(_full_result_json(service=SVC))
+        outputs.append(_full_result_json(service=OFFERING))
+        outputs.append(_verify_json("correct", corrections=shape))
+        with caplog.at_level("WARNING"):
+            result = classifier_mod.classify("Nusuk Masar Haj x", "broken on nusuk masar haj",
+                                             incident_ref="ref-shape")
+        assert result.service == OFFERING                       # unverified result kept
+        assert result.classification_status == "ok"             # ticket not failed
+        assert result.incident_type is not None
+        assert result.incident_type.value == "Degradation"
+        assert "not an object" in caplog.text                   # warning logged
+        assert any(e["stage"] == "verification" for e in fake_store.logged)
+
 
 # ── Payload-supplied affected system (ticketing system sends it) ────────
 

@@ -29,7 +29,7 @@ _log = logging.getLogger(__name__)
 
 # Identity of _SYSTEM_PROMPT — recorded on persisted classifications by the
 # seams pipeline (provenance). Bump when the prompt content changes.
-PROMPT_VERSION = "2026-08-v3.2"  # v3.2: 'Other' is a last-resort system — never for Nusuk-screen problems
+PROMPT_VERSION = "2026-09-v3.5"  # v3.5: Rawdah/group->Haj + question-shaped defect->incident examples; lenient service snap
 
 
 # ── Public API ────────────────────────────────────────────────────────
@@ -48,11 +48,13 @@ def classify(title: str, description: str, *, incident_ref: str | None = None,
     _log.info("Classifying — title='%s'", title[:60])
     ref = incident_ref or f"anon-{content_hash(title, description)[:8]}"
 
-    # CASCADE_CLASSIFICATION gate (default TRUE).
+    # CASCADE_CLASSIFICATION gate (default TRUE). The payload pin is honoured
+    # on BOTH paths — the flag must not change which system a ticket lands in.
     if settings.cascade_classification:
         return _classify_v3(title, description, incident_ref=ref, affected_system=affected_system)
 
-    return _classify_single_shot(title, description, incident_ref=ref)
+    return _classify_single_shot(title, description, incident_ref=ref,
+                                 affected_system=_resolve_pinned_system(affected_system))
 
 
 # ── Facade wiring ─────────────────────────────────────────────────────
@@ -77,6 +79,9 @@ from ai_classification.services.classify.prompts import (  # noqa: E402,F401
     _build_user_prompt,
 )
 from ai_classification.services.classify.parsing import (  # noqa: E402,F401
+    _parse_stage_service,
+    generic_service,
+    snap_service,
     _normalize_canonical,
     _parse_and_validate,
     _parse_stage_offering,

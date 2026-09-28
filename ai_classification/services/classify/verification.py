@@ -144,6 +144,17 @@ def _verify_classification(
     _log_classification(incident_ref, "verification", raw,
                         extra={"verdict": verdict, "reason": reason})
     _log.info("Verification verdict=%s corrections=%s reason=%s", verdict, corrections, reason)
+    # Shape guard: 'corrections' is iterated with .items() downstream — a
+    # list/string/bool there raised AttributeError OUTSIDE any try and failed
+    # the whole ticket, which the module contract forbids ("Verifier failure
+    # never fails the ticket"). 'verdict'/'reason' are only ever logged, so a
+    # non-string there is harmless.
+    if corrections and not isinstance(corrections, dict):
+        _log.warning(
+            "Verification: 'corrections' was %s, not an object — keeping the unverified result",
+            type(corrections).__name__,
+        )
+        return result
     if corrections:
         result = _apply_verification_corrections(
             title, description, result, corrections, incident_ref=incident_ref

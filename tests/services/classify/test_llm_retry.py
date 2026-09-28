@@ -201,6 +201,37 @@ def test_timeout_kwarg_passed_to_completion(fake_completion):
     assert calls[0]["timeout"] == 60
 
 
+# ── provider response shape: ValueError, never IndexError/AttributeError ──
+
+def test_empty_choices_raises_value_error(monkeypatch):
+    """A reply with no choices used to raise IndexError out of call_llm."""
+    import ai_classification.services.classify.llm as llm_mod
+
+    monkeypatch.setattr(llm_mod, "settings", _settings_with())
+    monkeypatch.setattr(llm_mod, "completion",
+                        lambda **kw: types.SimpleNamespace(choices=[]))
+    with pytest.raises(ValueError) as ei:
+        llm_mod.call_llm([{"role": "user", "content": "hi"}], max_tokens=10)
+    assert "empty response" in str(ei.value)
+    assert "choices=0" in str(ei.value)          # provider context in the error
+
+
+@pytest.mark.parametrize("message", [None, types.SimpleNamespace(content=None),
+                                     types.SimpleNamespace(content="   ")])
+def test_missing_or_blank_content_raises_value_error(monkeypatch, message):
+    """No content / non-string content used to raise AttributeError."""
+    import ai_classification.services.classify.llm as llm_mod
+
+    monkeypatch.setattr(llm_mod, "settings", _settings_with())
+    monkeypatch.setattr(
+        llm_mod, "completion",
+        lambda **kw: types.SimpleNamespace(choices=[types.SimpleNamespace(message=message)]),
+    )
+    with pytest.raises(ValueError) as ei:
+        llm_mod.call_llm([{"role": "user", "content": "hi"}], max_tokens=10)
+    assert "empty response" in str(ei.value)
+
+
 # ── Model registry enable/disable ─────────────────────────────────────
 
 def test_call_llm_uses_active_classifier_model(monkeypatch):

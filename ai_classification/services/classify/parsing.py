@@ -46,8 +46,155 @@ def _parse_triage(raw: str) -> TicketKind | None:
 # Parse JSON and validate against ClassificationResult schema
 
 
+def _loads_lenient(raw: str) -> object:
+    """json.loads with recovery for prose-wrapped replies.
+
+    Providers ignore "respond with JSON only" often enough to matter: the
+    reply arrives as "Sure, here it is:\\n```json\\n{...}\\n```".
+    strip_json_fences only strips a LEADING fence, so json.loads died on the
+    leading sentence and the stage was thrown away. On failure, scan for the
+    first BALANCED JSON object with raw_decode starting at each '{'.
+
+    Valid input keeps the exact old behaviour (straight json.loads); when no
+    balanced object exists the ORIGINAL JSONDecodeError is re-raised — the
+    stage-1 truncation recovery keys off json.JSONDecodeError.
+    """
+    text = strip_json_fences(raw)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as exc:
+        decoder = json.JSONDecoder()
+        for i, ch in enumerate(text):
+            if ch != "{":
+                continue
+            try:
+                return decoder.raw_decode(text, i)[0]
+            except json.JSONDecodeError:
+                continue
+        raise exc
+
+
 def _parse_and_validate(raw: str) -> ClassificationResult:
-    return ClassificationResult.model_validate(json.loads(strip_json_fences(raw)))
+    return ClassificationResult.model_validate(_loads_lenient(raw))
+
+
+# ── Service-name snapping (the near-miss repair) ───────────────────────
+# The stage-2/3 option lists are exact strings, and the model regularly
+# writes a near-miss of the system suffix instead of copying the option:
+# prod's classification_log carries "licensing - Nusuk Hajj",
+# "contracts - Nusuk Hajj Services" and even the concatenation
+# "licensing - Nusuk Hajj services - Nusuk Masar Haj" where the taxonomy has
+# "licensing - Nusuk Masar Haj". The strict validator rejected those, the
+# stage retried, and on a second miss the WHOLE classification was thrown
+# away — the ticket was stored as Other / "General / Unspecified" with
+# classification_status="failed". 41 of 1505 logged stage-2/3 responses
+# (2.7%) were near-misses of this kind, every one of them a lost ticket.
+#
+# Snapping compares the SERVICE CORE: the system-name part is removed from
+# both sides, then case/punctuation/whitespace are normalized. Only an
+# unambiguous match is accepted (a core shared by two services is skipped),
+# so a wrong pick is impossible — the worst case stays "no snap".
+
+_SYSTEM_NAME_RE = re.compile(
+    r"nusuk\s+(?:masar\s+)?(?:hajj?|umrah)(?:\s+services)?",
+    re.IGNORECASE,
+)
+
+
+def _service_core(text: str) -> str:
+    """Service name minus the system suffix, normalized for comparison."""
+    core = _SYSTEM_NAME_RE.sub(" ", text or "")
+    core = core.lower()
+    core = re.sub(r"[^a-z0-9\u0600-\u06FF]+", " ", core)
+    return re.sub(r"\s+", " ", core).strip()
+
+
+def _service_core_index(system_value: str) -> dict[str, str]:
+    """{core: service key} for one system — ambiguous cores are dropped."""
+    services = SERVICES_BY_SYSTEM.get(system_value, {})
+    index: dict[str, str] = {}
+    ambiguous: set[str] = set()
+    for key in services:
+        core = _service_core(key)
+        if not core:
+            continue
+        if core in index and index[core] != key:
+            ambiguous.add(core)
+        index[core] = key
+    for core in ambiguous:
+        index.pop(core, None)
+    return index
+
+
+def snap_service(system_value: str, service: str) -> str | None:
+    """Map a model-written service string onto a taxonomy service key.
+
+    Returns the canonical key, or None when nothing matches unambiguously
+    (the caller then keeps the system and uses its generic service rather
+    than discarding the classification). Accepts dot-paths and the
+    OFFERING-GAP sentinel by looking at the key part only.
+    """
+    if not service or not isinstance(service, str):
+        return None
+    services = SERVICES_BY_SYSTEM.get(system_value, {})
+    if not services:
+        return None
+    raw = service.strip()
+    if raw in services:
+        return raw
+    key_part = raw.split(".")[0] if "." in raw else raw
+    if key_part in services:
+        return key_part
+    # A dot-path of a real key ("<key>.<offering>") — keep the key.
+    for k in services:
+        if raw.startswith(k + "."):
+            return k
+    candidates = {raw, key_part}
+    index = _service_core_index(system_value)
+    for cand in candidates:
+        hit = index.get(_service_core(cand))
+        if hit:
+            return hit
+    return None
+
+
+def generic_service(system_value: str) -> str:
+    """The system's catch-all service — used when only the system is known."""
+    services = SERVICES_BY_SYSTEM.get(system_value, {})
+    for key in services:
+        if key.lower().startswith("system/application"):
+            return key
+    return next(iter(services), "General / Unspecified")
+
+
+def _parse_stage_service(raw: str, system_value: str) -> ClassificationResult | None:
+    """Lenient stage-2 parse — the system is already resolved, so never lose it.
+
+    Strict validation first (the happy path is unchanged); on an off-taxonomy
+    service the value is snapped to the closest real option; if it cannot be
+    snapped, the system is KEPT and the ticket is stored on the system's
+    generic service instead of collapsing to Other / "General / Unspecified".
+    Returns None only when the response is not usable JSON at all (the caller
+    then takes the old failure path).
+    """
+    try:
+        data = json.loads(strip_json_fences(raw))
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    # Stage 2 may only choose a service WITHIN the resolved system.
+    data["affected_system"] = system_value
+    service = str(data.get("service") or "")
+    snapped = snap_service(system_value, service)
+    if snapped is None:
+        snapped = generic_service(system_value)
+        data["confidence"] = "low"
+    data["service"] = snapped
+    try:
+        return ClassificationResult.model_validate(data)
+    except Exception:
+        return None
 
 
 def _parse_stage_system(raw: str) -> ClassificationResult | None:
@@ -157,39 +304,39 @@ def _stage_system_from_partial(raw: str) -> ClassificationResult | None:
 
 
 # ── Canonical statement post-processing ──────────────────────────────────
-# Strip noise that varies between runs but has no grouping value.
+# Strip ONLY the label prefix the model sometimes prepends. Everything the
+# model wrote about the incident is kept verbatim.
+
+
+# "Nusuk Masar Haj/contracts: …" / "Nusuk Masar Haj.Issue Permits: …" — a
+# SYSTEM[/SERVICE]-style label, not prose. Anchored to the known system names
+# so a colon inside real text is never mistaken for a label.
+_LABEL_PREFIX_RE = re.compile(
+    r"^\s*(?:Nusuk Masar Haj|Nusuk Masar Umrah|CRM|OldSM|Other)"
+    r"\s*(?:[/.|\-–]\s*[^:]{0,60})?:\s+",
+    re.IGNORECASE,
+)
 
 
 def _normalize_canonical(cs: str) -> str:
-    """Clean a canonical statement for consistent embedding.
+    """Clean a canonical statement WITHOUT destroying what it says.
 
-    The LLM may vary wording and include ticket IDs, company names, and
-    dates. This strips those so the same problem always produces the
-    same embedding regardless of LLM phrasing.
+    HISTORY (fixed 2026-09): this function used to split on the first colon
+    ("Bus departs at 14:00…" -> "00…"), delete every 6+ digit run ("Error
+    number 10036015" -> "Error )"), delete date-like tokens ("4/6/2026" ->
+    "/2026") and delete the words 'number'/'entry'/'percent'. The rationale
+    was embedding stability, but the canonical is NOT embedded anywhere (the
+    embedding is title+description) and it IS shown to operators and fed to
+    the clustering prompts — so the mangling only cost information: prod had
+    'Inter-city transport requests (IDs , ) are stuck in a pending approval
+    state.' and 'Recurring technical error (Error ) occurs…'.
 
-    Numbers are PRESERVED: counts, amounts, and percentages are often the
-    distinguishing signal between incidents (\"600 pilgrims affected\" vs
-    \"13 pilgrims affected\"). Only ticket/permit ID-like tokens (6+ digit
-    runs) and date-like patterns are stripped.
+    Ids, error codes, dates and counts are now preserved: they are often the
+    only thing distinguishing two incidents of the same kind. Only a leading
+    "System[/service]:" label is removed, plus whitespace normalization.
     """
     if not cs:
         return cs
-    # Remove label prefix: "Nusuk Masar Haj/contracts: " → ""
-    if ":" in cs:
-        cs = cs.split(":", 1)[1].strip()
-
-    # Remove long ID-like tokens (ticket/permit/phone numbers, 6+ digits).
-    # Short numbers (counts, amounts, percentages) are kept — they are
-    # grouping-relevant context, not noise.
-    cs = re.sub(r"\b\d{6,}\b", "", cs)
-    cs = re.sub(r"\b\d{1,2}[-/]\d{1,2}\b", "", cs)  # date-like patterns
-
-    # Remove stopwords that vary between runs — zero grouping value
-    stopwords = r"\b(specific|particular|certain|respective|relevant|number|entry|percent|percentage|usage|above|exceeding)\b"
-    cs = re.sub(stopwords, "", cs, flags=re.IGNORECASE)
-
-    # Remove leading/trailing noise
-    cs = cs.strip().strip("-").strip(":").strip()
-    # Collapse multiple spaces
-    cs = re.sub(r"\s+", " ", cs)
+    cs = _LABEL_PREFIX_RE.sub("", cs)
+    cs = re.sub(r"\s+", " ", cs).strip()
     return cs

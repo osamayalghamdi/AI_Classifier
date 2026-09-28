@@ -4,6 +4,7 @@ failure degrades to the generic fallback.
 """
 
 import logging
+import re
 
 from ai_classification.domain.models import ClassificationResult, OFFERING_GAP_SENTINEL
 from ai_classification.domain.taxonomy import (
@@ -13,12 +14,16 @@ from ai_classification.domain.taxonomy import (
     effective_services_by_system,
 )
 from ai_classification.services.classify.llm import call_llm
+from ai_classification.domain.taxonomy import SERVICES_BY_SYSTEM
 from ai_classification.services.classify.parsing import (
     _normalize_canonical,
     _parse_and_validate,
     _parse_stage_offering,
+    _parse_stage_service,
     _parse_stage_system,
     _parse_triage,
+    generic_service,
+    snap_service,
 )
 from ai_classification.services.classify.persistence import (
     _log_classification,
@@ -68,7 +73,33 @@ def _triage(title: str, description: str, *, incident_ref: str | None = None) ->
     return TicketKind.incident
 
 
-def _classify_single_shot(title: str, description: str, *, incident_ref: str | None = None) -> ClassificationResult:
+def _service_for_pinned_system(service: str, system: AffectedSystem) -> str:
+    """Keep a pinned system's classification internally consistent.
+
+    A service that ALREADY belongs to the pinned system is returned untouched —
+    including its offering and the OFFERING-GAP sentinel; anything else (the
+    model answered from another system, or the result carried a value the
+    validator auto-corrected) is snapped onto the pinned system's list, or
+    replaced by its generic service. The row must never read
+    "CRM + a Nusuk Masar Haj service".
+    """
+    svc = (service or "").strip()
+    allowed = SERVICES_BY_SYSTEM.get(system.value, {})
+    if not svc:
+        return generic_service(system.value)
+    if svc.endswith(OFFERING_GAP_SENTINEL):
+        key = svc[: -len(OFFERING_GAP_SENTINEL)]
+        return svc if key in allowed else generic_service(system.value)
+    for key, offerings in allowed.items():
+        if svc == key:
+            return svc
+        if svc.startswith(key + ".") and svc[len(key) + 1:] in offerings:
+            return svc
+    return snap_service(system.value, svc) or generic_service(system.value)
+
+
+def _classify_single_shot(title: str, description: str, *, incident_ref: str | None = None,
+                          affected_system: AffectedSystem | None = None) -> ClassificationResult:
     """Legacy single-shot path (CASCADE_CLASSIFICATION=false).
 
     Byte-identical to the pre-cascade contract except: the canonical_statement
@@ -76,6 +107,10 @@ def _classify_single_shot(title: str, description: str, *, incident_ref: str | N
     fallback marks classification_status="failed" with incident fields null
     (the "Classification failed after 2 attempts" marker is unchanged — E5,
     heal, and recovery depend on it).
+
+    ``affected_system`` (supplied by the ticketing system) is PINNED here too —
+    the flag must not silently disable the pin, or the same payload would route
+    differently depending on the cascade setting.
     """
     user_prompt = _build_user_prompt(title, description)
 
@@ -86,7 +121,15 @@ def _classify_single_shot(title: str, description: str, *, incident_ref: str | N
         ], max_tokens=600, temperature=0.0)
         _log_classification(incident_ref, "stage1", raw, extra={"path": "single-shot", "attempt": 1})
         result = _parse_and_validate(raw)
+        if affected_system is not None:
+            result.affected_system = affected_system
+            result.service = _service_for_pinned_system(result.service, affected_system)
         result.canonical_statement = _normalize_canonical(result.canonical_statement)
+        # Confidence honesty is NOT cascade-specific (see _classify_routed):
+        # turning the cascade off must not re-enable the misleading
+        # 'high' confidence on "General / Unspecified" that the rule exists
+        # to kill.
+        _enforce_confidence_honesty(result)
         _log.info("Classification succeeded — system=%s, severity=%s, confidence=%s",
                   result.affected_system, result.severity, result.confidence)
         return result
@@ -101,7 +144,11 @@ def _classify_single_shot(title: str, description: str, *, incident_ref: str | N
         ], max_tokens=600, temperature=0.0)
         _log_classification(incident_ref, "stage1", raw, extra={"path": "single-shot", "attempt": 2})
         result = _parse_and_validate(raw)
+        if affected_system is not None:
+            result.affected_system = affected_system
+            result.service = _service_for_pinned_system(result.service, affected_system)
         result.canonical_statement = _normalize_canonical(result.canonical_statement)
+        _enforce_confidence_honesty(result)
         _log.info("Classification succeeded on retry — system=%s, severity=%s",
                   result.affected_system, result.severity)
         return result
@@ -111,8 +158,9 @@ def _classify_single_shot(title: str, description: str, *, incident_ref: str | N
 
     _log.warning("Using fallback low-confidence classification for '%s'", title[:60])
     return ClassificationResult(
-        affected_system=AffectedSystem.other,
-        service="General / Unspecified",
+        affected_system=affected_system or AffectedSystem.other,
+        service=generic_service(affected_system.value) if affected_system is not None
+        else "General / Unspecified",
         incident_type=None,
         severity=None,
         urgency=None,
@@ -140,6 +188,14 @@ _SYSTEM_ALIASES = {
     AffectedSystem.crm: ("crm",),
 }
 
+# Rawdah (الروضة) visit family — see _resolve_system_deterministic.
+_RAWDAH_RE = re.compile(r"rawdha|rawda|rawad|روضه|روضة", re.IGNORECASE)
+_RAWDAH_GROUP_RE = re.compile(
+    r"permit|appointment|تصريح|تصاريح|موعد|مجموعه|مجموعة|بعثه|بعثة|\bgroup\b|\bgroups\b|حجاج",
+    re.IGNORECASE,
+)
+_UMRAH_MARKER_RE = re.compile(r"umrah|عمره|عمرة|معتمر", re.IGNORECASE)
+
 
 # ── Cascade classifier (CASCADE_CLASSIFICATION=true) ──────────────────
 # Coarse-to-fine system → service → offering. Each stage's LLM call returns
@@ -150,16 +206,24 @@ _SYSTEM_ALIASES = {
 # rebuilt in this path.
 
 
-def _cascade_fallback(title: str, err: str, kind: TicketKind = TicketKind.incident) -> ClassificationResult:
+def _cascade_fallback(title: str, err: str, kind: TicketKind = TicketKind.incident,
+                      system: AffectedSystem | None = None) -> ClassificationResult:
     """Generic low-confidence fallback — same shape as the legacy fallback.
 
     Honest failure (v3): incident fields are null and classification_status is
     "failed"; the reasoning marker "Classification failed after 2 attempts" is
     kept exactly (E5 — integration worker, heal, and recovery depend on it).
+
+    ``system`` (v3.3): when a LATER stage failed after the system was already
+    resolved (or was pinned from the payload), that system is kept and the
+    ticket lands on the system's generic service. Throwing a known-good system
+    away and calling the ticket "Other" is a wrong classification, not an
+    honest failure — the system is evidence the pipeline already had.
     """
+    resolved = system or AffectedSystem.other
     return ClassificationResult(
-        affected_system=AffectedSystem.other,
-        service="General / Unspecified",
+        affected_system=resolved,
+        service=generic_service(resolved.value) if system is not None else "General / Unspecified",
         incident_type=None,
         severity=None,
         urgency=None,
@@ -177,14 +241,29 @@ def _cascade_fallback(title: str, err: str, kind: TicketKind = TicketKind.incide
 def _resolve_system_deterministic(title: str, description: str) -> AffectedSystem | None:
     """Resolve the affected system from ticket text without any LLM call.
 
-    Priority: (i) an exact system-name substring wins immediately; (ii) else
-    count systems with at least one alias hit — exactly one hit is
-    deterministic, zero or multiple hits is ambiguous (None → LLM stage 1).
+    Priority: (i) an exact system-name substring wins immediately; (ii) a
+    Rawdah (الروضة) GROUP-PERMIT ticket — see below; (iii) else count systems
+    with at least one alias hit — exactly one hit is deterministic, zero or
+    multiple hits is ambiguous (None → LLM stage 1).
     """
     text = f"{title}\n{description}".lower()
     for system, name in _SYSTEM_EXACT_NAMES.items():
         if name in text:
             return system
+    # Rawdah (الروضة / rawdha) visit tickets are the one family where the LLM
+    # stage-1 guess is unstable: it reads "Rawdah visit" as an Umrah topic and
+    # flip-flops between the two systems on TICKETS THAT ARE WORD-FOR-WORD THE
+    # SAME ("RAWDHA APPOINTMENT ERROR" vs "RAWDHA ERROR CONTINUES..."). The
+    # operator-facing GROUP permit/appointment flow lives on the Hajj platform
+    # (prod: 15 of 16 Rawdah tickets are Hajj-operator permits, e.g. "we need
+    # Rawdah permits for 10 pilgrims", "cannot issue Rawdah permit for our
+    # group"); the Umrah flow is the individual pilgrim visit booking/package
+    # (حجز موعد / باقة زيارة), which carries no permit or group marker. So:
+    # Rawdah + (permit|appointment|group|تصريح|مجموعة|بعثة) and no Umrah marker
+    # -> Nusuk Masar Haj. Ambiguous cases still go to the LLM.
+    if _RAWDAH_RE.search(text) and _RAWDAH_GROUP_RE.search(text) \
+            and not _UMRAH_MARKER_RE.search(text):
+        return AffectedSystem.nusuk_masar_haj
     hits = [
         system
         for system, aliases in _SYSTEM_ALIASES.items()
@@ -281,6 +360,15 @@ def _stage_service_llm(
     try:
         return _parse_and_validate(raw)
     except Exception as e:
+        # The system is ALREADY resolved — an off-taxonomy service string (the
+        # model writes "licensing - Nusuk Hajj" for "licensing - Nusuk Masar
+        # Haj" etc.) must not cost the whole classification.
+        repaired = _parse_stage_service(raw, system.value)
+        if repaired is not None:
+            _log.warning(
+                "Cascade stage 2/3 (service) repaired an off-taxonomy service for "
+                "system '%s' (%s) — stored '%s'", system.value, e, repaired.service)
+            return repaired
         _log.warning("Cascade stage 2/3 (service) failed for system '%s': %s", system.value, e)
         return None
 
@@ -420,9 +508,13 @@ def _run_cascade(
     "self-consistency" for consistency re-runs); the natural cascade stage is
     carried in log_extra["cascade_stage"].
     """
+    # The resolved system is captured OUTSIDE the try: when a later stage
+    # blows up, the catch-all fallback below must keep the system stage 1 (or
+    # the payload pin) already established — dropping it stored a resolved
+    # Nusuk Masar Haj ticket as "Other".
+    system: AffectedSystem | None = pinned_system
     try:
         # ── Stage 1 — system resolution (pinned > deterministic > LLM) ──
-        system = pinned_system
         if system is not None:
             _log.debug("Cascade stage 1/3 (system) pinned from payload — %s", system.value)
         else:
@@ -449,7 +541,7 @@ def _run_cascade(
             log_extra={**(log_extra or {}), "cascade_stage": "stage2"},
         )
         if result is None:
-            return _cascade_fallback(title, "service selection failed", kind=kind)
+            return _cascade_fallback(title, "service selection failed", kind=kind, system=system)
 
         # ── Stage 3 — offering selection (1 LLM call unless skipped) ──
         result, _suggested = _stage_offering_llm(
@@ -459,9 +551,14 @@ def _run_cascade(
             log_extra={**(log_extra or {}), "cascade_stage": "stage3"},
         )
         if result is None:
-            return _cascade_fallback(title, "offering selection failed", kind=kind)
+            return _cascade_fallback(title, "offering selection failed", kind=kind, system=system)
         result.ticket_kind = kind
         if pinned_system is not None:
+            # The pin wins over the model's system choice — and the service must
+            # follow it: a stage answer from another system (or one the
+            # validator auto-corrected) would otherwise persist as
+            # "CRM + a Nusuk Masar Haj service".
+            result.service = _service_for_pinned_system(result.service, pinned_system)
             result.affected_system = pinned_system
         result.canonical_statement = _normalize_canonical(result.canonical_statement)
         _log.info("Cascade classification succeeded — system=%s, service=%s, severity=%s, confidence=%s",
@@ -469,7 +566,7 @@ def _run_cascade(
         return result
     except Exception as e:
         _log.error("Cascade classification failed: %s", e)
-        return _cascade_fallback(title, str(e), kind=kind)
+        return _cascade_fallback(title, str(e), kind=kind, system=system)
 
 
 def _classify_routed(
@@ -505,9 +602,12 @@ def _classify_routed(
         # ── Stage 2 — service selection (1 LLM call, short list) ──
         result = _stage_service_llm(title, description, system, incident_ref=incident_ref)
         if result is None:
-            return _cascade_fallback(title, "service selection failed", kind=kind)
+            return _cascade_fallback(title, "service selection failed", kind=kind, system=system)
 
         # Routing contract: no incident fields, bare service key, no offering.
+        if pinned_system is not None:
+            result.affected_system = pinned_system
+            result.service = _service_for_pinned_system(result.service, pinned_system)
         result.incident_type = None
         result.severity = None
         result.urgency = None
