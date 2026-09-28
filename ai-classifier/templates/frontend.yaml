@@ -29,7 +29,21 @@ server {
     }
 
     # Proxy ALL API/backend paths to the API Service (cluster DNS)
-    location ~ ^/(api/|admin/|health|ready|status|classify|incidents|import|reports|docs|openapi\.json|review-queue|cluster-proposals|taxonomy-gaps|clusters|all-incidents) {
+    # Attachment OCR (write-incident page) → the OCR service.
+    location = /ocr {
+    {{- if .Values.ocr.enabled }}
+        proxy_pass http://{{ include "ai-classifier.fullname" . }}-ocr:{{ .Values.ocr.port }}/ocr;
+        proxy_read_timeout 300s;
+        client_max_body_size 20m;   # the OCR server's own upload cap
+    {{- else }}
+        default_type application/json;
+        return 503 '{"detail":"OCR is not enabled in this deployment (ocr.enabled=false)"}';
+    {{- end }}
+    }
+
+    # Keep this list in sync with the compose copy (nginx.conf) — an
+    # unlisted path falls through to index.html.
+    location ~ ^/(api/|admin/|health|ready|status|classify|incidents|all-incidents|import|reports|review-queue|cluster-proposals|cluster/|clusters|taxonomy-gaps|test/|docs|redoc|openapi\.json) {
         proxy_pass http://{{ include "ai-classifier.fullname" . }}-api:{{ .Values.api.port }};
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;

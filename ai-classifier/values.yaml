@@ -53,12 +53,13 @@ api:
   # Extra env vars merged verbatim (list of {name, value} or valueFrom):
   extraEnv: []
 
-  # K8s Secret holding: LLM_API_KEY, INTEGRATION_API_TOKEN,
+  # K8s Secret holding: LLM_API_KEY, INTEGRATION_API_TOKEN, ADMIN_TOKEN,
   # TICKETING_API_TOKEN (and PG_PASSWORD when postgres.enabled=false).
   # Create it out-of-band (SealedSecrets / ExternalSecrets / kubectl):
   #   kubectl create secret generic ai-classifier-secrets \
   #     --from-literal=LLM_API_KEY=... \
   #     --from-literal=INTEGRATION_API_TOKEN=... \
+  #     --from-literal=ADMIN_TOKEN=... \
   #     --from-literal=TICKETING_API_TOKEN=...
   existingSecret: "ai-classifier-secrets"
 
@@ -69,6 +70,15 @@ api:
     limits:
       cpu: "2"
       memory: "5Gi"
+
+  # The image runs as the unprivileged `app` user (UID 1000, Dockerfile).
+  # Mirrors the compose hardening: no privilege escalation, no capabilities.
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    allowPrivilegeEscalation: false
+    capabilities: { drop: ["ALL"] }
+    seccompProfile: { type: RuntimeDefault }
 
   # /ready checks db + embedding + llm; model load takes tens of seconds
   # on cold start → generous startupProbe, then normal liveness/readiness.
@@ -123,6 +133,13 @@ ocr:
   resources:
     requests: { cpu: "500m", memory: "2Gi" }
     limits: { cpu: "2", memory: "4Gi" }
+  # The OCR image has no unprivileged user baked in (EasyOCR downloads its
+  # models as root at build time), so runAsNonRoot stays off; the rest of the
+  # hardening mirrors the API and the compose file.
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities: { drop: ["ALL"] }
+    seccompProfile: { type: RuntimeDefault }
 
 # ── PostgreSQL + pgvector ─────────────────────────────────────────────
 # Two modes:

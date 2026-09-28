@@ -35,6 +35,10 @@ spec:
         - name: api
           image: {{ include "ai-classifier.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.api.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           ports:
             - name: http
               containerPort: {{ .Values.api.port }}
@@ -75,6 +79,15 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.api.existingSecret }}
                   key: TICKETING_API_TOKEN
+                  optional: true
+            # Separate credential for /admin/* (writes .env, resets the DB,
+            # runs pytest). Optional: unset => the integration token still
+            # opens the console (backward compatible).
+            - name: ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.api.existingSecret }}
+                  key: ADMIN_TOKEN
                   optional: true
             # ── Non-secret env from values ──
             {{- range $k, $v := .Values.api.env }}

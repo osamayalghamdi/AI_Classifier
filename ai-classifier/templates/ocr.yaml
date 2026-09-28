@@ -26,6 +26,10 @@ spec:
         - name: ocr
           image: "{{ .Values.ocr.image.repository }}:{{ .Values.ocr.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.ocr.image.pullPolicy }}
+          {{- with .Values.ocr.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           ports:
             - name: http
               containerPort: {{ .Values.ocr.port }}

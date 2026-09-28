@@ -42,3 +42,6 @@ Thumbs.db
 fix_tests.py
 test_incidents.json
 test_*.json
+
+# Public demo tunnel (cloudflared binary, logs, runtime PID/URL state)
+.tunnel/
