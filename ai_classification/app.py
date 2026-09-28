@@ -10,6 +10,7 @@ Pipeline position: 50_api — FastAPI app."""
 
 import logging
 import os
+import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
@@ -68,11 +69,26 @@ async def lifespan(app: FastAPI):
             "LLM_API_KEY is required when LLM_MODEL starts with 'openrouter/' — "
             "export LLM_API_KEY. Refusing to start with an unauthenticated LLM config."
         )
+    # Retry while Postgres comes up (k8s starts the pod and the DB together;
+    # compose's depends_on has no k8s equivalent). A store that never comes
+    # up drops every write silently, so by default refuse to start — the
+    # orchestrator restarts the pod and the failure is visible.
+    deadline = time.monotonic() + settings.store_setup_timeout_s
     store.setup()
+    while not store.ready and time.monotonic() < deadline:
+        _log.warning("Store not ready — retrying in 5s")
+        time.sleep(5)
+        store.setup()
     if store.ready:
         _log.info("Store ready")
+    elif settings.store_required:
+        raise RuntimeError(
+            f"PostgreSQL store not ready after {settings.store_setup_timeout_s}s "
+            f"({settings.pg_host}:{settings.pg_port}/{settings.pg_database}) — "
+            "refusing to start with persistence disabled (set STORE_REQUIRED=0 to allow)."
+        )
     else:
-        _log.warning("Store FAILED (embeddings disabled)")
+        _log.error("Store FAILED — persistence DISABLED (STORE_REQUIRED=0): writes are dropped")
     # Admin taxonomy overrides -> runtime registry (frozen base untouched).
     try:
         store.reload_taxonomy_overrides()
@@ -147,11 +163,12 @@ async def _http_error_handler(_request, exc: HTTPException):
     return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 
 
-# CORS — allow dashboard at any origin
+# CORS — origins from CORS_ALLOW_ORIGINS (default "*"). No credentials:
+# auth is a bearer header, so cookies never need to cross origins.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=list(settings.cors_allow_origins),
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )

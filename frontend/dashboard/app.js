@@ -68,7 +68,7 @@ const CURRENT_GROUP = getUserGroup(CURRENT_USER);
 
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
-const esc = (s = "") => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const esc = (s = "") => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const isAr = (s = "") => /[\u0600-\u06FF]/.test(s);
 const titleHtml = (t) => (isAr(t) ? `<span lang-ar lang="ar">${esc(t)}</span>` : esc(t));
 const SEV_RANK = { Critical: 4, Major: 3, Minor: 2, Cosmetic: 1 };
@@ -807,7 +807,7 @@ function renderIncidentDetail(inc) {
   const firstSeen = inc.first_seen ? new Date(inc.first_seen).toLocaleString() : "—";
   const lastSeen = inc.last_seen ? new Date(inc.last_seen).toLocaleString() : "—";
   const docCount = (inc.documents || []).length;
-  const tickets = (inc.source_ticket_ids || []).join(", ") || "—";
+  const tickets = esc((inc.source_ticket_ids || []).join(", ") || "—");
   const occCount = inc.occurrence_count || 1;
   const notes = esc(inc.notes || "—");
   const contentHash = inc.content_hash ? `<code>${esc(inc.content_hash)}</code>` : "—";

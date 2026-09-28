@@ -28,7 +28,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from ai_classification.api.auth import require_token
+from ai_classification.api.auth import require_admin_token
 from ai_classification.api.schemas import ClassifyRequest
 from ai_classification.services.classify.classifier import classify_and_store
 from ai_classification.shared.config import settings
@@ -36,7 +36,7 @@ from ai_classification.shared.config import settings
 _log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/admin", tags=["admin"],
-                   dependencies=[Depends(require_token)])
+                   dependencies=[Depends(require_admin_token)])
 
 # Env keys the admin page may manage. Secrets are written to the env file
 # and NEVER echoed back in full — GET returns only set/unset + a mask.
@@ -247,6 +247,11 @@ def admin_env_write(payload: dict):
         raise HTTPException(422, f"key must be one of {MANAGED_ENV_KEYS}")
     if value is None:
         value = ""
+    value = str(value)
+    # One KEY=VALUE per line: a newline in the value would smuggle extra
+    # (unmanaged) keys such as PG_PASSWORD past the allowlist above.
+    if any(c in value for c in "\r\n\x00"):
+        raise HTTPException(422, "value must be a single line")
     path = _env_file_path()
     try:
         lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
@@ -549,7 +554,9 @@ def admin_group_create(payload: dict):
         raise HTTPException(500, "failed to create cluster")
     rejected = []
     for iid in payload.get("member_ids") or []:
-        ok = store.add_cluster_member(cluster_id, str(iid))
+        # assigned_by="human": a hand-built group is a pin the nightly audit
+        # must not undo (store_clusters.add_cluster_member).
+        ok = store.add_cluster_member(cluster_id, str(iid), assigned_by="human")
         if not ok:
             rejected.append(str(iid))
     if rejected:
@@ -592,7 +599,7 @@ def admin_group_add_member(cluster_id: str, payload: dict):
     iid = str(payload.get("incident_id", "")).strip()
     if not iid:
         raise HTTPException(422, "incident_id is required")
-    ok = store.add_cluster_member(cluster_id, iid)
+    ok = store.add_cluster_member(cluster_id, iid, assigned_by="human")
     if not ok:
         raise HTTPException(404, "cluster not found")
     return {"status": "ok", "cluster_id": cluster_id, "incident_id": iid}

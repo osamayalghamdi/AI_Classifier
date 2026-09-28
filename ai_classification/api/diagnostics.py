@@ -18,7 +18,7 @@ Pipeline position: 50_api — FastAPI endpoints."""
 
 import logging
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 
 from ai_classification.api.auth import require_token
 from ai_classification.shared.config import settings
@@ -51,11 +51,12 @@ def health():
 #
 # Auth-gated (Bearer token, same as the /api/v1/* API — api/auth.py):
 # this endpoint spends LLM tokens per call, so it must not be open on a
-# public ingress. /test/all stays open (human smoke battery) — review
-# whether to gate it too when exposing the host publicly.
+# public ingress. /test/all is gated for the same reason (it runs a real
+# LLM completion + a full classify).
 @router.post("/test/llm", dependencies=[Depends(require_token)])
 @router.get("/test/llm", dependencies=[Depends(require_token)])
-def test_llm(question: str = "Say hello in one short sentence.", max_tokens: int = 200):
+def test_llm(question: str = Query("Say hello in one short sentence.", max_length=2000),
+             max_tokens: int = Query(200, ge=1, le=1000)):
     import time
 
     from ai_classification.services.classify.llm import call_llm
@@ -92,7 +93,7 @@ def test_llm(question: str = "Say hello in one short sentence.", max_tokens: int
 # db → embedding → llm → classify → similar → clusters. Each check is a
 # REAL call against the live stack; failures are reported per-check (the
 # battery continues, never aborts mid-way). Rollup: all ok = HTTP 200.
-@router.get("/test/all")
+@router.get("/test/all", dependencies=[Depends(require_token)])
 def test_all():
     import time as _t
 
@@ -150,10 +151,25 @@ def test_all():
         hits = store.find_similar("Rawdah permit booking fails on date selection", top_k=3)
         return f"{len(hits)} similar found"
 
-    # 6. Clusters — report from the persistent cluster tables
+    # 6. Clusters — report from the persistent cluster tables + the v5
+    #    invariants an operator relies on: a cluster serves ONE system, and a
+    #    cluster is >= 2 tickets (1 incident = individual). A violation here is
+    #    a WRONG dashboard, so it fails the battery instead of hiding in the
+    #    data (cross-system members and empty active rows used to sit in prod
+    #    unnoticed for weeks).
     def _clusters():
         rep = build_clusters("daily")
-        return f"{rep.get('total_incidents')} incidents, {len(rep.get('clusters', []))} clusters"
+        active = store.list_clusters(status="active")
+        cross = sum(len(store.cross_system_members(c["id"], c.get("affected_system") or ""))
+                    for c in active)
+        empty = sum(1 for c in active if not store.cluster_member_ids(c["id"]))
+        detail = (f"{rep.get('total_incidents')} incidents, {len(rep.get('clusters', []))} clusters, "
+                  f"{len(active)} active rows")
+        if cross or empty:
+            raise RuntimeError(
+                f"{detail} — INVARIANT VIOLATION: {cross} cross-system member(s), "
+                f"{empty} empty active cluster(s)")
+        return detail
 
     _check("db", _db)
     _check("embedding", _embedding)

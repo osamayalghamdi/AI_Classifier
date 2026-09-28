@@ -15,6 +15,13 @@ import os
 # (documented convention: INTEGRATION_TOKEN=test-token).
 os.environ.setdefault("INTEGRATION_TOKEN", "test-token")
 os.environ.setdefault("INTEGRATION_WORKER_ENABLED", "0")
+# The admin console token is SEPARATE from the integration token. In the test
+# environment it must stay UNSET so /admin/* falls back to the integration
+# token (the pre-existing tests authenticate with INTEGRATION_TOKEN); the
+# separation behaviour itself is exercised explicitly via monkeypatch in
+# tests/api/test_admin.py. load_dotenv() in config.py must not leak a real
+# ADMIN_TOKEN from a developer's .env into the suite.
+os.environ.setdefault("ADMIN_TOKEN", "")
 # v2 persistent clustering: Flow A runs as a BACKGROUND thread after every
 # classify_and_store — in tests that would fire real LLM calls from the
 # integration/classify tests. Forced off here; flow tests drive the engine

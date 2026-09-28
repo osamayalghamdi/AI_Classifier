@@ -105,6 +105,7 @@ def dry_run_incident(inc: IntegrationIncident):
         description=inc.description,
         attachments=inc.attachments,
         status=inc.status,
+        affected_system=inc.affected_system,
         created_at=inc.created_at,
         updated_at=inc.updated_at,
     )
@@ -168,7 +169,7 @@ ready_router = APIRouter(tags=["integration"])
 
 
 @ready_router.get("/ready")
-def readiness():
+def readiness(llm: bool = Query(True, description="false = skip the live LLM probe (use for k8s readiness probes)")):
     checks: dict[str, str] = {}
 
     # DB
@@ -177,9 +178,13 @@ def readiness():
         with _connect() as conn:
             with conn.cursor() as cur:
                 cur.execute("SELECT 1")
-        checks["db"] = "ok"
-    except Exception as exc:  # noqa: BLE001
-        checks["db"] = f"error: {exc}"
+        from ai_classification.shared.store import store
+        # A reachable DB is not enough: if store.setup() failed at boot the
+        # store silently drops every write, so the pod must not be Ready.
+        checks["db"] = "ok" if store.ready else "error: store not initialised"
+    except Exception as exc:  # noqa: BLE001 — details go to the log, not to anonymous callers
+        _log.warning("/ready db check failed: %s", exc)
+        checks["db"] = f"error: {type(exc).__name__}"
 
     # Embedding model
     try:
@@ -189,29 +194,35 @@ def readiness():
         else:
             checks["embedding"] = "ok"
     except Exception as exc:  # noqa: BLE001
-        checks["embedding"] = f"error: {exc}"
+        _log.warning("/ready embedding check failed: %s", exc)
+        checks["embedding"] = f"error: {type(exc).__name__}"
 
     # LLM reachability — a real 1-token probe with a short timeout.
-    try:
-        from litellm import completion
-        kwargs: dict = dict(
-            model=settings.llm_model,
-            max_tokens=1,
-            temperature=0.0,
-            timeout=5.0,
-            messages=[{"role": "user", "content": "ping"}],
-        )
-        if settings.llm_api_base:
-            kwargs["api_base"] = settings.llm_api_base
-        if settings.llm_api_key:
-            kwargs["api_key"] = settings.llm_api_key
-        completion(**kwargs)
-        checks["llm"] = "ok"
-    except Exception as exc:  # noqa: BLE001
-        checks["llm"] = f"unreachable: {type(exc).__name__}"
+    # Skippable (?llm=false): a k8s probe hitting this every 10s would spend
+    # LLM calls and flap the pod whenever the provider is slow.
+    if not llm:
+        checks["llm"] = "skipped"
+    else:
+        try:
+            from litellm import completion
+            kwargs: dict = dict(
+                model=settings.llm_model,
+                max_tokens=1,
+                temperature=0.0,
+                timeout=5.0,
+                messages=[{"role": "user", "content": "ping"}],
+            )
+            if settings.llm_api_base:
+                kwargs["api_base"] = settings.llm_api_base
+            if settings.llm_api_key:
+                kwargs["api_key"] = settings.llm_api_key
+            completion(**kwargs)
+            checks["llm"] = "ok"
+        except Exception as exc:  # noqa: BLE001
+            checks["llm"] = f"unreachable: {type(exc).__name__}"
 
     degraded = checks.get("db") != "ok" or checks.get("embedding") != "ok"
-    status = "ok" if (not degraded and checks.get("llm") == "ok") else (
+    status = "ok" if (not degraded and checks.get("llm") in ("ok", "skipped")) else (
         "degraded" if not degraded else "unhealthy"
     )
     code = 200 if not degraded else 503

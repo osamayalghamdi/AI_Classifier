@@ -56,8 +56,9 @@ def list_incidents(status: str | None = None) -> list[dict]:
     return items
 
 
-# Classify a new incident
-@router.post("/classify", response_model=ClassifyResponse)
+# Classify a new incident. Every write / LLM-spending endpoint here is
+# bearer-gated (api/auth.py); the read endpoints stay open for the dashboard.
+@router.post("/classify", response_model=ClassifyResponse, dependencies=[Depends(require_token)])
 def classify_incident(req: ClassifyRequest):
     _log.info("POST /classify — title='%s', group='%s', priority=%s",
               req.title[:60], req.assign_group, req.priority)
@@ -77,7 +78,7 @@ def classify_incident(req: ClassifyRequest):
 
 
 # Classify via GET (quick testing)
-@router.get("/classify", response_model=ClassifyResponse)
+@router.get("/classify", response_model=ClassifyResponse, dependencies=[Depends(require_token)])
 def classify_incident_get(title: str = "", description: str = "", extracted_text: str = "",
                           source_ticket_id: str = ""):
     _log.info("GET /classify — title='%s', ticket_id='%s'", title[:60], source_ticket_id)
@@ -85,14 +86,14 @@ def classify_incident_get(title: str = "", description: str = "", extracted_text
 
 
 # Classify multiple incidents at once
-@router.post("/classify/batch", response_model=ClassifyBatchResponse)
+@router.post("/classify/batch", response_model=ClassifyBatchResponse, dependencies=[Depends(require_token)])
 def classify_batch_endpoint(req: ClassifyBatchRequest):
     _log.info("POST /classify/batch — %d incidents", len(req.incidents))
     return classify_batch([inc.model_dump() for inc in req.incidents])
 
 
 # Mark an incident as resolved
-@router.post("/incidents/{incident_id}/resolve", response_model=ResolveResponse)
+@router.post("/incidents/{incident_id}/resolve", response_model=ResolveResponse, dependencies=[Depends(require_token)])
 def resolve(incident_id: str):
     _log.info("POST /incidents/%s/resolve", incident_id)
     if not resolve_incident(incident_id):
@@ -151,7 +152,7 @@ def all_incidents(status: str | None = Query(None, description="Filter by status
 
 
 # Import bulk incidents from a JSON file — only title + description
-@router.post("/import/{filename}")
+@router.post("/import/{filename}", dependencies=[Depends(require_token)])
 def import_bulk(filename: str):
     _log.info("POST /import/%s", filename)
     result = import_incidents_from_file(filename)
@@ -160,7 +161,7 @@ def import_bulk(filename: str):
 
 
 # Import incidents from request body — DisplayLabel/Description format
-@router.post("/import")
+@router.post("/import", dependencies=[Depends(require_token)])
 def import_bulk_from_body(req: BulkImportRequest):
     _log.info("POST /import — %d incidents from body", len(req.incidents))
     result = import_incidents_from_body([inc.model_dump() for inc in req.incidents])

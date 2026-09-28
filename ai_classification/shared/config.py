@@ -262,6 +262,23 @@ class Settings:
     # INTEGRATION_API_TOKEN (ops convention) takes precedence over
     # INTEGRATION_TOKEN (older alias) — both are accepted.
     integration_token: str = getenv("INTEGRATION_API_TOKEN") or getenv("INTEGRATION_TOKEN", "")
+    # PRIVILEGE SEPARATION: a credential for the admin console only. The
+    # integration token travels to the SMAX connector (webhook config, docs,
+    # a proxy log); it must not also open /admin/* (writes .env, resets the
+    # database, runs pytest in-container). Empty => the integration token
+    # still works, so adopting the split is a one-line env change.
+    admin_token: str = getenv("ADMIN_TOKEN", "")
+    # CORS allowlist for browsers calling the API directly (comma-separated
+    # origins). The dashboard is same-origin behind nginx and needs none;
+    # "*" keeps the old open behaviour. Auth is a bearer header, never a
+    # cookie, so credentials are not allowed cross-origin.
+    # Startup: how long to retry the Postgres store before giving up, and
+    # whether giving up aborts startup (default) or runs without persistence.
+    store_setup_timeout_s: int = int(getenv("STORE_SETUP_TIMEOUT_S", "120"))
+    store_required: bool = _is_truthy(getenv("STORE_REQUIRED", "1"))
+    cors_allow_origins: tuple[str, ...] = tuple(
+        o.strip() for o in getenv("CORS_ALLOW_ORIGINS", "*").split(",") if o.strip()
+    )
     # Admin console: env-credential writes go to this file (default .env in
     # the CWD). Settings is frozen at import, so changes need a restart.
     admin_env_file: str = getenv("ADMIN_ENV_FILE", ".env")

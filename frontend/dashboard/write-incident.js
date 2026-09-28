@@ -7,6 +7,8 @@
   var API = localStorage.getItem("dash_api") || "";
   var OCR_URL = API + "/ocr";        // proxied to the OCR service by nginx
   var CLASSIFY_URL = API + "/classify";
+  // POST /classify is bearer-gated — same token the dashboard stores.
+  var TOKEN = localStorage.getItem("dash_token") || "";
 
   var el = function (id) { return document.getElementById(id); };
   var title = el("incTitle"), desc = el("incDesc"),
@@ -94,11 +96,12 @@
 
     fetch(CLASSIFY_URL, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: Object.assign({ "Content-Type": "application/json" },
+                             TOKEN ? { "Authorization": "Bearer " + TOKEN } : {}),
       body: JSON.stringify(payload)
     })
       .then(function (r) {
-        return r.ok ? r.json() : r.json().then(function (e) { throw new Error(e.detail || ("Classification failed " + r.status)); });
+        return r.ok ? r.json() : r.json().then(function (e) { throw new Error((e.error && e.error.message) || e.detail || (r.status === 401 ? "Not authorised — set the dashboard token first" : "Classification failed " + r.status)); });
       })
       .then(function (data) {
         var c = data.classification || {};

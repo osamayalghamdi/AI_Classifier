@@ -8,8 +8,9 @@ Pipeline position: 50_api — FastAPI endpoints."""
 
 import logging
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
+from ai_classification.api.auth import require_token
 from ai_classification.shared.store import store
 from ai_classification.services.cluster.persistent import build_clusters, sweep_pool
 
@@ -77,7 +78,7 @@ def review_queue():
 
 # Manually trigger a Flow B pool sweep (v2 persistent clustering). Returns
 # the sweep stats; proposals land in /cluster-proposals for the human gate.
-@router.post("/cluster/sweep")
+@router.post("/cluster/sweep", dependencies=[Depends(require_token)])
 def trigger_sweep(dry_run: bool = False):
     _log.info("POST /cluster/sweep — dry_run=%s", dry_run)
     return sweep_pool(dry_run=dry_run)

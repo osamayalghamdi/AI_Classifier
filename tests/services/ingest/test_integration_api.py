@@ -144,6 +144,28 @@ def test_e1_ingest_returns_immediately_then_processes(client):
     assert job["result"]["write_back"]["mode"] in ("suggestions", "none", "full")
 
 
+def test_e1b_ingest_pins_the_system_the_ticketing_system_supplies(client):
+    """The ticketing system knows its own queue; the classifier must not guess
+    over it. A supplied system is validated and PINNED (LLM stage-1 skipped)."""
+    payload = dict(PAYLOAD, source_reference="TKT-PIN-1", affected_system="CRM")
+    assert client.post("/api/v1/incidents", json=payload, headers=AUTH).status_code == 202
+    worker_tick()
+    job = _job("TKT-PIN-1")
+    assert job["status"] == "succeeded"
+    # the fake LLM answer says Nusuk Masar Haj, but the pin wins
+    assert job["result"]["classification"]["affected_system"] == "CRM"
+
+
+def test_e1b_unknown_supplied_system_falls_back_instead_of_failing(client):
+    payload = dict(PAYLOAD, source_reference="TKT-PIN-2", affected_system="NotARealSystem")
+    assert client.post("/api/v1/incidents", json=payload, headers=AUTH).status_code == 202
+    worker_tick()
+    job = _job("TKT-PIN-2")
+    assert job["status"] == "succeeded"          # never a hard failure
+    assert job["result"]["classification"]["affected_system"] in (
+        "Nusuk Masar Haj", "Nusuk Masar Umrah", "CRM", "OldSM", "Other")
+
+
 # ── E2: fetch result by reference ────────────────────────────────────
 
 def test_e2_fetch_structured_result(client):

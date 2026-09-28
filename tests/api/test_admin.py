@@ -26,6 +26,7 @@ import ai_classification.services.classify.classifier as classifier_mod
 import ai_classification.services.classify.llm as mod_llm
 from ai_classification.app import app
 from ai_classification.domain.taxonomy import set_runtime_overrides
+from ai_classification.shared.config import settings
 
 TOKEN = "test-token"
 AUTH = {"Authorization": f"Bearer {TOKEN}"}
@@ -426,3 +427,51 @@ def test_registry_all_disabled_yields_no_active_classifier(monkeypatch):
     reg = cfg._build_model_registry()
     assert all(not e.enabled for e in reg.values())
     assert cfg._resolve_active_model("classifier") is None
+
+
+# ── Privilege separation: ADMIN_TOKEN vs the SMAX integration token ───────
+# The integration credential travels to the ticketing connector (webhook
+# config, docs, proxy logs). It must not also open the console that writes
+# .env, resets the database and runs pytest in-container.
+
+class TestAdminCredentialSeparation:
+    @staticmethod
+    def _tokens(monkeypatch, admin_token: str, integration_token: str = TOKEN):
+        """Settings is a frozen dataclass — patch the auth module's view."""
+        from types import SimpleNamespace
+        monkeypatch.setattr("ai_classification.api.auth.settings",
+                            SimpleNamespace(admin_token=admin_token,
+                                            integration_token=integration_token))
+
+    def test_admin_token_is_the_only_credential_when_set(self, client, monkeypatch):
+        self._tokens(monkeypatch, "admin-secret")
+        # the SMAX integration token no longer opens the console
+        r = client.get("/admin/status", headers={"Authorization": f"Bearer {TOKEN}"})
+        assert r.status_code == 401
+        # the admin credential works as a bearer token…
+        r = client.get("/admin/status", headers={"Authorization": "Bearer admin-secret"})
+        assert r.status_code == 200
+        # …and as the header the console can send without losing its Bearer
+        r = client.get("/admin/status", headers={"X-Admin-Token": "admin-secret"})
+        assert r.status_code == 200
+
+    def test_wrong_admin_token_rejected(self, client, monkeypatch):
+        self._tokens(monkeypatch, "admin-secret")
+        for headers in ({"Authorization": "Bearer nope"}, {"X-Admin-Token": "nope"},
+                        {"Authorization": "Bearer admin-secretx"}):
+            assert client.get("/admin/status", headers=headers).status_code == 401
+
+    def test_missing_credential_rejected(self, client, monkeypatch):
+        self._tokens(monkeypatch, "admin-secret")
+        assert client.get("/admin/status").status_code == 401
+
+    def test_integration_token_still_works_when_admin_token_unset(self, client, monkeypatch):
+        """Backward compatible: adopting the split is a one-line env change."""
+        self._tokens(monkeypatch, "")
+        assert client.get("/admin/status", headers=AUTH).status_code == 200
+
+    def test_admin_token_does_not_open_the_integration_api(self, client, monkeypatch):
+        """Separation is two-way: the console credential is not a data credential."""
+        self._tokens(monkeypatch, "admin-secret")
+        r = client.get("/api/v1/incidents/NOPE", headers={"Authorization": "Bearer admin-secret"})
+        assert r.status_code == 401
