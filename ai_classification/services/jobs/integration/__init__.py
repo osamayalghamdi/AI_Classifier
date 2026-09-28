@@ -55,6 +55,21 @@ _LLM_FAIL_MARKERS = (
     "timeout",
 )
 
+# Embedding-failure signatures (model load / embed / device). Deliberately
+# narrow: a generic "model" or "sentence" mention belongs to the LLM path.
+_EMBEDDING_FAIL_MARKERS = (
+    "embedding",
+    "sentence-transformers",
+    "sentencetransformer",
+    "tokenizer",
+    "torch",
+    "cuda",
+)
+
+# A job still 'processing' after this long was abandoned by a crash/restart
+# (worker_tick never saw it finish) — reset it to retryable.
+STUCK_PROCESSING_AFTER = timedelta(minutes=15)
+
 
 def _connect():
     return psycopg2.connect(
@@ -116,18 +131,22 @@ def _job_from_row(row) -> dict:
 
 def enqueue(payload: dict) -> dict | None:
     """Create a job. Replay-safe: same source_reference returns the
-    existing job unchanged (no re-processing, no attempt increment)."""
+    existing job unchanged (no re-processing, no attempt increment).
+
+    The insert is ONE statement with ON CONFLICT DO NOTHING: two submitters
+    racing on the same reference (webhook + poller) used to slip through the
+    old SELECT-then-INSERT window and one of them died with UniqueViolation
+    (-> 500). DO NOTHING makes the loser a no-op; we then read the row back."""
     ensure_jobs_table()
     ref = payload["source_reference"]
     with _connect() as conn:
         conn.autocommit = True
         with conn.cursor() as cur:
-            cur.execute("SELECT 1 FROM ingestion_jobs WHERE source_reference = %s", (ref,))
-            if cur.fetchone() is None:
-                cur.execute(
-                    "INSERT INTO ingestion_jobs (source_reference, payload) VALUES (%s, %s)",
-                    (ref, Json(payload)),
-                )
+            cur.execute(
+                "INSERT INTO ingestion_jobs (source_reference, payload) VALUES (%s, %s) "
+                "ON CONFLICT (source_reference) DO NOTHING",
+                (ref, Json(payload)),
+            )
     return get_job(ref)
 
 
@@ -191,7 +210,10 @@ def classify_failure(message: str, phase: str) -> str:
     if phase == "persist":
         return Err.DB_FAILURE
     low = (message or "").lower()
-    if "embedding" in low or "sentence" in low or "tokenizer" in low or "model" in low:
+    # EMBEDDING markers only: a bare "model" used to catch every LLM error
+    # that mentioned a model name (e.g. "The model qwen3.6 does not exist")
+    # and mislabelled it as an embedding failure.
+    if any(m in low for m in _EMBEDDING_FAIL_MARKERS):
         return Err.EMBEDDING_FAILED
     if "timeout" in low:
         return Err.LLM_TIMEOUT
@@ -209,6 +231,7 @@ def _incident_from_payload(payload: dict) -> Incident:
         description=payload.get("description", ""),
         attachments=payload.get("attachments", []),
         status=payload.get("status", "active"),
+        affected_system=payload.get("affected_system", "") or "",
         created_at=payload.get("created_at"),
         updated_at=payload.get("updated_at"),
     )
@@ -316,21 +339,61 @@ def _classification_dict(cls: Any) -> dict | None:
     return None
 
 
+def _reclaim_stuck_jobs() -> int:
+    """Crash/restart recovery: a job left in 'processing' (the process died
+    mid-tick) was invisible to the worker forever — no path led back to
+    retryable. Anything still processing after STUCK_PROCESSING_AFTER is
+    reset to retryable (next_retry_at = now()) and is picked up by this same
+    tick. Uses the table's updated_at (written by _mark / the claim)."""
+    cutoff = datetime.now(timezone.utc) - STUCK_PROCESSING_AFTER
+    with _connect() as conn:
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE ingestion_jobs SET status = %s, next_retry_at = now(), updated_at = now() "
+                "WHERE status = %s AND updated_at < %s",
+                (STATUS_RETRYABLE, STATUS_PROCESSING, cutoff),
+            )
+            n = cur.rowcount
+    if n:
+        _log.warning("Reclaimed %d job(s) stuck in '%s' > %s — reset to retryable",
+                     n, STATUS_PROCESSING, STUCK_PROCESSING_AFTER)
+    return n
+
+
 def worker_tick(limit: int = 10) -> int:
-    """Process due jobs (pending + retryable-with-expired backoff). Returns count."""
+    """Process due jobs (pending + retryable-with-expired backoff). Returns count.
+
+    Due rows are CLAIMED ATOMICALLY: they are locked (FOR UPDATE SKIP
+    LOCKED) and flipped to 'processing' inside one transaction, which then
+    commits before any classify/persist work runs. A manual
+    POST /api/v1/worker/tick racing the background worker therefore sees
+    either locked rows (skipped) or rows already 'processing' — the same job
+    is never processed twice."""
     ensure_jobs_table()
+    _reclaim_stuck_jobs()
     now = datetime.now(timezone.utc)
     with _connect() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT source_reference, status, attempts, next_retry_at, payload, "
-                "result_json, error_code, error_message, created_at, updated_at "
-                "FROM ingestion_jobs "
+                "SELECT source_reference FROM ingestion_jobs "
                 "WHERE status IN (%s, %s) AND (next_retry_at IS NULL OR next_retry_at <= %s) "
-                "ORDER BY created_at LIMIT %s",
+                "ORDER BY created_at LIMIT %s FOR UPDATE SKIP LOCKED",
                 (STATUS_PENDING, STATUS_RETRYABLE, now, limit),
             )
+            refs = [r[0] for r in cur.fetchall()]
+            if not refs:
+                return 0
+            cur.execute(
+                "UPDATE ingestion_jobs SET status = %s, updated_at = now() "
+                "WHERE source_reference = ANY(%s) "
+                "RETURNING source_reference, status, attempts, next_retry_at, payload, "
+                "result_json, error_code, error_message, created_at, updated_at",
+                (STATUS_PROCESSING, refs),
+            )
             rows = cur.fetchall()
+    # Connection context exited -> the claim is committed; only now do we run
+    # the slow classify/persist work, on rows nobody else can have taken.
     processed = 0
     for row in rows:
         job = _job_from_row(row)

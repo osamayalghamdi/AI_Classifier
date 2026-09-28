@@ -559,6 +559,7 @@ class IncidentsMixin:
                     "attempts = manual_review_queue.attempts + 1, "
                     "reason = EXCLUDED.reason",
                     (incident_id, reason))
+            conn.commit()
         finally:
             self._putconn(conn)
 

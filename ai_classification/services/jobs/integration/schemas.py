@@ -45,6 +45,11 @@ class IntegrationIncident(BaseModel):
     # never 422. The system stores it raw in incidents.source_status and
     # derives the local active/resolved view from it.
     status: str = Field(default="active", min_length=1, max_length=64)
+    # The system the TICKETING system says this ticket belongs to. The
+    # classifier validates it against the taxonomy and PINS it, skipping LLM
+    # system resolution entirely — the ticketing system knows its own queue,
+    # the classifier can only guess from text. Empty = classify as before.
+    affected_system: str = Field(default="", max_length=64)
     attachments: list[dict] = Field(default_factory=list, max_length=20)
     created_at: datetime | None = None
     updated_at: datetime | None = None

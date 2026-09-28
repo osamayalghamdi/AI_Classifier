@@ -43,12 +43,14 @@ class DBBase:
         if self._ready:
             return
 
-        try:
-            self._model = SentenceTransformer(settings.embedding_model_name, device="cpu")
-        except Exception as exc:
-            _log.warning("Failed to load embedding model '%s': %s. Similarity search disabled.",
-                         settings.embedding_model_name, exc)
-            self._model = None
+        # Load the model once — setup() is retried while the DB comes up.
+        if self._model is None:
+            try:
+                self._model = SentenceTransformer(settings.embedding_model_name, device="cpu")
+            except Exception as exc:
+                _log.warning("Failed to load embedding model '%s': %s. Similarity search disabled.",
+                             settings.embedding_model_name, exc)
+                self._model = None
 
         try:
             self._pool = psycopg2.pool.ThreadedConnectionPool(
@@ -116,8 +118,13 @@ class DBBase:
                     ]:
                         try:
                             cur.execute(col_sql)
-                        except Exception:
-                            pass
+                        except Exception as exc:  # noqa: BLE001
+                            # ADD COLUMN IF NOT EXISTS only fails for real
+                            # reasons (privileges, disk) — the transaction is
+                            # now aborted, so surface it instead of failing
+                            # later on an UndefinedColumn.
+                            _log.error("Schema migration failed: %s — %s", col_sql, exc)
+                            raise
 
                     # ── Classifier v3 tables ───────────────────────────────
                     # taxonomy_gaps: abstentions made visible — the classifier
@@ -259,7 +266,22 @@ class DBBase:
                         ALTER TABLE clusters ADD COLUMN IF NOT EXISTS affected_system
                         TEXT NOT NULL DEFAULT ''
                     """)
-                    # Backfill: assign each existing empty-system cluster the
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS cluster_members (
+                            cluster_id    TEXT NOT NULL REFERENCES clusters(id) ON DELETE CASCADE,
+                            incident_id   TEXT NOT NULL,
+                            assigned_by   TEXT NOT NULL DEFAULT 'llm',
+                            confidence    TEXT,
+                            assigned_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                            PRIMARY KEY (cluster_id, incident_id)
+                        )
+                    """)
+                    cur.execute("""
+                        CREATE INDEX IF NOT EXISTS idx_cluster_members_incident
+                        ON cluster_members (incident_id)
+                    """)
+                    # Backfill (must run AFTER cluster_members exists — on a
+                    # fresh database it is created just above): assign each existing empty-system cluster the
                     # dominant system among its members' classifications (the
                     # same rule _dominant_labels used before the column). Rows
                     # with no classifiable members stay '' (treated as Unknown).
@@ -279,20 +301,6 @@ class DBBase:
                             GROUP BY cm.cluster_id, (i.classification_json::jsonb)->>'affected_system'
                         ) sub
                         WHERE c.id = sub.cid AND sub.rn = 1 AND c.affected_system = ''
-                    """)
-                    cur.execute("""
-                        CREATE TABLE IF NOT EXISTS cluster_members (
-                            cluster_id    TEXT NOT NULL REFERENCES clusters(id) ON DELETE CASCADE,
-                            incident_id   TEXT NOT NULL,
-                            assigned_by   TEXT NOT NULL DEFAULT 'llm',
-                            confidence    TEXT,
-                            assigned_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                            PRIMARY KEY (cluster_id, incident_id)
-                        )
-                    """)
-                    cur.execute("""
-                        CREATE INDEX IF NOT EXISTS idx_cluster_members_incident
-                        ON cluster_members (incident_id)
                     """)
                     cur.execute("""
                         CREATE TABLE IF NOT EXISTS assignment_log (
@@ -372,6 +380,11 @@ class DBBase:
             self._ready = True
         except Exception as exc:
             _log.warning("Failed to connect to PostgreSQL: %s. Store disabled.", exc)
+            if self._pool is not None:
+                try:
+                    self._pool.closeall()
+                except Exception:  # noqa: BLE001 — best-effort cleanup
+                    pass
             self._pool = None
             self._ready = False
 

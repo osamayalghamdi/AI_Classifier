@@ -65,6 +65,7 @@ class LocalFakeTicketSource:
             created_at=_parse_dt(row.get("created_at")),
             updated_at=_parse_dt(row.get("last_seen")),
             status=row.get("status", "active"),
+            affected_system=row.get("affected_system", "") or "",
         )
 
 
