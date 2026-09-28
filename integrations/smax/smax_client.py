@@ -15,6 +15,8 @@ dead endpoint.
 from __future__ import annotations
 
 import logging
+import random
+import time
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -24,6 +26,43 @@ _log = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT_S = 10.0
 MAX_RETRIES = 3
+# Backoff between retries: exponential (base * 2^n) with jitter, and a cap
+# that also bounds a server-provided Retry-After.
+BACKOFF_BASE_S = 0.5
+RETRY_AFTER_CAP_S = 30.0
+
+# 429 means "not processed" — retrying is safe for any method. 5xx may have
+# been processed by the server, so only idempotent methods may be retried.
+_RETRY_STATUS = (429, 500, 502, 503, 504)
+
+
+def _retry_after_seconds(value: str | None) -> float | None:
+    """Numeric Retry-After header in seconds, or None when absent/unusable."""
+    if not value:
+        return None
+    try:
+        return max(0.0, float(str(value).strip()))
+    except ValueError:
+        return None
+
+
+def _retry_delay(attempt: int, exc: HTTPError | None = None) -> float:
+    """Backoff before retry #`attempt`: exponential with jitter, capped at
+    RETRY_AFTER_CAP_S. A numeric Retry-After header on `exc` wins (the
+    upstream says when to come back) but is capped too."""
+    headers = getattr(exc, "headers", None) if exc is not None else None
+    server_delay = _retry_after_seconds(headers.get("Retry-After") if headers else None)
+    if server_delay is not None:
+        return min(server_delay, RETRY_AFTER_CAP_S)
+    delay = BACKOFF_BASE_S * (2 ** (attempt - 1))
+    delay += random.uniform(0.0, delay / 2)  # jitter: desync parallel clients
+    return min(delay, RETRY_AFTER_CAP_S)
+
+
+def _should_retry(status: int, idempotent: bool) -> bool:
+    if status == 429:
+        return True
+    return idempotent and status in _RETRY_STATUS
 
 
 class SmaxClient:
@@ -47,22 +86,36 @@ class SmaxClient:
                 "Accept": "application/json",
             },
         )
+        idempotent = method.upper() in ("GET", "HEAD")
         last_err: Exception | None = None
+        attempts_made = 0
         for attempt in range(1, MAX_RETRIES + 1):
+            attempts_made = attempt
             try:
                 with urlopen(req, timeout=self._timeout) as resp:
                     return resp.read()
             except HTTPError as exc:
-                if exc.code in (429, 500, 502, 503, 504) and attempt < MAX_RETRIES:
-                    _log.warning("SMAX %s on %s — retry %d/%d", exc.code, path, attempt, MAX_RETRIES)
+                if _should_retry(exc.code, idempotent) and attempt < MAX_RETRIES:
+                    delay = _retry_delay(attempt, exc)
+                    _log.warning("SMAX %s on %s — retry %d/%d in %.1fs",
+                                 exc.code, path, attempt, MAX_RETRIES, delay)
+                    time.sleep(delay)
                     continue
                 raise
             except URLError as exc:
                 last_err = exc
-                if attempt < MAX_RETRIES:
-                    _log.warning("SMAX unreachable on %s — retry %d/%d", path, attempt, MAX_RETRIES)
+                if idempotent and attempt < MAX_RETRIES:
+                    delay = _retry_delay(attempt, None)
+                    _log.warning("SMAX unreachable on %s — retry %d/%d in %.1fs",
+                                 path, attempt, MAX_RETRIES, delay)
+                    time.sleep(delay)
                     continue
-        raise RuntimeError(f"SMAX unreachable after {MAX_RETRIES} attempts: {last_err}") from last_err
+                # Non-idempotent: the request may have reached SMAX — never
+                # repeat it (a duplicate suggestion is worse than an error).
+                break
+        raise RuntimeError(
+            f"SMAX unreachable after {attempts_made} of {MAX_RETRIES} attempts: {last_err}"
+        ) from last_err
 
     # ── endpoint surface (one method per upstream call) ───────────────
     def get_ticket(self, ticket_id: str) -> dict:

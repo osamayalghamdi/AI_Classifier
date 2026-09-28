@@ -67,6 +67,11 @@ class PipelineResult:
 # Only place in the codebase where SMAX's payload keys are named.
 _TITLE_KEYS = ("title", "summary", "subject", "name")
 _DESC_KEYS = ("description", "details", "body", "notes")
+# The ticketing system's own view of which platform the ticket belongs to.
+# When present the classifier pins it (no LLM guess); a value outside the
+# taxonomy is ignored upstream, so an unknown queue name is harmless.
+_SYSTEM_KEYS = ("affected_system", "affectedSystem", "AffectedSystem",
+                "affected_system_name", "system")
 _ID_KEYS = ("ticket_id", "id", "incident_id", "number")
 _CREATED_KEYS = ("created_at", "created", "created_date", "opened_at")
 _UPDATED_KEYS = ("updated_at", "updated", "last_modified")
@@ -102,6 +107,7 @@ def from_smax(payload: dict) -> Incident:
         source_reference=_first(payload, _ID_KEYS),
         title=_first(payload, _TITLE_KEYS),
         description=_first(payload, _DESC_KEYS),
+        affected_system=_first(payload, _SYSTEM_KEYS),
         attachments=[],  # fetched separately via client.get_attachments
         created_at=_iso(payload, _CREATED_KEYS),
         updated_at=_iso(payload, _UPDATED_KEYS),

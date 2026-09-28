@@ -41,6 +41,20 @@ class TestSubmit:
         assert body["created_at"] == "2025-01-01T10:00:00+00:00"
         assert body["updated_at"] == "2025-01-02T11:30:00+00:00"
 
+    def test_payload_carries_the_supplied_system(self, classifier_client, fake_classifier):
+        inc = _incident("INC-2")
+        inc.affected_system = "Nusuk Masar Haj"
+        classifier_client.submit(inc)
+        body = fake_classifier.requests[-1][3]
+        assert body["affected_system"] == "Nusuk Masar Haj"
+
+    def test_payload_omits_an_empty_system(self, classifier_client, fake_classifier):
+        """No system supplied → the field is not sent at all (the API then
+        resolves it), so old callers keep the exact previous payload."""
+        classifier_client.submit(_incident("INC-3"))
+        body = fake_classifier.requests[-1][3]
+        assert "affected_system" not in body
+
     def test_missing_token_raises_not_configured_before_network(self, fake_classifier):
         url = f"http://127.0.0.1:{fake_classifier.server_address[1]}"
         client = ClassifierClient(api_url=url, token="")

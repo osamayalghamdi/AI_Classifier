@@ -32,6 +32,18 @@ class TestFromSmax:
         assert inc.affected_system == ""
         assert inc.attachments == []
 
+    def test_maps_the_system_the_ticketing_system_supplies(self):
+        """The classifier PINS the system when the ticketing system supplies
+        one — the connector must not drop it on the floor."""
+        inc = from_smax({"ticket_id": "INC-101", "title": "t", "description": "d",
+                         "AffectedSystem": "Nusuk Masar Haj"})
+        assert inc.affected_system == "Nusuk Masar Haj"
+        assert from_smax({"ticket_id": "x", "title": "t", "affected_system": "CRM"}).affected_system == "CRM"
+        assert from_smax({"ticket_id": "x", "title": "t", "system": "CRM"}).affected_system == "CRM"
+
+    def test_missing_system_stays_empty(self):
+        assert from_smax({"ticket_id": "x", "title": "t"}).affected_system == ""
+
     def test_alternate_key_aliases(self):
         inc = from_smax({"number": "T-9", "subject": "subj", "notes": "note text",
                          "opened_at": "2025-02-01T00:00:00+00:00"})

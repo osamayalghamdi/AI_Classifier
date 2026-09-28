@@ -18,7 +18,7 @@ import logging
 import queue
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from .config import NotConfiguredError, Settings
@@ -77,28 +77,44 @@ def run_once(
         return {"since": since_raw, "listed": 0, "submitted": 0, "advanced": None, "error": str(exc)}
 
     submitted = 0
-    latest: str = since_raw
-    advanced = False
+    newest_submitted: str | None = None   # max(updated_at) of the OK submits
+    oldest_failed: str | None = None      # min(updated_at) of the failures
+    failed_unstamped = False              # a failure we cannot pin a time to
     for payload in payloads:
         incident = from_smax(payload)
         if not incident.source_reference:
-            _log.warning("SMAX payload without a source_reference — skipped: %r", payload)
+            # Log KEY NAMES only — a whole payload dumps ticket text.
+            _log.warning("SMAX payload without a source_reference — skipped (keys: %s)",
+                         sorted(payload.keys()))
             continue
         try:
             ref = classifier.submit(incident)
         except Exception as exc:  # noqa: BLE001
             _log.error("Submit failed for %s: %s", incident.source_reference, exc)
+            iso = _incident_changed_iso(incident)
+            if iso is None:
+                failed_unstamped = True
+            elif oldest_failed is None or iso < oldest_failed:
+                oldest_failed = iso
             continue
         submitted += 1
         if outbox is not None:
             outbox.put(ref)
-        changed = incident.updated_at or incident.created_at
-        if changed is not None:
-            iso = _as_utc_iso(changed)
-            if iso > latest:
-                latest = iso
-                advanced = True
+        iso = _incident_changed_iso(incident)
+        if iso is not None and (newest_submitted is None or iso > newest_submitted):
+            newest_submitted = iso
 
+    latest = newest_submitted or since_raw
+    if failed_unstamped:
+        # No timestamp to re-list this failure precisely — hold the stamp.
+        _log.warning("Poll: a failed ticket carried no usable timestamp — "
+                     "stamp held at %s so the whole batch is re-listed", since_raw[:19])
+        latest = since_raw
+    elif oldest_failed is not None and oldest_failed <= latest:
+        # Never advance PAST a failed ticket: stamp to just before it, so it
+        # is re-listed next tick even when a newer ticket submitted fine.
+        latest = _just_before(oldest_failed)
+    advanced = latest > since_raw
     if advanced:
         write_stamp(settings.smax_sync_stamp_path, latest)
         _log.info("Poll: %d/%d tickets submitted (since %s, stamp now %s)",
@@ -108,6 +124,19 @@ def run_once(
                   submitted, len(payloads), since_raw[:19])
     return {"since": since_raw, "listed": len(payloads), "submitted": submitted,
             "advanced": latest if advanced else None}
+
+
+def _incident_changed_iso(incident) -> str | None:
+    """The ticket's change time as a normalized UTC ISO string (updated_at
+    wins over created_at), or None when the payload carried neither."""
+    changed = incident.updated_at or incident.created_at
+    return _as_utc_iso(changed) if changed is not None else None
+
+
+def _just_before(iso: str) -> str:
+    """One microsecond before an ISO timestamp — the stamp floor under a
+    failed submit (the poll query is `updated_at > since`)."""
+    return (datetime.fromisoformat(iso) - timedelta(microseconds=1)).isoformat()
 
 
 def _as_utc_iso(dt: datetime) -> str:

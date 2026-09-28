@@ -21,6 +21,11 @@ RUN pip install --no-cache-dir \
         uvicorn[standard] \
         python-multipart
 
+# Bake the EasyOCR detection + recognition models into the image (they are
+# otherwise downloaded on the first request — fails where egress is blocked).
+ENV EASYOCR_MODULE_PATH=/app/easyocr
+RUN python -c "import easyocr; easyocr.Reader(['en'], gpu=False); easyocr.Reader(['ar'], gpu=False)"
+
 COPY ocr_server.py .
 
 EXPOSE 8001

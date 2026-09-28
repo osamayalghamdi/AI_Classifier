@@ -10,8 +10,10 @@ never through its Python internals. Endpoints used:
                                    manual runs); not part of E1-E9, but
                                    handy for one-off checks.
 
-Transport mirrors smax_client.py: urllib, Bearer auth, timeouts, retry on
-429/5xx, and a loud NotConfiguredError when the token is missing.
+Transport mirrors smax_client.py: urllib, Bearer auth, timeouts, retry
+policy (429 always; 5xx/timeouts only for idempotent GETs — see the retry
+helpers it imports), and a loud NotConfiguredError when the token is
+missing.
 """
 
 from __future__ import annotations
@@ -25,6 +27,8 @@ from urllib.request import Request, urlopen
 
 from .config import NotConfiguredError
 from .smax_models import Incident
+# One retry policy for both transports (backoff + jitter + Retry-After cap).
+from .smax_client import _retry_delay, _should_retry
 
 _log = logging.getLogger(__name__)
 
@@ -67,25 +71,35 @@ class ClassifierClient:
             method=method,
             headers=headers,
         )
+        idempotent = method.upper() in ("GET", "HEAD")
         last_err: Exception | None = None
+        attempts_made = 0
         for attempt in range(1, MAX_RETRIES + 1):
+            attempts_made = attempt
             try:
                 with urlopen(req, timeout=self._timeout) as resp:
                     return resp.read()
             except HTTPError as exc:
-                if exc.code in (429, 500, 502, 503, 504) and attempt < MAX_RETRIES:
-                    _log.warning("Classifier API %s on %s — retry %d/%d",
-                                 exc.code, path, attempt, MAX_RETRIES)
+                if _should_retry(exc.code, idempotent) and attempt < MAX_RETRIES:
+                    delay = _retry_delay(attempt, exc)
+                    _log.warning("Classifier API %s on %s — retry %d/%d in %.1fs",
+                                 exc.code, path, attempt, MAX_RETRIES, delay)
+                    time.sleep(delay)
                     continue
                 raise
             except URLError as exc:
                 last_err = exc
-                if attempt < MAX_RETRIES:
-                    _log.warning("Classifier API unreachable on %s — retry %d/%d",
-                                 path, attempt, MAX_RETRIES)
+                if idempotent and attempt < MAX_RETRIES:
+                    delay = _retry_delay(attempt, None)
+                    _log.warning("Classifier API unreachable on %s — retry %d/%d in %.1fs",
+                                 path, attempt, MAX_RETRIES, delay)
+                    time.sleep(delay)
                     continue
+                # POST: the request may have been accepted — do not repeat it
+                # (the poller re-lists failures instead, see poller.run_once).
+                break
         raise RuntimeError(
-            f"Classifier API unreachable after {MAX_RETRIES} attempts: {last_err}"
+            f"Classifier API unreachable after {attempts_made} of {MAX_RETRIES} attempts: {last_err}"
         ) from last_err
 
     # ── E1: async ingest ──────────────────────────────────────────────
@@ -102,6 +116,10 @@ class ClassifierClient:
             "created_at": incident.created_at.isoformat() if incident.created_at else None,
             "updated_at": incident.updated_at.isoformat() if incident.updated_at else None,
         }
+        if incident.affected_system:
+            # The ticketing system's own system pick — the classifier validates
+            # and pins it (LLM resolution only when this is absent).
+            payload["affected_system"] = incident.affected_system
         if incident.attachments:
             payload["attachments"] = incident.attachments
         raw = self._request("POST", "/api/v1/incidents", body=_dumps(payload))

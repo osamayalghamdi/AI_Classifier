@@ -56,6 +56,7 @@ def _incident_from_backfill_item(item: dict) -> Incident:
             title=str(item.get("title", "") or ""),
             description=str(item.get("description", "") or ""),
             status=str(item.get("status", "active") or "active"),
+            affected_system=str(item.get("affected_system", "") or ""),
             created_at=_parse_dt(item.get("created_at")),
             updated_at=_parse_dt(item.get("updated_at")),
         )

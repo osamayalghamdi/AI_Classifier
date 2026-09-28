@@ -42,6 +42,9 @@ ELM_API_URL = os.getenv("ELM_API_URL", "https://llms.elm.sa/v1/chat/completions"
 ELM_MODEL = os.getenv("ELM_MODEL", "openai/qwen3-vl:32b")
 ELM_API_KEY = os.getenv("ELM_API_KEY", "").strip()
 OCR_ELM_TIMEOUT_S = float(os.getenv("OCR_ELM_TIMEOUT_S", "60"))
+# PDFs are rendered at 300 dpi (~26 MB RAM per page) — cap the page count so
+# one long scan cannot OOM the container.
+OCR_MAX_PDF_PAGES = int(os.getenv("OCR_MAX_PDF_PAGES", "10"))
 
 _ELM_SYSTEM_PROMPT = (
     "You are a document OCR engine. Transcribe ALL visible text from the "
@@ -126,7 +129,7 @@ def _get_reader(lang: str) -> easyocr.Reader:
 def _load_pages(raw: bytes, filename: str) -> list[Image.Image]:
     """Convert uploaded file to a list of PIL Images."""
     if filename.endswith(".pdf"):
-        return convert_from_bytes(raw, dpi=300)
+        return convert_from_bytes(raw, dpi=300, first_page=1, last_page=OCR_MAX_PDF_PAGES)
     return [Image.open(io.BytesIO(raw)).convert("RGB")]
 
 
@@ -222,7 +225,8 @@ async def ocr(
 ) -> dict:
     """Accept an image or PDF, return extracted text with confidence."""
     from fastapi import HTTPException
-    raw = await file.read()
+    # Read at most one byte past the cap — never buffer an oversized body.
+    raw = await file.read(_MAX_UPLOAD_BYTES + 1)
     if len(raw) > _MAX_UPLOAD_BYTES:
         raise HTTPException(status_code=413, detail="File too large (max 20 MB)")
     filename = (file.filename or "").lower()
