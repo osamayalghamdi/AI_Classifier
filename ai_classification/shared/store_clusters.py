@@ -7,6 +7,7 @@ Pipeline position: 40_store — Postgres/pgvector persistence."""
 
 import json
 import logging
+from datetime import datetime, timedelta, timezone
 
 import numpy as np
 
@@ -32,7 +33,14 @@ class ClustersMixin:
         cluster serves (system-scoped clustering): every member must belong
         to it (enforced in add_cluster_member). '' = legacy / unscoped — the
         first member claims it (see add_cluster_member); retrieval treats it
-        as the 'Unknown' bucket until then."""
+        as the 'Unknown' bucket until then.
+
+        CONCURRENT-SAFE: the id is content-derived, so two workers (the sweep
+        and Flow A minting the same group at the same moment) can race on the
+        same id. `ON CONFLICT DO NOTHING` turns that into "somebody already
+        created it" — the INSERT returns no row and this returns None — instead
+        of a UniqueViolation that would abort a whole sweep.
+        """
         if not self._ready or self._pool is None:
             return None
         conn = self._getconn()
@@ -41,6 +49,7 @@ class ClustersMixin:
                 cur.execute(
                     "INSERT INTO clusters (id, name_ar, name_en, description, status, affected_system) "
                     "VALUES (%s, %s, %s, %s, %s, %s) "
+                    "ON CONFLICT (id) DO NOTHING "
                     "RETURNING id, name_ar, name_en, description, status, affected_system, "
                     "created_at, updated_at",
                     (cluster_id, name_ar, name_en, description, status,
@@ -92,15 +101,25 @@ class ClustersMixin:
         finally:
             self._putconn(conn)
 
-    def set_cluster_status(self, cluster_id: str, status: str) -> bool:
+    def set_cluster_status(self, cluster_id: str, status: str,
+                           expected_status: str | None = None) -> bool:
+        """Set a cluster's status. With expected_status the update is a
+        compare-and-set (only applied if the row still has that status), so
+        two concurrent decisions cannot both win."""
         if not self._ready or self._pool is None:
             return False
         conn = self._getconn()
         try:
             with conn.cursor() as cur:
-                cur.execute(
-                    "UPDATE clusters SET status = %s, updated_at = NOW() "
-                    "WHERE id = %s", (status, cluster_id))
+                if expected_status is None:
+                    cur.execute(
+                        "UPDATE clusters SET status = %s, updated_at = NOW() "
+                        "WHERE id = %s", (status, cluster_id))
+                else:
+                    cur.execute(
+                        "UPDATE clusters SET status = %s, updated_at = NOW() "
+                        "WHERE id = %s AND status = %s",
+                        (status, cluster_id, expected_status))
             conn.commit()
             return cur.rowcount > 0
         finally:
@@ -212,6 +231,11 @@ class ClustersMixin:
         conn = self._getconn()
         try:
             with conn.cursor() as cur:
+                # Serialise concurrent adds of the SAME incident (Flow A
+                # arrival threads, the sweep, admin edits): without it two
+                # transactions each delete-then-insert and the ticket ends up
+                # in two clusters. Released at commit/rollback.
+                cur.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (incident_id,))
                 # ── System check — refuse cross-system membership ──────────
                 cur.execute("SELECT affected_system FROM clusters WHERE id = %s",
                             (cluster_id,))
@@ -249,6 +273,16 @@ class ClustersMixin:
                 cur.execute(
                     "DELETE FROM cluster_members WHERE incident_id = %s AND cluster_id <> %s",
                     (incident_id, cluster_id))
+                # An explicit HUMAN assignment also re-stamps an existing row:
+                # the audit treats assigned_by='human' as a pin it may not
+                # remove, so "add this member by hand" must win over the
+                # provenance the row already carries (e.g. 'seed' or 'llm').
+                if assigned_by in ("human", "admin"):
+                    cur.execute(
+                        "UPDATE cluster_members SET assigned_by = %s, "
+                        "confidence = COALESCE(%s, confidence), assigned_at = NOW() "
+                        "WHERE cluster_id = %s AND incident_id = %s",
+                        (assigned_by, confidence, cluster_id, incident_id))
                 cur.execute(
                     "INSERT INTO cluster_members (cluster_id, incident_id, assigned_by, confidence) "
                     "VALUES (%s, %s, %s, %s) "
@@ -358,6 +392,93 @@ class ClustersMixin:
                 row = cur.fetchone()
             conn.commit()
             return row[0] if row else 0
+        finally:
+            self._putconn(conn)
+
+    def audit_vetoes(self, incident_id: str, cluster_ids: list[str],
+                     ttl_days: int | None = None) -> set[str]:
+        """Clusters that have REJECTED this incident in an audit and not taken
+        it back since — the anti-oscillation ledger.
+
+        WHY: Flow C (nightly audit) evicts impure members, but Flow A/B re-run
+        every sweep (15 min) and re-assign them to the SAME cluster — the LLMs
+        disagree and the two loops fight forever (prod: the same 4 tickets
+        removed and re-added nightly). The audit sees ALL members and is the
+        authority on purity, so its newest verdict per (incident, cluster)
+        wins:
+
+          * newest verdict is ``audit_remove`` -> veto (Flow A must not
+            re-assign, Flow B must not re-mint that pair);
+          * newest verdict is ``audit_keep``   -> clear (the audit itself
+            reversed the rejection, so the ticket may come back).
+
+        ``ttl_days`` bounds the veto (persistent.AUDIT_VETO_TTL_DAYS): an
+        eviction older than that stops blocking, so a wrong audit verdict can
+        never lock a ticket out of a cluster forever — it just costs one retry
+        per month instead of one every 15 minutes. None = no expiry.
+
+        Returns the subset of ``cluster_ids`` currently vetoing the incident.
+        Only audit verdicts count: `assign` rows are exactly the decisions
+        this ledger exists to override.
+        """
+        if not self._ready or self._pool is None or not cluster_ids:
+            return set()
+        conn = self._getconn()
+        try:
+            with conn.cursor() as cur:
+                sql = ("SELECT cluster_id, action, created_at FROM ("
+                       "  SELECT DISTINCT ON (verdict->>'cluster_id')"
+                       "         verdict->>'cluster_id' AS cluster_id,"
+                       "         verdict->>'action' AS action, id, created_at"
+                       "  FROM assignment_log"
+                       "  WHERE incident_id = %s AND verdict->>'action' IN ('audit_remove', 'audit_keep')"
+                       "  ORDER BY verdict->>'cluster_id', id DESC"
+                       ") t WHERE cluster_id = ANY(%s)")
+                args: list = [incident_id, list(cluster_ids)]
+                if ttl_days is not None:
+                    cutoff = datetime.now(timezone.utc) - timedelta(days=ttl_days)
+                    sql += " AND created_at >= %s"
+                    args.append(cutoff)
+                cur.execute(sql, tuple(args))
+                return {r[0] for r in cur.fetchall() if r[1] == "audit_remove"}
+        finally:
+            self._putconn(conn)
+
+    def cross_system_members(self, cluster_id: str, cluster_system: str) -> list[str]:
+        """Members whose CURRENT classified system differs from the cluster's.
+
+        The store refuses cross-system INSERTs (add_cluster_member), but rows
+        that predate that invariant — or incidents RE-CLASSIFIED into another
+        system after joining — stay behind, so Hajj clusters still show Umrah
+        tickets on the dashboard. This is the reconciliation query: the sweep
+        evicts whatever it returns (see persistent._evict_cross_system_members).
+
+        Missing/blank classification counts as 'Unknown', exactly like
+        add_cluster_member. An UNSCOPED cluster ('') is not reconciled: its
+        first member claims the system, so it has no declared scope to violate.
+        """
+        if not self._ready or self._pool is None:
+            return []
+        cluster_sys = (cluster_system or "").strip()
+        if not cluster_sys:
+            return []
+        conn = self._getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT cm.incident_id, i.classification_json "
+                    "FROM cluster_members cm JOIN incidents i ON i.id = cm.incident_id "
+                    "WHERE cm.cluster_id = %s", (cluster_id,))
+                out = []
+                for incident_id, raw in cur.fetchall():
+                    try:
+                        cls = json.loads(raw or "{}")
+                    except Exception:
+                        cls = {}
+                    inc_sys = (cls.get("affected_system") or "Unknown").strip() or "Unknown"
+                    if inc_sys != cluster_sys:
+                        out.append(incident_id)
+                return out
         finally:
             self._putconn(conn)
 

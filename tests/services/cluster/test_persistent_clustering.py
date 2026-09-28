@@ -743,3 +743,508 @@ class TestSystemScoping:
         _save_incident("tst-sys-f3", "hajj ticket", service="Nusuk Masar Haj.X")
         assert store.add_cluster_member("cl_tst_unk1", "tst-sys-f3") is False
         assert "tst-sys-f3" not in store.cluster_member_ids("cl_tst_unk1")
+
+
+# ── v5 — audit verdicts are binding, and the sweep stops re-minting ───────
+#
+# The v5 fixes all come from ONE prod symptom: the dashboard showed clusters
+# the nightly audit had already declared impure. Flow C evicted a member, the
+# 15-minute sweep handed it straight back (the two LLMs disagree and nothing
+# recorded the disagreement), the audit removed it again the next night, and
+# 60 empty retired rows piled up from naming clusters that had no members.
+
+def _reclassify(iid: str, system: str, service: str = "Nusuk Masar Haj.X") -> None:
+    """Simulate a RE-CLASSIFICATION: flip the stored system of an incident
+    that already sits in a cluster (the drift the sweep must reconcile)."""
+    cls = {"affected_system": system, "service": service, "severity": "Major",
+           "confidence": "high", "canonical_statement": f"Incident reported: {iid}"}
+    conn = store._getconn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE incidents SET classification_json = %s WHERE id = %s",
+                        (json.dumps(cls, ensure_ascii=False), iid))
+        conn.commit()
+    finally:
+        store._putconn(conn)
+
+
+class TestAuditVerdictsAreBinding:
+    def test_flow_a_will_not_re_add_an_audit_evicted_member(self, monkeypatch):
+        """The core thrash: audit removes a wrong member, Flow A says 'assign'
+        again 15 minutes later. The veto must win and the LLM must not even be
+        asked (a vetoed candidate is dropped BEFORE the call)."""
+        for i in ("tst-v1", "tst-v2", "tst-v3"):
+            _save_incident(i, "Rawdah permit fails", service="Nusuk Masar Haj.Issue Permits")
+        _seed_cluster("cl_tst_veto1", "فشل إصدار تصريح الروضة", "Rawdah permit fails",
+                      ["tst-v1", "tst-v2", "tst-v3"])
+
+        _json_llm(monkeypatch, {"keep": ["tst-v1", "tst-v2"],
+                                "remove": [{"id": "tst-v3", "reason": "different problem"}],
+                                "description": "Rawdah permit fails"})
+        assert pc.audit_cluster("cl_tst_veto1")["removed"] == ["tst-v3"]
+        assert "tst-v3" in store.unassigned_incident_ids()
+
+        calls = []
+        _fake_llm(monkeypatch, lambda messages, **kw: calls.append(1) or json.dumps(
+            {"action": "assign", "cluster_id": "cl_tst_veto1",
+             "confidence": "high", "reason": "looks the same to me"}))
+
+        r = pc.assign_incident("tst-v3")
+
+        assert r["action"] == "none_fit"
+        assert calls == []                       # vetoed out before the LLM call
+        assert "tst-v3" not in store.cluster_member_ids("cl_tst_veto1")
+        assert "tst-v3" in store.unassigned_incident_ids()
+        log = store.list_assignment_log(incident_id="tst-v3")[0]
+        assert log["verdict"]["reason"] == "all candidate clusters already rejected this ticket in an audit"
+        assert log["verdict"]["vetoed"] == ["cl_tst_veto1"]
+
+    def test_veto_is_per_cluster_not_per_ticket(self, monkeypatch):
+        """A ticket evicted from cluster X may still join cluster Y — the veto
+        records one disagreement, it does not blacklist the ticket."""
+        for i in ("tst-w1", "tst-w2", "tst-w3", "tst-w4"):
+            _save_incident(i, "Rawdah permit fails", service="Nusuk Masar Haj.Issue Permits")
+        _seed_cluster("cl_tst_veto2", "فشل إصدار تصريح الروضة", "Rawdah permit fails",
+                      ["tst-w1", "tst-w2", "tst-w3"])
+        _seed_cluster("cl_tst_veto3", "مجموعة أخرى", "other problem", ["tst-w4"])
+
+        _json_llm(monkeypatch, {"keep": ["tst-w1", "tst-w2"],
+                                "remove": [{"id": "tst-w3", "reason": "different"}],
+                                "description": "Rawdah permit fails"})
+        pc.audit_cluster("cl_tst_veto2")
+
+        _json_llm(monkeypatch, {"action": "assign", "cluster_id": "cl_tst_veto3",
+                                "confidence": "high", "reason": "fits the other one"})
+        r = pc.assign_incident("tst-w3")
+
+        assert r["action"] == "assign" and r["cluster_id"] == "cl_tst_veto3"
+        assert "tst-w3" in store.cluster_member_ids("cl_tst_veto3")
+        assert "tst-w3" not in store.cluster_member_ids("cl_tst_veto2")
+
+    def test_audit_keep_clears_an_earlier_veto(self, monkeypatch):
+        """The newest audit verdict wins: once the audit itself accepts the
+        ticket again (it came back through a human/admin path), Flow A is free
+        to assign it."""
+        for i in ("tst-x1", "tst-x2"):
+            _save_incident(i, "Rawdah permit fails", service="Nusuk Masar Haj.Issue Permits")
+        _seed_cluster("cl_tst_veto4", "فشل إصدار تصريح الروضة", "Rawdah permit fails",
+                      ["tst-x1", "tst-x2"])
+        _save_incident("tst-x3", "Rawdah permit fails again", service="Nusuk Masar Haj.Issue Permits")
+
+        # 1) evicted -> veto
+        store.log_assignment("tst-x3", ["cl_tst_veto4"], {
+            "action": "audit_remove", "cluster_id": "cl_tst_veto4", "reason": "different"},
+            pc.PROMPT_VERSION, "test-model")
+        assert store.audit_vetoes("tst-x3", ["cl_tst_veto4"], ttl_days=30) == {"cl_tst_veto4"}
+
+        # 2) a later audit KEEPS it -> veto gone
+        store.log_assignment("tst-x3", ["cl_tst_veto4"], {
+            "action": "audit_keep", "cluster_id": "cl_tst_veto4"},
+            pc.PROMPT_VERSION, "test-model")
+        assert store.audit_vetoes("tst-x3", ["cl_tst_veto4"], ttl_days=30) == set()
+
+        _json_llm(monkeypatch, {"action": "assign", "cluster_id": "cl_tst_veto4",
+                                "confidence": "high", "reason": "same"})
+        r = pc.assign_incident("tst-x3")
+        assert r["action"] == "assign"
+        assert "tst-x3" in store.cluster_member_ids("cl_tst_veto4")
+
+    def test_veto_expires_after_ttl(self, monkeypatch):
+        """A veto older than the TTL stops blocking, so a misjudged audit
+        verdict cannot lock a ticket out forever."""
+        _save_incident("tst-y1", "Rawdah permit fails", service="Nusuk Masar Haj.Issue Permits")
+        _seed_cluster("cl_tst_veto5", "فشل إصدار تصريح الروضة", "Rawdah permit fails",
+                      ["tst-y1"])
+        _json_llm(monkeypatch, {"keep": ["tst-y1"], "remove": [],
+                                "description": "Rawdah permit fails"})
+        pc.audit_cluster("cl_tst_veto5")
+
+        store.log_assignment("tst-y1", ["cl_tst_veto5"], {
+            "action": "audit_remove", "cluster_id": "cl_tst_veto5", "reason": "different"},
+            pc.PROMPT_VERSION, "test-model")
+        conn = store._getconn()
+        try:
+            with conn.cursor() as cur:  # age the eviction past the TTL
+                cur.execute("UPDATE assignment_log SET created_at = NOW() - INTERVAL '31 days' "
+                            "WHERE incident_id = 'tst-y1' AND verdict->>'action' = 'audit_remove'")
+            conn.commit()
+        finally:
+            store._putconn(conn)
+
+        assert store.audit_vetoes("tst-y1", ["cl_tst_veto5"], ttl_days=30) == set()
+        assert store.audit_vetoes("tst-y1", ["cl_tst_veto5"], ttl_days=None) == {"cl_tst_veto5"}
+
+
+class TestSweepDoesNotReMintRejectedClusters:
+    def test_flow_b_skips_a_group_the_audit_already_rejected(self, monkeypatch):
+        """Tickets evicted from a cluster must not be re-minted as a brand-new
+        cluster with the same name (that is how prod grew 8 retired twins of
+        one 19-member Rawdah cluster)."""
+        for i in ("tst-z1", "tst-z2", "tst-z3", "tst-z4"):
+            _save_incident(i, "Rawdah permit fails", service="Nusuk Masar Haj.Issue Permits")
+        _seed_cluster("cl_tst_dup1", "فشل إصدار تصريح الروضة", "Rawdah permit fails",
+                      ["tst-z1", "tst-z2", "tst-z3", "tst-z4"])
+
+        def responder(messages, **kw):
+            body = messages[-1]["content"]
+            if '"keep"' in body:                  # Flow C audit (1 call)
+                return json.dumps({"keep": ["tst-z1", "tst-z2"],
+                                   "remove": [{"id": "tst-z3", "reason": "different"},
+                                              {"id": "tst-z4", "reason": "different"}],
+                                   "description": "فشل إصدار تصريح الروضة"})
+            if "NOC shift dashboard" in body:     # Flow D naming (1 call)
+                return "فشل إصدار تصريح الروضة"
+            if "candidate_clusters" in body:      # Flow A phase
+                return json.dumps({"action": "none_fit", "cluster_id": None,
+                                   "confidence": "low", "reason": "x"})
+            ids = [t["id"] for t in json.loads(body)["tickets"]]  # Flow B grouping
+            return json.dumps({"groups": [{"member_ids": ids,
+                                           "name_ar": "فشل إصدار تصريح الروضة",
+                                           "description": "d"}],
+                               "singletons": []})
+
+        _fake_llm(monkeypatch, responder)
+
+        # 2 of 4 = 50% — under the floor, and 2 members stay: cluster survives
+        assert pc.audit_cluster("cl_tst_dup1")["removed"] == ["tst-z3", "tst-z4"]
+        c = store.get_cluster("cl_tst_dup1")
+        assert c["status"] == "active" and c["name_ar"] == "فشل إصدار تصريح الروضة"
+
+        stats = pc.sweep_pool()
+
+        assert stats["veto_skipped"] == 1
+        assert stats["proposals_created"] == 0
+        assert [c["id"] for c in store.list_clusters(status="active")] == ["cl_tst_dup1"]
+        assert "tst-z3" in store.unassigned_incident_ids()
+        # a group the LLM names DIFFERENTLY is still allowed (narrow guard)
+        assert pc._audit_rejected_by_named_cluster(["tst-z3"], "مشكلة أخرى", "Nusuk Masar Haj") is None
+
+    def test_sweep_payload_carries_the_classified_service(self, monkeypatch):
+        """The grouping prompt demands 'same service surface' — the service
+        labels must actually reach the LLM (they were missing, which is how
+        symptom-level clusters spanning unrelated services were born)."""
+        _save_incident("tst-sv1", "export the report list fails", "cannot export xlsx",
+                       service="Nusuk Masar Haj.Track Appeal Status")
+        _save_incident("tst-sv2", "evaluation form upload fails", "upload rejected",
+                       service="Nusuk Masar Haj.Submit Evaluation")
+
+        seen = {}
+
+        def responder(messages, **kw):
+            body = messages[-1]["content"]
+            if "candidate_clusters" in body:
+                return json.dumps({"action": "none_fit", "cluster_id": None,
+                                   "confidence": "low", "reason": "x"})
+            payload = json.loads(body)
+            seen["tickets"] = payload["tickets"]
+            return json.dumps({"groups": [], "singletons": [t["id"] for t in payload["tickets"]]})
+
+        _fake_llm(monkeypatch, responder)
+        pc.sweep_pool()
+
+        by_id = {t["id"]: t for t in seen["tickets"]}
+        assert by_id["tst-sv1"]["service"].endswith("Track Appeal Status")
+        assert by_id["tst-sv2"]["service"].endswith("Submit Evaluation")
+        assert all("offering" in t for t in seen["tickets"])
+
+
+class TestSystemReconciliation:
+    def test_sweep_evicts_cross_system_member_after_reclassification(self):
+        """v4 blocks cross-system INSERTS; a ticket RE-CLASSIFIED into another
+        system afterwards still sat in the cluster (prod: an 'Other' ticket in
+        a Hajj cluster). The sweep reconciles it."""
+        _save_incident("tst-rec1", "permit delay", service="Nusuk Masar Haj.Issue Permits")
+        _save_incident("tst-rec2", "permit stuck", service="Nusuk Masar Haj.Issue Permits")
+        _seed_cluster("cl_tst_rec1", "تأخر إصدار التصاريح", "permit delays",
+                      ["tst-rec1", "tst-rec2"], affected_system="Nusuk Masar Haj")
+
+        _reclassify("tst-rec2", "Nusuk Masar Umrah", "Nusuk Masar Umrah.X")
+
+        assert store.cross_system_members("cl_tst_rec1", "Nusuk Masar Haj") == ["tst-rec2"]
+        n = pc._evict_cross_system_members()
+
+        assert n == 1
+        assert store.cluster_member_ids("cl_tst_rec1") == ["tst-rec1"]
+        assert "tst-rec2" in store.unassigned_incident_ids()
+        assert store.list_assignment_log(incident_id="tst-rec2")[0]["verdict"]["action"] == "system_evict"
+        # the store keeps refusing the insert, so the eviction is stable
+        assert store.add_cluster_member("cl_tst_rec1", "tst-rec2") is False
+
+    def test_legacy_foreign_member_is_evicted(self):
+        """Rows written BEFORE the invariant existed (prod: 4 Umrah tickets in
+        Hajj clusters since 2026-08-24) are cleaned by the same pass."""
+        _save_incident("tst-rec3", "rawdah permit fails", service="Nusuk Masar Haj.Issue Permits")
+        _save_incident("tst-rec4", "rawdah permit fails", service="Nusuk Masar Umrah.X",
+                       system="Nusuk Masar Umrah")
+        _seed_cluster("cl_tst_rec2", "فشل إصدار تصريح الروضة", "rawdah fails",
+                      ["tst-rec3"], affected_system="Nusuk Masar Haj")
+        # bypass the guard the way a pre-v4 row did: straight into the table
+        conn = store._getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("INSERT INTO cluster_members (cluster_id, incident_id, assigned_by, confidence) "
+                            "VALUES (%s, %s, 'legacy', 'high')", ("cl_tst_rec2", "tst-rec4"))
+            conn.commit()
+        finally:
+            store._putconn(conn)
+
+        assert pc._evict_cross_system_members() == 1
+        assert store.cluster_member_ids("cl_tst_rec2") == ["tst-rec3"]
+        # the reconciliation did NOT create an audit veto (system reason, not fit)
+        assert store.audit_vetoes("tst-rec4", ["cl_tst_rec2"], ttl_days=None) == set()
+
+
+class TestNoNamingOfEmptyClusters:
+    def test_audit_demote_does_not_rename_the_empty_cluster(self, monkeypatch):
+        """Naming an empty cluster is what stored 'لا توجد تذاكر في العنقود'
+        ('there are no tickets in the cluster') on 60 retired prod rows: the
+        demote path removed every member and then asked the LLM for a name."""
+        _save_incident("tst-nm1", "permit delay", service="Nusuk Masar Haj.Issue Permits")
+        _save_incident("tst-nm2", "permit stuck", service="Nusuk Masar Haj.Issue Permits")
+        _seed_cluster("cl_tst_nm1", "تأخر إصدار التصاريح", "permit delays",
+                      ["tst-nm1", "tst-nm2"])
+
+        calls = []
+        _fake_llm(monkeypatch, lambda messages, **kw: calls.append(1) or json.dumps({
+            "keep": ["tst-nm1"],
+            "remove": [{"id": "tst-nm2", "reason": "different"}],
+            "description": "تأخر إصدار التصاريح"}))
+
+        r = pc.audit_cluster("cl_tst_nm1")
+
+        assert r["demoted"] is True
+        assert r["name_regenerated"] is False
+        assert len(calls) == 1  # audit only — no naming call
+        assert store.get_cluster("cl_tst_nm1")["name_ar"] == "تأخر إصدار التصاريح"
+
+    def test_regenerate_name_is_a_noop_for_a_cluster_without_members(self, monkeypatch):
+        _seed_cluster("cl_tst_nm2", "مجموعة", "d", [])
+        calls = []
+        _fake_llm(monkeypatch, lambda messages, **kw: calls.append(1) or "لا توجد تذاكر في العنقود")
+
+        name = pc.regenerate_name("cl_tst_nm2")
+
+        assert calls == []
+        assert name == "مجموعة"
+
+    def test_arabic_cluster_name_never_asks_the_llm_for_an_empty_list(self, monkeypatch):
+        _fake_llm(monkeypatch, lambda messages, **kw: "لا توجد تذاكر في العنقود")
+        assert pc._arabic_cluster_name([]) == "مجموعة"
+
+
+class TestAuditSeesTheServiceSurface:
+    """The audit could only compare WORDING before v5 — it never received the
+    service, which is why prod kept a mixed cluster whose own name was an OR
+    ('فشل في عمليات رفع أو تصدير البيانات' = an evaluation-form upload + a
+    report export). The service must reach the prompt."""
+
+    def test_audit_payload_carries_each_member_service(self, monkeypatch):
+        _save_incident("tst-svc1", "export the report list fails",
+                       service="Nusuk Masar Haj.Track Appeal Status")
+        _save_incident("tst-svc2", "evaluation form upload fails",
+                       service="Nusuk Masar Haj.Submit Evaluation")
+        _seed_cluster("cl_tst_svc", "مجموعة", "d", ["tst-svc1", "tst-svc2"])
+
+        seen = {}
+
+        def responder(messages, **kw):
+            if "Tickets:" in messages[-1]["content"]:      # audit call
+                seen["audit"] = messages[-1]["content"]
+                return json.dumps({"keep": ["tst-svc1", "tst-svc2"], "remove": [],
+                                   "description": "d"})
+            return "مجموعة"                                 # naming call
+
+        _fake_llm(monkeypatch, responder)
+        pc.audit_cluster("cl_tst_svc")
+
+        assert "Track Appeal Status" in seen["audit"]
+        assert "Submit Evaluation" in seen["audit"]
+        assert "tst-svc1" in seen["audit"] and "tst-svc2" in seen["audit"]
+
+    def test_audit_prompt_states_the_surface_and_conservative_rules(self):
+        assert "SERVICE SURFACE" in pc.AUDIT_PROMPT
+        assert "DIFFERENT services are different" in pc.AUDIT_PROMPT
+        assert "A REASON TO REMOVE" in pc.AUDIT_PROMPT          # the conservative list
+        assert "money transfers" in pc.AUDIT_PROMPT
+        # the assign prompt must require the same failing flow across services
+        assert "SERVICE SURFACE" in pc.ASSIGN_PROMPT
+
+
+class TestHumanPinnedMembers:
+    """An operator override must survive the nightly audit.
+
+    The audit is an LLM and disagrees with human judgement on borderline
+    tickets; without pinning, every manual fix was undone the next night (the
+    audit re-removed reinstated members within hours in prod).
+    """
+
+    def test_audit_cannot_remove_a_human_pinned_member(self, monkeypatch):
+        _save_incident("tst-pin1", "permit delay", service="Nusuk Masar Haj.Issue Permits")
+        _save_incident("tst-pin2", "permit stuck", service="Nusuk Masar Haj.Issue Permits")
+        _save_incident("tst-pin3", "permit frozen", service="Nusuk Masar Haj.Issue Permits")
+        _seed_cluster("cl_tst_pin", "تأخر إصدار التصاريح", "permit delays",
+                      ["tst-pin1", "tst-pin2"])
+        # an operator adds the third ticket by hand
+        assert store.add_cluster_member("cl_tst_pin", "tst-pin3", assigned_by="human") is True
+
+        _json_llm(monkeypatch, {
+            "keep": ["tst-pin1", "tst-pin2"],
+            "remove": [{"id": "tst-pin3", "reason": "the model disagrees with the operator"}],
+            "description": "تأخر إصدار التصاريح"})
+        r = pc.audit_cluster("cl_tst_pin")
+
+        assert r["removed"] == []
+        assert r["pinned"] == ["tst-pin3"]
+        assert "tst-pin3" in store.cluster_member_ids("cl_tst_pin")
+        log = store.list_assignment_log(incident_id="tst-pin3")[0]
+        assert log["verdict"]["action"] == "audit_remove_overruled"
+        assert log["verdict"]["overruled_because"] == "member pinned by a human"
+
+    def test_llm_assigned_members_are_still_removable(self, monkeypatch):
+        _save_incident("tst-pin4", "permit delay", service="Nusuk Masar Haj.Issue Permits")
+        _save_incident("tst-pin5", "bus data error", service="Nusuk Masar Haj.Manage Buses")
+        _save_incident("tst-pin6", "permit stuck", service="Nusuk Masar Haj.Issue Permits")
+        _seed_cluster("cl_tst_pin2", "تأخر إصدار التصاريح", "permit delays",
+                      ["tst-pin4", "tst-pin5", "tst-pin6"])
+
+        _json_llm(monkeypatch, {
+            "keep": ["tst-pin4", "tst-pin6"],
+            "remove": [{"id": "tst-pin5", "reason": "a different problem"}],
+            "description": "تأخر إصدار التصاريح"})
+        r = pc.audit_cluster("cl_tst_pin2")
+
+        assert r["removed"] == ["tst-pin5"]
+        assert r["pinned"] == []
+        assert "tst-pin5" not in store.cluster_member_ids("cl_tst_pin2")
+
+    def test_demotion_never_evicts_a_pinned_member(self, monkeypatch):
+        """Demoting a cluster returns EVERY member to the pool — which would
+        silently undo the operator's pin. The cluster is kept instead."""
+        _save_incident("tst-pin7", "permit delay", service="Nusuk Masar Haj.Issue Permits")
+        _save_incident("tst-pin8", "permit stuck", service="Nusuk Masar Haj.Issue Permits")
+        _save_incident("tst-pin9", "permit frozen", service="Nusuk Masar Haj.Issue Permits")
+        _seed_cluster("cl_tst_pin3", "تأخر إصدار التصاريح", "permit delays",
+                      ["tst-pin7", "tst-pin8", "tst-pin9"])
+        store.add_cluster_member("cl_tst_pin3", "tst-pin7", assigned_by="human")
+
+        _json_llm(monkeypatch, {
+            "keep": ["tst-pin7"],
+            "remove": [{"id": "tst-pin8", "reason": "different"},
+                       {"id": "tst-pin9", "reason": "also different"}],
+            "description": "تأخر إصدار التصاريح"})
+        r = pc.audit_cluster("cl_tst_pin3")
+
+        assert r["removed"] == ["tst-pin8", "tst-pin9"]
+        assert r["demoted"] is False
+        assert store.cluster_member_ids("cl_tst_pin3") == ["tst-pin7"]
+        assert store.get_cluster("cl_tst_pin3")["status"] == "active"
+
+
+class TestServiceConsistencyGuard:
+    """Two taxonomy services = two problems — enforced without asking the LLM.
+
+    The grouping LLM still merges tickets that share only a symptom word
+    ("cannot enter pilgrim data") while sitting on different services; prod got
+    a 'Between cities · Register Arrival' ticket grouped with a
+    'Registration · application form' one. The mint path refuses such groups.
+    """
+
+    def test_group_spanning_two_services_is_not_minted(self, monkeypatch):
+        _save_incident("tst-sg1", "cannot enter the pilgrim in the manifest",
+                       service="Between cities - Nusuk Masar Haj.Register Arrival/Departure for in house")
+        _save_incident("tst-sg2", "cannot enter pilgrim numbers",
+                       service="Registration - Nusuk Masar Haj.Fill out the application form")
+
+        def responder(messages, **kw):
+            body = messages[-1]["content"]
+            if "candidate_clusters" in body:
+                return json.dumps({"action": "none_fit", "cluster_id": None,
+                                   "confidence": "low", "reason": "x"})
+            ids = [t["id"] for t in json.loads(body)["tickets"]]
+            return json.dumps({"groups": [{"member_ids": ids, "name_ar": "فشل إدخال بيانات الحجاج",
+                                           "description": "d"}], "singletons": []})
+
+        _fake_llm(monkeypatch, responder)
+        stats = pc.sweep_pool()
+
+        assert stats["service_split_skipped"] == 1
+        assert stats["proposals_created"] == 0
+        assert store.list_clusters() == []
+        assert "tst-sg1" in store.unassigned_incident_ids()
+
+    def test_same_service_group_is_still_minted(self, monkeypatch):
+        _save_incident("tst-sg3", "manifest entry error for pilgrims",
+                       service="Between cities - Nusuk Masar Haj.Register Arrival/Departure for in house")
+        _save_incident("tst-sg4", "manifest entry rejects the group",
+                       service="Between cities - Nusuk Masar Haj.Register Arrival/Departure for in house")
+
+        def responder(messages, **kw):
+            body = messages[-1]["content"]
+            if "candidate_clusters" in body:
+                return json.dumps({"action": "none_fit", "cluster_id": None,
+                                   "confidence": "low", "reason": "x"})
+            ids = [t["id"] for t in json.loads(body)["tickets"]]
+            return json.dumps({"groups": [{"member_ids": ids, "name_ar": "فشل إدخال بيانات الترحيل",
+                                           "description": "d"}], "singletons": []})
+
+        _fake_llm(monkeypatch, responder)
+        stats = pc.sweep_pool()
+
+        assert stats["service_split_skipped"] == 0
+        assert stats["proposals_created"] == 1
+
+    def test_generic_services_do_not_block_a_group(self):
+        """A generic/abstained service carries no surface information."""
+        _save_incident("tst-sg5", "permit error one", service="System/Application - Nusuk Masar Haj")
+        _save_incident("tst-sg6", "permit error two", service="Istiqbal - Nusuk Masar Haj.OFFERING-GAP")
+        assert pc._inconsistent_services(["tst-sg5", "tst-sg6"]) is False
+        assert pc._service_key(store.get_incident("tst-sg5")) == ""
+        assert pc._service_key(store.get_incident("tst-sg6")) == ""
+
+    def test_service_key_ignores_the_offering(self):
+        _save_incident("tst-sg7", "a", service="Between cities - Nusuk Masar Haj.Manage Buses")
+        _save_incident("tst-sg8", "b", service="Between cities - Nusuk Masar Haj.Register Arrival/Departure for in house")
+        assert pc._inconsistent_services(["tst-sg7", "tst-sg8"]) is False
+
+
+class TestProductionRobustness:
+    """The maintenance paths must be safe to run on a live system at any time."""
+
+    def test_flow_a_on_an_incident_without_a_classification(self):
+        """A half-ingested row must not crash the sweep."""
+        store.save_incident("tst-rob1", "half ingested ticket", "",
+                            type("R", (), {"canonical_statement": "", "severity": "Minor",
+                                           "affected_system": "", "service": "",
+                                           "model_dump_json": lambda self: "{}"})(),
+                            "", content_hash="tst-rob1", source_ticket_ids=["tst-rob1"])
+        r = pc.assign_incident("tst-rob1")
+        assert r["action"] in ("none_fit", "error")
+
+    def test_sweep_survives_a_cluster_with_no_members(self):
+        store.create_cluster("cl_tst_empty", "مجموعة", "d", status="active",
+                             affected_system="Nusuk Masar Haj")
+        stats = pc.sweep_pool()
+        assert stats["demoted"] >= 1                       # retired, not crashed
+        assert store.get_cluster("cl_tst_empty")["status"] == "retired"
+
+    def test_service_helpers_tolerate_missing_incidents(self):
+        assert pc._service_key({}) == ""
+        assert pc._inconsistent_services([]) is False
+        assert pc._inconsistent_services(["does-not-exist"]) is False
+
+    def test_audit_vetoes_tolerate_empty_input(self):
+        assert store.audit_vetoes("tst-rob1", []) == set()
+        assert store.audit_vetoes("does-not-exist", ["cl_tst_empty"]) == set()
+
+    def test_cross_system_reconciliation_is_a_noop_on_a_clean_db(self):
+        assert pc._evict_cross_system_members() == 0
+
+    def test_create_cluster_is_idempotent_under_a_race(self):
+        """Two workers minting the same content-derived id: the second gets
+        None instead of a UniqueViolation that would abort the sweep."""
+        first = store.create_cluster("cl_tst_race", "مجموعة", "d", status="active",
+                                     affected_system="Nusuk Masar Haj")
+        second = store.create_cluster("cl_tst_race", "مجموعة", "d", status="active",
+                                      affected_system="Nusuk Masar Haj")
+        assert first is not None and second is None
+        assert store.get_cluster("cl_tst_race")["name_ar"] == "مجموعة"

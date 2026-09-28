@@ -25,10 +25,20 @@ Flows:
            ID reconciliation + log on mismatch (validate_group safeguard).
   Flow C — audit_cluster(): nightly. LLM reads ALL member texts + the cluster
            description -> keep/remove (reasons) / refined description. Removed
-           members return to the pool, logged. 60% pruning floor + ID
-           reconciliation kept from validate_group.
+           members return to the pool, logged. 85% pruning floor + ID
+           reconciliation kept from validate_group. VERDICTS ARE BINDING (v5):
+           every verdict is logged per member and Flow A/B consult the newest
+           one (audit_remove = veto), so an eviction is not silently undone by
+           the next 15-minute sweep. An empty/demoted cluster is never renamed
+           (no "لا توجد تذاكر في العنقود" rows).
   Flow D — regenerate_name(): Arabic name stored ON the cluster row; regenerated
-           only when the audit changes membership or description.
+           only when the audit changes membership or description (never below
+           the 2-member minimum).
+
+Reconciliation (v5): every sweep first re-checks the system invariant on
+EXISTING rows — members whose incident was re-classified into another system
+(or that predate the invariant) are evicted, so Hajj/Umrah never share a
+cluster in the dashboard.
 
 Pipeline position: 30_cluster — persistent, incremental, LLM-decided.
 """
@@ -46,6 +56,7 @@ import numpy as np
 from ai_classification.shared.config import settings
 from ai_classification.shared.store import store
 from ai_classification.services.classify.llm import call_llm, strip_json_fences
+from ai_classification.domain.models import OFFERING_GAP_SENTINEL
 from ai_classification.services.match.suboffering import OFFERING_000, embed_pure, offering_of
 from ai_classification.services.cluster.grouping import (
     _class_field,
@@ -63,7 +74,7 @@ _log = logging.getLogger(__name__)
 
 # ── Versioning / constants ────────────────────────────────────────────────
 
-PROMPT_VERSION = "clustering-v4-2026-09"  # v4: system-scoped clusters (Hajj/Umrah never mix)
+PROMPT_VERSION = "clustering-v5-2026-09"  # v5: audit verdicts are binding + sweep sees the service
 MAX_CANDIDATES = 5          # active clusters shown to the LLM per assignment
 SWEEP_BATCH_SIZE = 20       # tickets per Flow-B grouping call
 PROPOSAL_MIN_SIZE = 2       # a proposal needs >= 2 tickets
@@ -75,6 +86,12 @@ AUDIT_PRUNE_FLOOR = 0.85     # audit may not remove >85% of a cluster
 # ID reconciliation and the <2-member demote path — the floor only needs to
 # block "remove everything", which 0.85 still does.
 AUDIT_MAX_MEMBERS = 40      # cap member cards in one audit call
+AUDIT_VETO_TTL_DAYS = 30    # an audit eviction blocks re-assignment this long
+# Why a TTL and not "forever": the audit is a strict LLM and occasionally has
+# a false positive (prod: two literally identical "عطل في تشغيل نظام CRM"
+# tickets removed because their DESCRIPTIONS said "the system"). A permanent
+# veto would lock such a ticket out for good; 30 days keeps the fix (no more
+# 15-minute thrash) while letting a genuinely misjudged ticket back in.
 REPRESENTATIVE_MEMBERS = 3  # member texts per cluster card
 _CARD_TITLE_MAX = 120
 _CARD_DESC_MAX = 200
@@ -87,6 +104,16 @@ A cluster = ONE specific underlying problem, not a service area.
 Same feature + same failure = same cluster. Same feature + different failure = different cluster.
 Example: "cannot enter pilgrim numbers" and "registration rejects numbers not starting with 4"
 are BOTH in Registration but are DIFFERENT problems → different clusters.
+
+SERVICE SURFACE: each ticket and each candidate cluster carries the service(s) it
+belongs to. A cluster's members share one surface; a ticket whose service is NOT
+among the cluster's services is normally a DIFFERENT problem. Assign across
+services only when you can name the SAME failing flow in one sentence (the same
+button, the same approval, the same money movement) — "same module" or "same
+symptom word" is not enough.
+Generic/abstained values ("System/Application - …", "…OFFERING-GAP",
+"General / Unspecified") are NOT evidence either way: when the cluster's members
+carry them, decide from the ticket TEXTS alone.
 
 SYSTEM RULE: every cluster belongs to ONE system (affected_system), and the
 ticket has a system too — "Nusuk Masar Haj" and "Nusuk Masar Umrah" are
@@ -105,12 +132,24 @@ Rules: assign ONLY if the ticket describes the SAME underlying problem as the
 cluster's description — not merely the same service, screen, or system.
 If unsure, return none_fit. none_fit is a safe answer; wrong assignment is not."""
 
-SWEEP_PROMPT = """Here are unassigned incident tickets. Group tickets that describe the SAME
-underlying problem. A group needs >= 2 tickets. Tickets that match nothing stay alone.
+SWEEP_PROMPT = """Here are unassigned incident tickets, all from the SAME system. Group tickets that
+describe the SAME underlying problem. A group needs >= 2 tickets. Tickets that match
+nothing stay alone.
 
 A cluster = ONE specific underlying problem, not a service area.
-Only group tickets with the SAME failing action on the SAME service surface.
+Every ticket carries the SERVICE an operator classified it into — that service IS
+the surface the ticket is about. Group ONLY tickets with the SAME failing action on
+the SAME service surface: if two tickets have different "service" values, they are
+DIFFERENT problems, however similar their wording looks.
+Ignore the service when it is a GENERIC or ABSTAINED value ("System/Application - …",
+any "…OFFERING-GAP", "General / Unspecified", or a label that contradicts the text):
+it carries no surface information, so judge those tickets by their text alone.
 Same feature + same failure = same group. Same feature + different failure = different group.
+A symptom word shared across services ("cannot enter ...", "upload failed",
+"page does not appear") is NOT a shared problem: "cannot enter pilgrim numbers"
+(Issue Permits) and "cannot enter the pilgrim in the transport manifests"
+(Between cities) are DIFFERENT groups. Never name a group after two different
+problems — no "X or Y" / "X and Y" titles.
 Different services or different failures = different groups, even if the symptoms sound
 similar ("cannot access tax form" and "cannot enter pilgrim numbers" are DIFFERENT problems
 even though both say "user cannot access"). When in doubt, leave a ticket as a singleton.
@@ -132,12 +171,38 @@ system. A ticket about a different problem — even in the same service, screen,
 or system — must be REMOVED. A ticket from a DIFFERENT system (e.g. Umrah in a
 Hajj cluster) is ALWAYS removed — the two are different teams.
 
+SERVICE SURFACE: each ticket carries the service it was classified into — that
+IS the surface the ticket is about. Members on DIFFERENT services are different
+problems: a shared symptom word ("cannot upload", "does not appear", "fails")
+across two services is NOT a shared problem. Remove the odd-one-out.
+IGNORE the service when it is a GENERIC or ABSTAINED value — it carries no
+surface information and is NOT evidence: "System/Application - …",
+any "…OFFERING-GAP", "General / Unspecified", or an obviously wrong label that
+contradicts the ticket text (e.g. "Istiqbal – passenger manifest" on a ticket
+about a Rawdah permit error). Judge those tickets by their TEXT alone, exactly
+as if the service were absent.
+
+WHAT IS *NOT* A REASON TO REMOVE (be conservative — removing a member hides a
+real ticket from its root cause):
+- Wording variation of the SAME failing flow: two tickets about money transfers
+  not reaching the bank account are the same problem even if one says سداد
+  (settlement) and the other تحويل (transfer).
+- Terse or generic descriptions ("عطل في تشغيل النظام", "مشكلة تقنية") when the
+  title names the same product/screen/failure as the cluster.
+- A different sub-case of the same failure (a different error code, date, or
+  ticket number for the same broken action).
+- A ticket that reports the same broken screen/flow at a different time.
+
+Judge each ticket as a WHOLE (title + description + service). Remove only when
+the ticket's ACTUAL problem is clearly a different one, and say what that other
+problem is in the reason.
+
 Tickets:
 {tickets}
 
 Return JSON only:
 {{"keep": ["<ids that belong>"],
- "remove": [{{"id": "<id>", "reason": "<one sentence — what makes it different>"}}],
+ "remove": [{{"id": "<id>", "reason": "<one sentence — the DIFFERENT problem this ticket is really about>"}}],
  "description": "<optionally refined cluster description — ONE short clear ARABIC sentence, max 9 words — or the original>"}}
 Rules: Every input ID appears in exactly one of keep or remove. Never invent or
 omit an ID. Be precise: same feature + different failure = remove."""
@@ -214,6 +279,20 @@ def _json_class(inc: dict) -> dict:
         return json.loads(inc.get("classification_json") or "{}")
     except Exception:
         return {}
+
+
+def _member_assigned_by(members: list[dict], incident_id: str) -> str:
+    """How one cluster member was assigned ('llm', 'human', 'seed', ...)."""
+    for m in members:
+        if m.get("incident_id") == incident_id:
+            return (m.get("assigned_by") or "").lower()
+    return ""
+
+
+def _member_service(member: dict) -> str:
+    """The classified service of one cluster member (no extra query — the
+    member row already carries classification_json)."""
+    return ((_json_class(member).get("service") or ""))[:120]
 
 
 def _system_of_inc(inc: dict) -> str:
@@ -319,13 +398,31 @@ def assign_incident(incident_id: str) -> dict:
         "offering": _offering_of_inc(inc),
     }
     cards = retrieve_candidates(inc)
+    # AUDIT VETO (v5): a cluster that already evicted this ticket in an audit
+    # is not a candidate any more. Without this, Flow C removes an impure
+    # member and the next sweep (15 min later) hands the ticket straight back
+    # to the same cluster — the audit never sticks and the dashboard keeps
+    # showing clusters the audit calls impure. The audit sees ALL members, so
+    # its (newest) verdict outranks Flow A's per-ticket guess; a later
+    # audit_keep clears the veto again.
+    vetoed: set[str] = set()
+    if cards:
+        vetoed = store.audit_vetoes(incident_id, [c["cluster_id"] for c in cards],
+                                    ttl_days=AUDIT_VETO_TTL_DAYS)
+        if vetoed:
+            _log.info("Flow A %s: %d candidate cluster(s) vetoed by a prior audit — skipped: %s",
+                      incident_id[:10], len(vetoed),
+                      ",".join(sorted(v[:10] for v in vetoed)))
+            cards = [c for c in cards if c["cluster_id"] not in vetoed]
     cand_ids = [c["cluster_id"] for c in cards]
 
     if not cards:
+        reason = ("all candidate clusters already rejected this ticket in an audit"
+                  if vetoed else "no active clusters")
         store.log_assignment(incident_id, [], {
-            "action": "none_fit", "reason": "no active clusters exist"},
+            "action": "none_fit", "reason": reason, "vetoed": sorted(vetoed)},
             PROMPT_VERSION, settings.llm_model)
-        return {"action": "none_fit", "cluster_id": None, "reason": "no active clusters"}
+        return {"action": "none_fit", "cluster_id": None, "reason": reason}
 
     try:
         raw = call_llm(
@@ -396,17 +493,57 @@ def _demote_small_clusters() -> int:
                       c["id"][:10], len(members), _MIN_CLUSTER_MEMBERS)
     return demoted
 
+def _evict_cross_system_members() -> int:
+    """Reconcile every active cluster against its members' CURRENT systems.
+
+    add_cluster_member refuses cross-system inserts, but two holes stay open:
+    rows written BEFORE that invariant existed (prod: 4 Umrah tickets sitting
+    in Hajj clusters since 2026-08-24) and tickets RE-CLASSIFIED into another
+    system after they joined (an 'Other' ticket that was Hajj when assigned).
+    Both leave the dashboard showing a cluster with a foreign ticket — the
+    exact thing system scoping forbids. Runs at the top of every sweep, so
+    drift self-heals instead of living forever. Returns the number evicted.
+
+    Evictions are logged (action 'system_evict') but are NOT audit vetoes: the
+    reason is the system, not the problem, and a foreign-system ticket can
+    never be re-assigned to that cluster anyway.
+    """
+    evicted = 0
+    for c in store.list_clusters(status="active"):
+        foreign = store.cross_system_members(c["id"], c.get("affected_system") or "")
+        for iid in foreign:
+            store.remove_cluster_member(c["id"], iid)
+            store.log_assignment(iid, [c["id"]], {
+                "action": "system_evict", "cluster_id": c["id"],
+                "reason": (f"member system != cluster system "
+                           f"({c.get('affected_system') or 'Unknown'}) — returned to the pool")},
+                PROMPT_VERSION, settings.llm_model)
+            evicted += 1
+            _log.info("System reconcile: evicted %s from %s (%s) — cross-system member",
+                      iid[:10], c["id"][:10], c.get("affected_system") or "Unknown")
+    return evicted
+
+
 def _sweep_batch(batch_ids: list[str], affected_system: str = "Unknown") -> list[dict] | None:
     """Group one batch via the LLM. Returns groups, or None when the batch is
     discarded (ID mismatch — validate_group safeguard: returned IDs must equal
     input IDs, else discard batch and log). ``affected_system`` is the ONE
     system every ticket in the batch belongs to (v4: sweep batches are
-    partitioned per system, so the LLM never groups Hajj + Umrah tickets)."""
+    partitioned per system, so the LLM never groups Hajj + Umrah tickets).
+
+    Each ticket carries its classified ``service`` (v5): the prompt demands
+    "same failing action on the SAME service surface", and without the label
+    in the payload the LLM could only match on symptom WORDS — which is how
+    prod got symptom-level clusters spanning unrelated services ("upload or
+    export fails" = reports export + evaluation form upload).
+    """
     incs = {i["id"]: i for i in store.list_incidents()}
     tickets = [
         {"id": iid,
          "title": (incs[iid].get("title") or "")[:_CARD_TITLE_MAX],
-         "description": (incs[iid].get("description") or "")[:_TICKET_DESC_MAX]}
+         "description": (incs[iid].get("description") or "")[:_TICKET_DESC_MAX],
+         "service": (_class_field(incs[iid], "service") or "")[:120],
+         "offering": _offering_of_inc(incs[iid])}
         for iid in batch_ids if iid in incs
     ]
     if not tickets:
@@ -441,6 +578,67 @@ def _sweep_batch(batch_ids: list[str], affected_system: str = "Unknown") -> list
     return groups
 
 
+def _service_key(incident: dict) -> str:
+    """The taxonomy service key of an incident, or '' when it carries none.
+
+    Generic/abstained labels are NOT surface evidence (see AUDIT_PROMPT):
+    "System/Application - …", any "…OFFERING-GAP", "General / Unspecified".
+    """
+    svc = (_json_class(incident).get("service") or "").strip()
+    if not svc or svc.endswith(OFFERING_GAP_SENTINEL):
+        return ""
+    head = svc.split(".")[0].strip()
+    if head.lower().startswith("system/application") or head == "General / Unspecified":
+        return ""
+    return head
+
+
+def _inconsistent_services(member_ids: list[str]) -> bool:
+    """True when a candidate group spans two different taxonomy services.
+
+    Deterministic backstop for the sweep's service rule: the grouping LLM still
+    merges tickets that share only a symptom word ("cannot enter pilgrim data")
+    while sitting on different services (prod: a "Between cities . Register
+    Arrival" ticket grouped with a "Registration . application form" one). Two
+    different services are two different problems by the acceptance criterion,
+    so such a group is never minted. Tickets with a generic/abstained service
+    carry no surface information and are ignored here.
+    """
+    keys = {k for k in (_service_key(store.get_incident(i) or {}) for i in member_ids) if k}
+    return len(keys) > 1
+
+
+def _audit_rejected_by_named_cluster(member_ids: list[str], name_ar: str,
+                                     system: str) -> str | None:
+    """A cluster (any status, same system, SAME name) that audit-evicted at
+    least one member of this candidate group, or None.
+
+    Flow-B groups are minted as brand-new clusters (the id hashes the member
+    set), so nothing stopped the sweep from recreating — as a "new" cluster —
+    a problem an existing cluster had already rejected these tickets for. Prod
+    is full of the result: 8 retired twins of one 19-member Rawdah cluster,
+    all named "فشل إصدار تصريح الروضة". The audit's verdict wins over the
+    grouping LLM: these tickets stay individuals.
+
+    Matching on the proposed name keeps the guard narrow — a group the LLM
+    names differently is a genuinely different problem and may be minted.
+    Retired clusters count too: an audit that emptied a cluster must not be
+    undone by re-minting the same group five minutes later.
+    """
+    name = (name_ar or "").strip()
+    if not name or not member_ids:
+        return None
+    for c in store.list_clusters():
+        if (c.get("name_ar") or "").strip() != name:
+            continue
+        if ((c.get("affected_system") or "Unknown").strip() or "Unknown") != system:
+            continue
+        for m in member_ids:
+            if store.audit_vetoes(m, [c["id"]], ttl_days=AUDIT_VETO_TTL_DAYS):
+                return c["id"]
+    return None
+
+
 def _cluster_eligible_pool() -> list[str]:
     """Unassigned incident ids restricted to cluster-input kinds.
 
@@ -471,11 +669,13 @@ def sweep_pool(*, dry_run: bool = False) -> dict:
     administrative/inquiry/feature tickets to the grouping LLM — that minted
     non-problem clusters like the inquiry and closure ones in prod).
     """
-    stats = {"pool_before": 0, "demoted": 0, "flow_a_assigned": 0, "batches": 0,
-             "proposals_created": 0, "discarded_batches": 0,
+    stats = {"pool_before": 0, "demoted": 0, "system_evicted": 0, "flow_a_assigned": 0,
+             "batches": 0, "proposals_created": 0, "discarded_batches": 0,
+             "veto_skipped": 0, "service_split_skipped": 0,
              "pool_after": 0, "dry_run": dry_run}
     if not dry_run:
         stats["demoted"] = _demote_small_clusters()
+        stats["system_evicted"] = _evict_cross_system_members()
     pool = _cluster_eligible_pool()
     stats["pool_before"] = len(pool)
     if not pool:
@@ -531,6 +731,25 @@ def sweep_pool(*, dry_run: bool = False) -> dict:
                         name_ar = "مقترح جديد"
                 if description and not _has_arabic(description):
                     description = ""
+                # v5 ANTI-DUPLICATE: never re-mint, under the same name, a
+                # cluster one of whose members was already audit-rejected —
+                # that is how prod grew duplicate twins of one cluster and how
+                # a demoted cluster came back five minutes later. The audit's
+                # verdict wins; these tickets stay individuals.
+                veto_owner = _audit_rejected_by_named_cluster(members, name_ar, system)
+                if veto_owner is not None:
+                    stats["veto_skipped"] += 1
+                    _log.info("Flow B: group %s (%s) skipped — cluster %s already "
+                              "audit-rejected a member",
+                              members, name_ar, veto_owner[:10])
+                    continue
+                # Deterministic: a group spanning two taxonomy services is two
+                # problems, whatever the grouping LLM thought.
+                if _inconsistent_services(members):
+                    stats["service_split_skipped"] += 1
+                    _log.info("Flow B: group %s (%s) skipped — members sit on "
+                              "different services", members, name_ar)
+                    continue
                 cid = _cluster_id(system, name_ar or "مقترح جديد", members)
                 if store.get_cluster(cid) is not None:
                     continue  # id collision — a cluster for these members exists
@@ -538,8 +757,13 @@ def sweep_pool(*, dry_run: bool = False) -> dict:
                 # CLUSTER_AUTO_ACTIVATE=1 (user's choice): mint straight to
                 # 'active' — the nightly audit is the purity backstop.
                 status = "active" if getattr(settings, "cluster_auto_activate", False) else "proposed"
-                store.create_cluster(cid, name_ar or "مقترح جديد", description,
-                                     status=status, affected_system=system)
+                created = store.create_cluster(cid, name_ar or "مقترح جديد", description,
+                                               status=status, affected_system=system)
+                if created is None:
+                    # The row already existed — either a concurrent sweep minted
+                    # the same content-derived id, or a previous run created it.
+                    # Attaching the members below is idempotent, so just proceed.
+                    _log.info("Flow B: cluster %s already exists — reusing it", cid[:10])
                 for m in members:
                     store.add_cluster_member(cid, m, assigned_by="llm", confidence="proposed")
                 stats["proposals_created"] += 1
@@ -570,7 +794,12 @@ def audit_cluster(cluster_id: str) -> dict:
 
     tickets = [
         {"id": m["incident_id"], "title": m["title"],
-         "description": (m["description"] or "")[:_TICKET_DESC_MAX]}
+         "description": (m["description"] or "")[:_TICKET_DESC_MAX],
+         # v5: the service IS the surface — without it the audit could only
+         # compare wording, which is how prod kept mixed clusters ("upload or
+         # export fails" = an evaluation-form upload + a report export on two
+         # different services) and split others wrongly.
+         "service": _member_service(m)}
         for m in members[:AUDIT_MAX_MEMBERS]
     ]
     input_ids = {m["incident_id"] for m in members}
@@ -616,9 +845,23 @@ def audit_cluster(cluster_id: str) -> dict:
         return {"cluster_id": cluster_id, "discarded": "pruning floor"}
 
     removed = []
+    pinned: list[str] = []
     for r in remove_list:
         rid = r.get("id")
         if not isinstance(rid, str) or rid not in input_ids:
+            continue
+        # HUMAN PIN: a member a person added by hand is not the audit's to
+        # remove. Without this the nightly audit undid every manual fix the
+        # next night, which makes an operator override useless.
+        if _member_assigned_by(members, rid) in ("human", "admin"):
+            pinned.append(rid)
+            store.log_assignment(rid, [cluster_id], {
+                "action": "audit_remove_overruled", "cluster_id": cluster_id,
+                "reason": (r.get("reason") or "")[:300],
+                "overruled_because": "member pinned by a human"},
+                PROMPT_VERSION, settings.llm_model)
+            _log.info("Flow C %s: KEPT %s — audit wanted it out but the member is human-pinned",
+                      cluster_id[:10], rid[:10])
             continue
         store.remove_cluster_member(cluster_id, rid)
         store.log_assignment(rid, [cluster_id], {
@@ -628,6 +871,14 @@ def audit_cluster(cluster_id: str) -> dict:
         removed.append(rid)
         _log.info("Flow C %s: removed %s — %s", cluster_id[:10], rid[:10],
                   (r.get("reason") or "")[:80])
+
+    # Kept members are logged too: the veto ledger reads the NEWEST audit
+    # verdict per (incident, cluster), so an audit_keep is what clears an
+    # older audit_remove once the audit itself accepts the ticket again.
+    for kid in sorted(keep_ids & input_ids):
+        store.log_assignment(kid, [cluster_id], {
+            "action": "audit_keep", "cluster_id": cluster_id},
+            PROMPT_VERSION, settings.llm_model)
 
     changed = bool(removed)
     refined = verdict.get("description")
@@ -644,7 +895,15 @@ def audit_cluster(cluster_id: str) -> dict:
     # a single incident is an individual. Demote the cluster instead.
     demoted = False
     remaining = store.cluster_member_ids(cluster_id)
-    if len(remaining) < _MIN_CLUSTER_MEMBERS:
+    # A demotion empties the cluster (every member goes back to the pool), which
+    # would silently undo an operator's pin. Keep the cluster instead: it stops
+    # being reported (sub-2 members render as individuals) but the pin holds.
+    pinned_left = [rid for rid in remaining
+                   if _member_assigned_by(members, rid) in ("human", "admin")]
+    if pinned_left and len(remaining) < _MIN_CLUSTER_MEMBERS:
+        _log.info("Flow C %s: not demoting — it holds a human-pinned member (%s)",
+                  cluster_id[:10], ",".join(r[:8] for r in pinned_left))
+    elif len(remaining) < _MIN_CLUSTER_MEMBERS:
         for m in remaining:
             store.remove_cluster_member(cluster_id, m)
             store.log_assignment(m, [cluster_id], {
@@ -658,7 +917,11 @@ def audit_cluster(cluster_id: str) -> dict:
                   cluster_id[:10], len(remaining), _MIN_CLUSTER_MEMBERS)
 
     name_regenerated = False
-    if changed:
+    # A demoted cluster has NO members left: naming it would ask the LLM to
+    # title an empty ticket list, and it dutifully answered "لا توجد تذاكر في
+    # العنقود" ("there are no tickets in the cluster") — the name every empty
+    # retired row in prod carries. Nothing to name, nothing to rename.
+    if changed and not demoted and len(store.cluster_member_ids(cluster_id)) >= _MIN_CLUSTER_MEMBERS:
         try:
             regenerate_name(cluster_id)
             name_regenerated = True
@@ -666,7 +929,8 @@ def audit_cluster(cluster_id: str) -> dict:
             _log.warning("Flow D rename failed for %s: %s", cluster_id[:10], exc)
 
     return {"cluster_id": cluster_id, "members_before": len(input_ids),
-            "removed": removed, "description_refined": bool(refined and changed),
+            "removed": removed, "pinned": pinned,
+            "description_refined": bool(refined and changed),
             "demoted": demoted, "name_regenerated": name_regenerated}
 
 
@@ -675,8 +939,17 @@ def audit_cluster(cluster_id: str) -> dict:
 def regenerate_name(cluster_id: str) -> str:
     """LLM Arabic title from the CURRENT members; stored on the cluster row.
     Called only when the audit changes membership or description (stable
-    clusters keep their name — no fingerprint cache needed)."""
+    clusters keep their name — no fingerprint cache needed).
+
+    A cluster below the 2-member minimum is NOT renamed: it has no problem to
+    name (it is being retired / demoted) and asking the LLM to title an empty
+    member list is what produced the junk name "لا توجد تذاكر في العنقود".
+    The existing name is returned untouched.
+    """
     members = store.list_cluster_members(cluster_id)
+    if len(members) < _MIN_CLUSTER_MEMBERS:
+        current = store.get_cluster(cluster_id)
+        return (current or {}).get("name_ar") or ""
     incidents = [{"id": m["incident_id"], "title": m["title"],
                   "description": m["description"]} for m in members]
     name = _arabic_cluster_name(incidents)
@@ -687,6 +960,10 @@ def regenerate_name(cluster_id: str) -> str:
 def _arabic_cluster_name(member_incidents: list[dict]) -> str:
     """Cache-free version of the legacy naming behavior (the fingerprint cache
     dies with the rebuild loop — names now live on the cluster row)."""
+    if not member_incidents:
+        # Never ask the LLM to name an empty cluster — it answers with a
+        # sentence ABOUT the emptiness ("لا توجد تذاكر في العنقود").
+        return "مجموعة"
     name = member_incidents[0].get("title", "") if member_incidents else "مجموعة"
     # USER RULE: the fallback itself must be Arabic — a non-Arabic ticket
     # title (e.g. an English ticket) degrades to a generic Arabic label.

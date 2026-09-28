@@ -13,9 +13,10 @@ clusters can be decided; repeat calls return the row unchanged.
 """
 import logging
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
+from ai_classification.api.auth import require_token
 from ai_classification.shared.store import store
 
 _log = logging.getLogger(__name__)
@@ -55,7 +56,7 @@ def get_cluster_proposal(cluster_id: str):
     return _enrich(c)
 
 
-@router.post("/{cluster_id}/decision")
+@router.post("/{cluster_id}/decision", dependencies=[Depends(require_token)])
 def decide_cluster_proposal(cluster_id: str, req: ClusterProposalDecisionRequest):
     cluster = store.get_cluster(cluster_id)
     if cluster is None:
@@ -64,13 +65,17 @@ def decide_cluster_proposal(cluster_id: str, req: ClusterProposalDecisionRequest
         raise HTTPException(status_code=409,
                             detail=f"Proposal already decided: {cluster['status']}")
 
+    # Compare-and-set on status='proposed': a concurrent decision (double
+    # click, two reviewers, the audit) loses cleanly with a 409.
+    new_status = "active" if req.decision == "approve" else "retired"
+    if not store.set_cluster_status(cluster_id, new_status, expected_status="proposed"):
+        raise HTTPException(status_code=409, detail="Proposal already decided")
+
     if req.decision == "approve":
-        store.set_cluster_status(cluster_id, "active")
         _log.info("cluster proposal %s APPROVED -> active (%d members)",
                   cluster_id[:10], len(store.cluster_member_ids(cluster_id)))
     else:  # reject
         n = store.remove_cluster_members(cluster_id)
-        store.set_cluster_status(cluster_id, "retired")
         _log.info("cluster proposal %s REJECTED -> retired (%d members returned to pool)",
                   cluster_id[:10], n)
 
