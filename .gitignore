@@ -45,3 +45,16 @@ test_*.json
 
 # Public demo tunnel (cloudflared binary, logs, runtime PID/URL state)
 .tunnel/
+
+# Local-only data: test fixtures, dumps and backups that must NEVER be
+# committed (real ticket text, credentials, pre-purge history bundle).
+local_only/
+
+# Real ticket text used as test fixtures — local only, never committed.
+tests/pairwise_canary_fixture.json
+test_incidents.json
+incidents.db
+mock_incidents.json
+data/catalog.json
+data/taxonomy/current.json
+.env.backup.*

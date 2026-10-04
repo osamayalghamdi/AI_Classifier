@@ -174,7 +174,8 @@ def call_llm(
         except Exception as exc:  # noqa: BLE001 — classify all provider errors
             status = _extract_status(exc)
             if not _is_retryable(exc, status) or attempt >= max_retries:
-                raise ValueError(f"LLM API call failed: {exc}") from exc
+                # redacted: litellm embeds the Authorization header in str(exc)
+                raise ValueError(f"LLM API call failed: {redact_secrets(exc)}") from exc
             attempt += 1
             delay = _retry_delay(exc, status, base, attempt)
             _log.warning(
@@ -195,6 +196,28 @@ def call_llm(
             f"LLM returned empty response (model={entry.model_id}, choices={len(choices)})"
         )
     return content
+
+
+# ── Secret redaction ──────────────────────────────────────────────────
+# Provider SDKs put the request HEADERS inside their exception messages, so a
+# raw `str(exc)` carries the live API key: litellm's HTTP error text includes
+# `'Authorization': 'Bearer sk-or-v1-…'`. Those strings do not stay in the log
+# — they are written into classification_log.raw_verdict ("<stage call failed:
+# …>") and into ingestion_jobs.error_message, i.e. into the database and the
+# API. Every message that leaves this module is scrubbed.
+_SECRET_PATTERNS = re.compile(
+    r"(sk-[A-Za-z0-9_\-]{6,}"                        # OpenAI/OpenRouter style
+    r"|Bearer\s+[A-Za-z0-9._\-]{6,}"                 # Authorization header
+    r"|(?:api[_\-]?key|apikey|token|password|secret)"
+    r"""[\"'\s:=]+[A-Za-z0-9._\-/+=]{8,})""",       # key=value in a repr
+    re.IGNORECASE,
+)
+
+
+def redact_secrets(text: object) -> str:
+    """Strip credential-looking substrings from anything we log or store."""
+    out = str(text or "")
+    return _SECRET_PATTERNS.sub("<redacted>", out)
 
 
 def strip_json_fences(raw: str) -> str:

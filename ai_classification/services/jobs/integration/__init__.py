@@ -32,6 +32,7 @@ from psycopg2.extras import Json
 from ai_classification.shared.config import settings
 from ai_classification.seams.port import Incident
 from ai_classification.seams.pipeline import persist_result, process_incident
+from ai_classification.services.classify.llm import redact_secrets
 from ai_classification.services.jobs.integration.schemas import Err
 
 _log = logging.getLogger(__name__)
@@ -264,12 +265,12 @@ def _process_one(job: dict) -> str:
         result = process_incident(incident)
     except Exception as exc:  # noqa: BLE001 — worker must record, not crash
         code = classify_failure(str(exc), phase="process")
-        return _retry_or_flag(job, code, str(exc))
+        return _retry_or_flag(job, code, redact_secrets(exc))
 
     if result.error:
         # classify returned an error result (LLM unavailable/parse).
         code = classify_failure(result.error, phase="process")
-        return _retry_or_flag(job, code, result.error)
+        return _retry_or_flag(job, code, redact_secrets(result.error))
 
     # Detect the classifier's SILENT fallback: when the LLM is unreachable
     # the classifier never raises — it degrades to a low-confidence generic

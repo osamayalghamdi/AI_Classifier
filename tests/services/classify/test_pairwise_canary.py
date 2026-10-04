@@ -78,6 +78,11 @@ Return ONLY a JSON array with ALL pairs answered. Strict binary; when in doubt, 
 
 
 def _load_fixture():
+    """Local-only fixture. Returns [] when absent so collection succeeds and
+    the module-level skip gate can do its job (the file holds real ticket
+    text and is never committed)."""
+    if not os.path.exists(FIXTURE):
+        return []
     with open(FIXTURE) as fh:
         return json.load(fh)
 
@@ -182,6 +187,14 @@ def _verify_one(pair, max_tokens=300):
 pytestmark = []
 if os.environ.get("PAIRWISE_CANARY_SKIP") == "1":
     pytestmark = [pytest.mark.skip(reason="PAIRWISE_CANARY_SKIP=1 — canary disabled for CI")]
+# The fixture holds REAL ticket pairs (client text) and is deliberately NOT in
+# the repository — it lives locally only (local_only/pairwise_canary_fixture.json,
+# copy it back into tests/ to run the canary). Without it the module skips
+# instead of failing, so a fresh clone stays green.
+elif not os.path.exists(FIXTURE):
+    pytestmark = [pytest.mark.skip(
+        reason="pairwise_canary_fixture.json not present (local-only fixture — "
+               "real ticket text is never committed)")]
 
 
 @pytest.fixture(scope="module")
@@ -256,7 +269,12 @@ def test_wrong_pairs_strict(canary_verdicts):
     )
 
 
-_CORRECT_IDX = [i for i in range(34) if _load_fixture()["pairs"][i]["judgment"] == "correct"]
+# Loaded once, tolerant of the local-only fixture being absent (see
+# _load_fixture): an empty list makes the parametrized tests collect to
+# nothing while the module-level skip explains why.
+_FIXTURE = _load_fixture()
+_FIXTURE_PAIRS = _FIXTURE.get("pairs", []) if isinstance(_FIXTURE, dict) else (_FIXTURE or [])
+_CORRECT_IDX = [i for i, p in enumerate(_FIXTURE_PAIRS) if p.get("judgment") == "correct"]
 
 
 @pytest.mark.parametrize("idx", [

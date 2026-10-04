@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from pydantic import TypeAdapter
 
 from ai_classification.api.schemas import ClassifyBatchResponse, ClassifyResponse
+from ai_classification.services.classify.llm import redact_secrets
 from ai_classification.domain.models import ClassificationResult, SimilarOpenIncident
 from ai_classification.shared.store_incidents import to_local_status
 
@@ -44,9 +45,15 @@ def _log_classification(
     raw: str,
     extra: dict | None = None,
 ) -> None:
-    """Record an LLM decision to classification_log (best-effort)."""
+    """Record an LLM decision to classification_log (best-effort).
+
+    The raw text is REDACTED first: a provider error carries the request
+    headers (litellm includes `'Authorization': 'Bearer sk-…'` in its
+    exception text), and this log is a database table served back by the API.
+    """
     from ai_classification.services.classify import classifier as classifier_mod
 
+    raw = redact_secrets(raw)
     store = classifier_mod.store
     settings = classifier_mod.settings
     PROMPT_VERSION = classifier_mod.PROMPT_VERSION
