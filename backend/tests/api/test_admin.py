@@ -441,7 +441,8 @@ class TestAdminCredentialSeparation:
         from types import SimpleNamespace
         monkeypatch.setattr("ai_classification.api.auth.settings",
                             SimpleNamespace(admin_token=admin_token,
-                                            integration_token=integration_token))
+                                            integration_token=integration_token,
+                                            auth_optional=False))
 
     def test_admin_token_is_the_only_credential_when_set(self, client, monkeypatch):
         self._tokens(monkeypatch, "admin-secret")
@@ -475,3 +476,27 @@ class TestAdminCredentialSeparation:
         self._tokens(monkeypatch, "admin-secret")
         r = client.get("/api/v1/incidents/NOPE", headers={"Authorization": "Bearer admin-secret"})
         assert r.status_code == 401
+
+
+class TestAuthOptional:
+    """AUTH_OPTIONAL=1 makes credentials optional — the switch for running on a
+    machine of your own, where a token that gets rotated under you must not lock
+    you out of the API (or the admin console)."""
+
+    def _flag(self, monkeypatch, value: bool):
+        from types import SimpleNamespace
+        monkeypatch.setattr("ai_classification.api.auth.settings",
+                            SimpleNamespace(admin_token="", integration_token="", auth_optional=value))
+
+    def test_flag_on_accepts_missing_credentials(self, client, monkeypatch):
+        self._flag(monkeypatch, True)
+        # the console opens…
+        assert client.get("/admin/status").status_code == 200
+        # …and so does the integration surface (unknown reference => 404, not 401)
+        assert client.get("/api/v1/incidents/NOPE").status_code != 401
+
+    def test_flag_off_stays_fail_closed(self, client, monkeypatch):
+        """The default must not move: no token configured => 401."""
+        self._flag(monkeypatch, False)
+        assert client.get("/admin/status").status_code == 401
+        assert client.get("/api/v1/incidents/NOPE").status_code == 401

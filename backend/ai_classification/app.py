@@ -73,6 +73,12 @@ async def lifespan(app: FastAPI):
     # compose's depends_on has no k8s equivalent). A store that never comes
     # up drops every write silently, so by default refuse to start — the
     # orchestrator restarts the pod and the failure is visible.
+    if settings.auth_optional:
+        _log.warning(
+            "AUTH_OPTIONAL=1 — credentials are NOT required: /api/v1/*, /classify, "
+            "/test/*, /reset and /admin/* accept a request with no token or a stale "
+            "one. Convenient on your own machine; never on a shared or exposed host."
+        )
     deadline = time.monotonic() + settings.store_setup_timeout_s
     store.setup()
     while not store.ready and time.monotonic() < deadline:

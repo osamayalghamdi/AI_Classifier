@@ -25,11 +25,39 @@ _log = logging.getLogger(__name__)
 # The fallback is loud and once per process: an operator reading the logs
 # should see that privilege separation is not in effect yet.
 _warned_admin_fallback = False
+# Same idea for AUTH_OPTIONAL: say it once, loudly, then get out of the way.
+_warned_optional = False
+
+
+def _auth_optional() -> bool:
+    """True when AUTH_OPTIONAL=1 — the guard lets everything through.
+
+    Used by both require_token and require_admin_token, so the flag is a
+    single switch for "no credentials on this machine". It deliberately does
+    NOT silently fail open: the default is off, and turning it on warns once
+    per process (and again at startup, from app.py).
+    """
+    global _warned_optional
+    # getattr: tests stub `settings` with a plain namespace, and a missing
+    # attribute must mean "flag off", never an AttributeError.
+    if not getattr(settings, "auth_optional", False):
+        return False
+    if not _warned_optional:
+        _warned_optional = True
+        _log.warning(
+            "AUTH_OPTIONAL=1 — the API accepts requests WITHOUT credentials, and a "
+            "stale token is accepted too. /admin/* is open as well (writes .env, "
+            "resets the database, runs pytest). Intended for your own machine; "
+            "never leave it on where others can reach this port."
+        )
+    return True
 
 
 # ── Auth (E6) — every non-health endpoint ─────────────────────────────
 
 def require_token(authorization: str | None = Header(None)) -> None:
+    if _auth_optional():
+        return
     expected = settings.integration_token
     if not expected:
         raise HTTPException(
@@ -81,6 +109,8 @@ def require_admin_token(authorization: str | None = Header(None),
                                                   dashboard's Bearer token
                                                   intact in the same browser)
     """
+    if _auth_optional():
+        return
     expected = _admin_expected()
     if not expected:
         raise HTTPException(

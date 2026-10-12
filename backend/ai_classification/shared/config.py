@@ -283,6 +283,14 @@ class Settings:
     # database, runs pytest in-container). Empty => the integration token
     # still works, so adopting the split is a one-line env change.
     admin_token: str = getenv("ADMIN_TOKEN", "")
+    # OPTIONAL AUTH: 1 => credentials are not required at all. A guarded
+    # endpoint then accepts a request with no token, or with a stale one —
+    # what you want on your own machine, or when a token was rotated out from
+    # under you while testing. It also opens /admin/*. OFF by default: with
+    # this unset the API stays fail-closed (empty token => 401), so shipping
+    # behaviour is unchanged. Never enable it where others can reach the API:
+    # the admin console writes .env, resets the database and runs pytest.
+    auth_optional: bool = _is_truthy(getenv("AUTH_OPTIONAL", "0"))
     # CORS allowlist for browsers calling the API directly (comma-separated
     # origins). The dashboard is same-origin behind nginx and needs none;
     # "*" keeps the old open behaviour. Auth is a bearer header, never a
