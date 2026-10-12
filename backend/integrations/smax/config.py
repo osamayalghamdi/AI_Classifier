@@ -8,6 +8,11 @@ prefixes:
 - SMAX_*            — the upstream ticketing system (this connector's source).
 - CLASSIFIER_API_*  — the classifier's public integration API (E1-E9).
 
+All of it belongs to this folder: a `.env` beside this file is loaded when
+present (see below), and nothing SMAX-specific needs to live in the app's
+environment. The one shared value is the classifier token, which must equal
+the server's INTEGRATION_API_TOKEN.
+
 Fail-loud rule: a side that is enabled must be fully configured. A missing
 token raises NotConfiguredError before any network I/O (mirrors the
 not-configured pattern the in-process source used).
@@ -17,6 +22,21 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
+
+# Config lives WITH the connector. Loading the sibling .env keeps the connector
+# self-contained: run it straight from this folder without exporting anything.
+# Real environment variables win (dotenv does not override), so
+# `SMAX_API_TOKEN=… python -m integrations.smax.main` still beats the file.
+# python-dotenv is already a repo dependency; if it is missing the connector
+# still runs from the environment alone.
+try:
+    from dotenv import load_dotenv
+except ModuleNotFoundError:  # pragma: no cover - connector stays usable stdlib-only
+    load_dotenv = None
+
+if load_dotenv is not None:
+    load_dotenv(Path(__file__).with_name(".env"))
 
 
 class NotConfiguredError(RuntimeError):

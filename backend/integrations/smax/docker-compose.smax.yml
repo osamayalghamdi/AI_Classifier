@@ -1,0 +1,37 @@
+# SMAX connector — its own service, defined inside the connector's folder.
+#
+# Start it next to the main stack (it is profile-gated, so a plain
+# `docker compose up` never starts it):
+#
+#   cp backend/integrations/smax/.env.example backend/integrations/smax/.env   # once
+#   docker compose build api          # the api image now also carries integrations/
+#   docker compose \
+#     -f docker-compose.yml \
+#     -f backend/integrations/smax/docker-compose.smax.yml \
+#     --profile smax up -d smax-connector
+#
+# Its configuration comes from THIS folder's .env — the app's .env needs nothing
+# SMAX-specific. Leave the .env absent and the service still starts; the
+# connector then fails loudly on the missing SMAX credentials.
+
+services:
+  smax-connector:
+    # Same image as the app: the connector is a separate process, not a separate
+    # codebase. If the platform team prefers a dedicated image, its Dockerfile
+    # belongs in this folder too.
+    image: ai_classifier-api:latest
+    profiles: ["smax"]
+    command: ["python", "-m", "integrations.smax.main"]
+    working_dir: /app
+    env_file:
+      - path: ./.env          # relative to this file — the connector's own config
+        required: false       # absent file = start anyway, then fail loud on missing creds
+    environment:
+      # Talk to the app over the compose network, not localhost.
+      - CLASSIFIER_API_URL=http://api:8000
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true

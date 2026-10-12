@@ -25,9 +25,13 @@ RUN apt-get update -qq && \
 # it the cluster's runAsUser: 1000 gets PermissionError on import.
 COPY --chown=app:app pyproject.toml ./
 COPY --chown=app:app ai_classification/ ./ai_classification/
+# The SMAX connector is a separate process that lives in its own folder and
+# imports nothing from the app — it ships here so `python -m integrations.smax.main`
+# can run from the same image (see integrations/smax/docker-compose.smax.yml).
+COPY --chown=app:app integrations/ ./integrations/
 # Some files in a dev checkout are 0600; make the code readable for the
 # runtime user regardless of the host umask (the cluster runs uid 1000).
-RUN chmod -R a+rX /app/ai_classification
+RUN chmod -R a+rX /app/ai_classification /app/integrations
 RUN pip install --no-cache-dir -e . pytest 2>&1 | tail -5
 
 # Guard: the image must stay model-free. If any dependency ever drags the

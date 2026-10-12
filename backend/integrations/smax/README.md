@@ -63,6 +63,35 @@ incidents `{source_reference, title, description, status?, created_at?, updated_
 — raw SMAX payloads (keys like `ticket_id`/`title`) are also accepted and
 translated with `from_smax`.
 
+## Configuration
+
+**Everything SMAX-specific lives in this folder** — nothing belongs in the app's
+`.env` at the repo root.
+
+```bash
+cp backend/integrations/smax/.env.example backend/integrations/smax/.env
+# then edit it, or rely on real env vars (they override the file)
+```
+
+`config.py` loads the sibling `.env` when it exists, so the connector runs
+straight from here with no exports:
+
+```bash
+.venv/bin/python -m integrations.smax.main --check     # prints the resolved config, tokens masked
+```
+
+The only value shared with the app is the classifier token: `CLASSIFIER_API_TOKEN`
+here must equal the server's `INTEGRATION_API_TOKEN`.
+
+Running it in docker compose — the service definition is in this folder too:
+
+```bash
+docker compose build api                                # the api image also carries integrations/
+docker compose -f docker-compose.yml \
+               -f backend/integrations/smax/docker-compose.smax.yml \
+               --profile smax up -d smax-connector
+```
+
 ## Environment variables
 
 | Variable | Default | Purpose |
