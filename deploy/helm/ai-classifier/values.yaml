@@ -50,7 +50,8 @@ backend:
     # SEPARATE deployment; leave the URL empty to record attachments by name
     # only (no OCR calls).
     OCR_ENABLED: "1"
-    OCR_SERVICE_URL: "https://ocr.example.internal/ocr"
+    OCR_SERVICE_URL: ""        # empty = attachments recorded by name only;
+                               # set your OCR service URL to transcribe them
     SIMILARITY_THRESHOLD: "0.35"
     SYNC_INTERVAL: "60"
     TICKETING_SOURCE: "real"
