@@ -114,10 +114,10 @@ language) or in the code module docstring.
   `seed=42` convention. Startup must log resolved config (model, base,
   DB, embedding) and FAIL LOUD on missing LLM config — no silent fallback.
 - Deployment: docker-compose (postgres + api + nginx + ocr; ollama/
-  cloudflared behind profiles); healthchecks; bge-m3 baked into the image
-  (HF_HUB_OFFLINE=1). Known: the api image is ~16GB (CUDA torch wheel) —
-  investigate a CPU-index torch alternative as a report item, but ONLY if
-  it doesn't break the build; treat as recommendation unless trivial.
+  cloudflared behind profiles); healthchecks. No model is baked into any image:
+  the LLM, embeddings and OCR are all external endpoints, so the api image is
+  ~1.1GB (no torch, no transformers, no weights). Verify that rather than
+  assume it — the build asserts it.
 
 ## 5. SCOPE OF WORK (in order)
 

@@ -115,7 +115,6 @@ services:
       - CLUSTER_AUDIT_INTERVAL_S=${CLUSTER_AUDIT_INTERVAL_S:-86400}
       # No model is baked into the image: the LLM, the embeddings and the OCR
       # all come from endpoints configured above.
-      - TRANSFORMERS_OFFLINE=1
     volumes:
       - ./backend/ai_classification:/app/ai_classification
       # Test-runner support (admin console "Run Tests"): the pytest suite
@@ -139,8 +138,10 @@ services:
       - no-new-privileges:true
     stop_grace_period: 30s
     restart: unless-stopped
-    # bge-m3 (embedding) + torch CPU resident ≈ 1.5–2.5 GB; the limit stops a
-    # runaway classify loop from taking the host down with it.
+    # No model is resident in this container (embeddings and OCR are remote
+    # endpoints), so the limit is headroom for the API process, its ingest
+    # worker and the DB round-trips — it stops a runaway classify loop from
+    # taking the host down with it.
     deploy:
       resources:
         limits:   { cpus: "2", memory: "5g" }

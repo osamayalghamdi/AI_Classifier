@@ -58,7 +58,7 @@ Same for routing — leave `ingress.paths: []` for the default "everything → f
 ```yaml
 ingress:
   paths:
-    - { path: /api, pathType: Prefix, service: api, port: 8000 }   # component name
+    - { path: /api, pathType: Prefix, service: backend, port: 8000 }   # component name
     - { path: /,    pathType: Prefix, service: frontend, port: 8082 }
     # or serviceName: <your-own-service> for a Service this chart doesn't own
 ```
@@ -122,7 +122,7 @@ Layer (a) or (b) under (c): keep `ingress.enabled: false` wherever the app is no
 
 **Two routing rules that matter for all of the above:**
 
-- **Route everything through the frontend** (leave `ingress.paths` empty). If you add a path with `service: api`, that path goes straight to the api Service and **skips the frontend gate in (a)/(b)** — and it also needs the ingress controller admitted by the NetworkPolicy, so the chart now fails the render unless `networkPolicy.ingressController.namespace` is set.
+- **Route everything through the frontend** (leave `ingress.paths` empty). If you add a path with `service: backend`, that path goes straight to the backend Service and **skips the frontend gate in (a)/(b)** — and it also needs the ingress controller admitted by the NetworkPolicy, so the chart now fails the render unless `networkPolicy.ingressController.namespace` is set.
 - Keep `/health` and `/ready` on the frontend path (they are served ungated on purpose) so the ingress controller or an external monitor can still probe the app.
 
 ## 2. Prerequisites checklist — questions for the DevOps team

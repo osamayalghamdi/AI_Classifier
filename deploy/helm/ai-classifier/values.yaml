@@ -10,7 +10,7 @@ fullnameOverride: ""
 
 image:
   # API image (CI-built from the repo Dockerfile). Ships NO model (~1.1 GB):
-  # the LLM, embeddings and OCR are external endpoints (api.env.*).
+  # the LLM, embeddings and OCR are external endpoints (backend.env.*).
   repository: REGISTRY/ai-classifier
   tag: ""                    # blank → Chart.appVersion
   pullPolicy: IfNotPresent
@@ -110,7 +110,7 @@ frontend:
   # posts attachments to /ocr). Set your OCR service's URL to enable it,
   # e.g. "https://ocr.example.internal/ocr". Left empty the path is not
   # exposed at all — the API still OCRs attachments server-side through
-  # api.env.OCR_SERVICE_URL, which is the path that matters.
+  # backend.env.OCR_SERVICE_URL, which is the path that matters.
   ocrProxyUrl: ""
   image:
     repository: REGISTRY/ai-classifier-frontend
@@ -178,7 +178,7 @@ frontend:
           {{- if .Values.frontend.ocrProxyUrl }}
           # Browser-side OCR preview (write-incident page) → your OCR
           # service. Off unless frontend.ocrProxyUrl is set; attachments are
-          # always OCRd server-side via api.env.OCR_SERVICE_URL.
+          # always OCRd server-side via backend.env.OCR_SERVICE_URL.
           location = /ocr {
           {{- include "ai-classifier.dataAuth" . | nindent 8 }}
               proxy_pass {{ .Values.frontend.ocrProxyUrl }};
@@ -210,7 +210,7 @@ frontend:
 
 # ── OCR — NOT part of this chart ──────────────────────────────────────
 # The OCR service is its own deployment (own image, own endpoint, own key).
-# Point the API at it with `api.env.OCR_SERVICE_URL` (+ `OCR_ENABLED`) above.
+# Point the API at it with `backend.env.OCR_SERVICE_URL` (+ `OCR_ENABLED`) above.
 # The optional implementation that used to live here (backend/ocr/) still
 # exists in the repo if the platform team prefers to host it themselves; it
 # ships no local model either — it calls the vision endpoint.

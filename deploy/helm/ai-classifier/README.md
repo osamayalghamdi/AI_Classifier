@@ -156,7 +156,7 @@ pod. Need a throwaway database for a dev sandbox? Add it yourself through
 | `database.*` | host required | §3 |
 | `ingress.enabled` | **`false`** | Turning it on publishes the app — opt in per environment |
 | `ingress.className` / `.host` / `.tls` / `.annotations` | `""` / example / `[]` / `{}` | Ask your controller which class; add TLS before exposing |
-| `ingress.paths` | `[]` | Blank → everything to the frontend. Set to own the routing (`service: api\|frontend\|ocr`, or `serviceName:`) |
+| `ingress.paths` | `[]` | Blank → everything to the frontend. Set to own the routing (`service: backend\|frontend`, or `serviceName:`) |
 | `extraManifests` | `[]` | Any extra object (HPA, ServiceMonitor, ExternalSecret, CRs) — rendered with `tpl` |
 | `networkPolicy.enabled` | **`true`** | Only frontend pods may reach the api; kubelet probes and port-forward still work |
 
