@@ -53,7 +53,7 @@ services:
 
   # ── Classification API ─────────────────────────────────────────────
   api:
-    build: .
+    build: ./backend
     # BIND ADDRESS: default 127.0.0.1 — the public surface is nginx (:8082,
     # which proxies /api /admin /classify /reports …). Set API_BIND=0.0.0.0
     # to publish the raw API on the LAN again (it is token-gated either way).
@@ -92,23 +92,38 @@ services:
       - TICKETING_API_TOKEN=${TICKETING_API_TOKEN:-}
       - TICKETING_DRY_RUN=${TICKETING_DRY_RUN:-false}
       - SYNC_INTERVAL=${SYNC_INTERVAL:-60}
+      # Embeddings — EXTERNAL endpoint, same rule as the LLM and OCR: no
+      # model lives in the image. Must return EMBEDDING_DIM values (1024).
+      - EMBEDDING_PROVIDER=${EMBEDDING_PROVIDER:-external}
+      - EMBEDDING_API_URL=${EMBEDDING_API_URL:-}
+      - EMBEDDING_API_KEY=${EMBEDDING_API_KEY:-}
+      - EMBEDDING_MODEL_ID=${EMBEDDING_MODEL_ID:-bge-m3}
+      - EMBEDDING_DIM=${EMBEDDING_DIM:-1024}
+      - EMBEDDING_TIMEOUT_S=${EMBEDDING_TIMEOUT_S:-30}
+      # Attachment OCR — its OWN endpoint (a separate OCR deployment, or the
+      # bundled one via `docker compose --profile ocr up -d` +
+      # OCR_SERVICE_URL=http://ocr:8001). Empty URL = attachments recorded by
+      # name only, no OCR calls.
+      - OCR_ENABLED=${OCR_ENABLED:-1}
+      - OCR_SERVICE_URL=${OCR_SERVICE_URL:-}
+      - OCR_TIMEOUT_S=${OCR_TIMEOUT_S:-60}
+      - OCR_MAX_ATTACHMENT_MB=${OCR_MAX_ATTACHMENT_MB:-15}
       # LLM-usage gates — conserve tokens: heal re-classification and
       # per-arrival cluster assignment default OFF (flip to 1 to enable).
       - RECLASSIFY_ENABLED=${RECLASSIFY_ENABLED:-0}
       - CLUSTER_ASSIGN_ON_ARRIVAL=${CLUSTER_ASSIGN_ON_ARRIVAL:-0}
       - CLUSTER_AUDIT_INTERVAL_S=${CLUSTER_AUDIT_INTERVAL_S:-86400}
-      # Model is baked into the image (/app/hf_cache) — never reach the hub
-      # at runtime (no DNS dependency, no startup retry loop).
-      - HF_HUB_OFFLINE=1
+      # No model is baked into the image: the LLM, the embeddings and the OCR
+      # all come from endpoints configured above.
       - TRANSFORMERS_OFFLINE=1
     volumes:
-      - ./ai_classification:/app/ai_classification
+      - ./backend/ai_classification:/app/ai_classification
       # Test-runner support (admin console "Run Tests"): the pytest suite
       # and smoke script run as subprocesses inside the API container.
-      - ./tests:/app/tests:ro
-      - ./scripts:/app/scripts:ro
-      - ./docs:/app/docs:ro
-      - ./smoke_test.sh:/app/smoke_test.sh:ro
+      - ./backend/tests:/app/tests:ro
+      - ./backend/scripts:/app/scripts:ro
+      - ./backend/docs:/app/docs:ro
+      - ./backend/smoke_test.sh:/app/smoke_test.sh:ro
       # Admin console writes env-credential changes here (restart required).
       - ./.env:/app/.env
     depends_on:
@@ -131,25 +146,29 @@ services:
         limits:   { cpus: "2", memory: "5g" }
         reservations: { cpus: "0.5", memory: "3g" }
 
-  # ── OCR Service (EasyOCR) ──────────────────────────────────────────
+  # ── OCR Service (OPTIONAL — not started by default) ────────────────
+  # The OCR service is a separate part: point the api at whatever hosts it
+  # (OCR_SERVICE_URL). This bundled one is a convenience for local work:
+  #   docker compose --profile ocr up -d
+  #   OCR_SERVICE_URL=http://ocr:8001   (in .env)
   ocr:
-    build: ocr
+    profiles: ["ocr"]
+    build: ./backend/ocr
     # BIND ADDRESS: default 127.0.0.1 — nginx reaches the service over the
     # compose network (/ocr); nothing outside the host needs it.
     ports:
       - "${OCR_BIND:-127.0.0.1}:${OCR_PORT:-8001}:8001"
     environment:
-      # ELM/vision mode (the ELM endpoint has no local model): without these
-      # the service silently runs EasyOCR only, which is why the deployment
-      # never matched the local dev behaviour.
-      - OCR_USE_ELM=${OCR_USE_ELM:-0}
+      # Company vision model (the supported path). The OCR image ships NO
+      # local model, so ELM_API_KEY is required — without it the service
+      # refuses to start (clear error in `docker compose logs ocr`).
+      - OCR_USE_ELM=${OCR_USE_ELM:-1}
       - ELM_API_URL=${ELM_API_URL:-https://llms.elm.sa/v1/chat/completions}
       - ELM_MODEL=${ELM_MODEL:-openai/qwen3-vl:32b}
       - ELM_API_KEY=${ELM_API_KEY:-}
       - OCR_ELM_TIMEOUT_S=${OCR_ELM_TIMEOUT_S:-60}
       # One long scan must not OOM the container: cap the rendered pages.
       - OCR_MAX_PDF_PAGES=${OCR_MAX_PDF_PAGES:-10}
-      - EASYOCR_MODULE_PATH=/app/easyocr
     healthcheck:
       # No curl in the OCR image — use the always-present Python.
       test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8001/health', timeout=3).status==200 else 1)"]
@@ -187,7 +206,7 @@ services:
     ports:
       - "${NGINX_PORT:-8082}:8082"
     volumes:
-      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./frontend/nginx.conf:/etc/nginx/conf.d/default.conf:ro
       - ./frontend/dashboard:/usr/share/nginx/html:ro
     security_opt:
       - no-new-privileges:true

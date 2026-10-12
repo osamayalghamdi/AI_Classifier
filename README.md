@@ -4,13 +4,45 @@ LLM-powered incident classification on the Nusuk Masar Haj service-offering mode
 
 <img width="1619" height="903" alt="Screenshot 1448-02-15 at 7 22 01 AM" src="https://github.com/user-attachments/assets/3b288fec-616f-4919-bf4d-00e5852768f4" />
 
+## First run — the env file is the whole configuration
+
+No model is installed or baked into the image: every model lives **outside**
+this project, and the app holds only URLs + keys. Copy the template, fill it
+in, start it:
+
+```bash
+cp .env.example .env
+# in .env set:
+#   LLM_API_BASE / LLM_MODEL / LLM_API_KEY            → classification
+#   EMBEDDING_API_URL / EMBEDDING_API_KEY / EMBEDDING_MODEL_ID / EMBEDDING_DIM
+#                                                     → similarity (OpenAI-compatible /embeddings)
+#   OCR_SERVICE_URL                                   → attachment text (optional; empty = names only)
+#   POSTGRES_USER / POSTGRES_PASSWORD / POSTGRES_DB    → database
+docker compose up -d        # api + postgres + nginx (dashboard served by nginx)
+```
+
+Rules of thumb:
+
+- `EMBEDDING_DIM` (default `1024`) must match what the embeddings endpoint
+  returns — it is written into the `vector(N)` column on first startup, so set
+  it before the first run.
+- The classifier needs an **enabled model registry entry**: setting `LLM_MODEL`
+  to an `openrouter/…` or `openai/…` id enables the matching entry
+  automatically; anything else needs `MODEL_<NAME>_ENABLED=1`
+  (`MODEL_<NAME>_ID` / `_API_BASE` / `_API_KEY` override that model's endpoint).
+- Attachment OCR is a **separate service**. To host the bundled one:
+  `docker compose --profile ocr up -d` + `OCR_SERVICE_URL=http://ocr:8001`.
+- Kubernetes: the chart is values-only and deploys the same two workloads
+  (api + frontend). DB, OCR, LLM and embeddings are external endpoints there
+  too — see `deploy/helm/ai-classifier/README.md` (first install) and `DEPLOYMENT_GUIDE.md`.
+
 ## Stack
 
 | Layer | Tech |
 |-------|------|
 | API | FastAPI + Uvicorn |
 | LLM | LiteLLM — Qwen3.6-35B-A3B via OpenRouter |
-| Embeddings | BAAI/bge-m3 (1024d) |
+| Embeddings | External OpenAI-compatible `/embeddings` endpoint (bge-m3, 1024d) — **no model in the image** |
 | Storage | PostgreSQL + pgvector (HNSW ANN index) |
 | Frontend | Vanilla JS, no build step |
 | Grouping | Two-phase: offering exact match → embedding fallback |
@@ -69,7 +101,7 @@ SMAX ──list_changed──▶ integrations/smax (poller)
 Run it:
 
 ```bash
-cd integrations/smax
+cd backend/integrations/smax
 export SMAX_API_URL=<smax-url>            # upstream ticketing system
 export SMAX_API_TOKEN=<token>             # required to poll SMAX
 export CLASSIFIER_API_URL=http://localhost:8000
@@ -83,55 +115,54 @@ python -m integrations.smax.main --backfill incidents.json --since 2026-08-01T00
 ```
 
 Full contract (payload shapes, env vars, error handling, sequence diagram):
-`integrations/smax/README.md`. The E1-E9 API it consumes is documented in
-`docs/INTEGRATION_GUIDE.md`.
+`backend/integrations/smax/README.md`. The E1-E9 API it consumes is documented in
+`backend/docs/INTEGRATION_GUIDE.md`.
 
 ## Project Layout
 
 ```
 AI_Classifier/
-├── ai_classification/
-│   ├── app.py                  # FastAPI wiring: lifespan, CORS, router mounting, worker startup
-│   ├── api/                    # Endpoint-only modules (no business logic)
-│   │   ├── incidents.py        # /classify, /incidents, /import, /reset (auth-gated)
-│   │   ├── reports.py          # /api/reports, /clusters, /review-queue, /cluster/sweep
-│   │   ├── diagnostics.py      # /health, /status, /test/llm (auth-gated), /test/all
-│   │   ├── integration.py      # E1-E9 integration API (/api/v1/*, /ready)
-│   │   ├── auth.py             # Shared bearer-token dependency (E6/E6b)
-│   │   └── schemas.py          # Pydantic request/response schemas
-│   ├── domain/
-│   │   ├── models.py           # ClassificationResult, SimilarMatch, SimilarOpenIncident
-│   │   └── taxonomy.py         # Hajj/Umrah enums + hierarchy (frozen)
-│   ├── services/
-│   │   ├── classify/           # LLM classifier (prompts/parsing/cascade/verification/persistence)
-│   │   ├── cluster/            # v2 LLM-first persistent clustering (Flow A/B/C)
-│   │   ├── jobs/               # sync, heal (gated), integration worker
-│   │   ├── review/             # cluster-proposal + taxonomy-gaps review APIs
-│   │   ├── ingest/             # import service, status monitor
-│   │   └── match/              # offering helpers (dormant engine moved to legacy/)
-│   ├── seams/                  # ticket-source port, pipeline, local fake source
-│   └── shared/                 # config + split store (db, store_incidents, store_clusters, store_logs)
-├── integrations/
-│   └── smax/                   # Standalone SMAX connector (talks to the API over HTTP)
-├── legacy/
-│   └── suboffering_engine/     # Quarantined sub-offering engine (superseded, for resurrection)
-├── frontend/dashboard/         # Dashboard (no build step)
-├── tests/                      # Mirrors services 1:1
-├── docs/                       # Docs + worklogs/
-├── ocr/  simulator/  evaluation/  scripts/
-└── pyproject.toml
+├── backend/                        # the service (Python)
+│   ├── ai_classification/
+│   │   ├── app.py                  # FastAPI wiring: lifespan, CORS, router mounting, worker startup
+│   │   ├── api/                    # Endpoint-only modules (no business logic)
+│   │   ├── domain/                 # ClassificationResult, taxonomy enum/hierarchy (frozen)
+│   │   ├── services/               # classify, cluster, jobs, review, ingest, match
+│   │   ├── seams/                  # ticket-source port, pipeline, local fake source
+│   │   └── shared/                 # config + split store (db, store_incidents, store_clusters, store_logs)
+│   ├── tests/                      # Mirrors services 1:1
+│   ├── scripts/                    # canary, reseed, endpoints, migrations
+│   ├── docs/                       # App docs + worklogs/
+│   ├── ocr/                        # OCR sidecar — company vision model (no local model)
+│   ├── integrations/smax/          # Standalone SMAX connector (talks to the API over HTTP)
+│   ├── legacy/suboffering_engine/  # Quarantined sub-offering engine (superseded, for resurrection)
+│   ├── simulator/  evaluation/
+│   └── pyproject.toml  uv.lock  Dockerfile  entrypoint.sh  smoke_test.sh
+├── frontend/                       # the dashboard (no build step)
+│   ├── dashboard/                  # index.html, app.js, admin.html, write-incident.html …
+│   ├── Dockerfile                  # nginx + dashboard files (the image used by k8s/compose)
+│   └── nginx.conf                  # dev/compose reverse proxy (the k8s copy lives in the chart)
+├── deploy/                         # infrastructure
+│   ├── helm/ai-classifier/         # Kubernetes chart — README.md is the DevOps handover
+│   ├── DEPLOYMENT_GUIDE.md         # K8s deployment notes + gotchas
+│   └── DEPLOY.md                   # Docker-compose server deploy
+├── docker-compose.yml              # local/VM stack (reads .env from the repo root)
+└── README.md  ARCHITECTURE.md
 ```
 
 ## Quick Start
 
 ```bash
-# Backend
-cd ~/projects/AI_Classifier
-source .env
+# Backend API
+cd ~/projects/AI_Classifier/backend
+source ../.env
 uv run uvicorn ai_classification.api.routes:app --host 0.0.0.0 --port 8000
 
+# Tests (needs a Postgres; see .github/workflows/test.yml for the CI env)
+cd ~/projects/AI_Classifier/backend && uv run pytest -q
+
 # Dashboard (separate terminal)
-cd frontend/dashboard
+cd ~/projects/AI_Classifier/frontend/dashboard
 python3 -m http.server 8085 --bind 0.0.0.0
 open http://192.168.1.50:8085
 ```
@@ -157,19 +188,19 @@ cp .env.example .env
 nano .env          # fill in the ELM API key + a database password
 
 # 4. THE GATE — check the AI model works before anything else
-./scripts/canary.sh
+./backend/scripts/canary.sh
 
 # 5. Build + start (~10 min the first time)
 docker compose build api
 docker compose up -d postgres api nginx
 
 # 6. Load demo data (optional)
-./scripts/reseed.sh http://localhost:8000 test_incidents.json
+./backend/scripts/reseed.sh http://localhost:8000 test_incidents.json
 ```
 
 Open the dashboard at `http://<VM-IP>:8082`.
 
-Everything is documented in detail in `DEPLOY.md`.
+Everything is documented in detail in `deploy/DEPLOY.md`.
 
 ## How to change things (all in one file: `.env`)
 

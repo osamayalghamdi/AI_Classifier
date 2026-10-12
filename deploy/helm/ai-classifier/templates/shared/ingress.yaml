@@ -1,0 +1,60 @@
+{{- if .Values.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "ai-classifier.fullname" . }}
+  labels:
+    {{- include "ai-classifier.labels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  {{- with .Values.ingress.tls }}
+  tls:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.ingress.host | quote }}
+      http:
+        paths:
+          {{- if .Values.ingress.paths }}
+          # Routing from values.ingress.paths: `service` names a chart
+          # component (backend | frontend), `serviceName` a Service you own.
+          {{- range .Values.ingress.paths }}
+          {{- if and .service (not .serviceName) (not (has .service (list "backend" "frontend"))) }}
+          {{- fail (printf "ingress.paths: unknown component %q — chart 0.4.0 renamed `api` to `backend`: use `service: backend` or `service: frontend`, or set `serviceName` for a Service you own" .service) }}
+          {{- end }}
+          - path: {{ .path | quote }}
+            pathType: {{ .pathType | default "Prefix" }}
+            backend:
+              service:
+                name: {{ include "ai-classifier.pathServiceName" (dict "root" $ "component" .service "name" .serviceName) }}
+                port:
+                  number: {{ .port }}
+          {{- end }}
+          {{- else if .Values.frontend.enabled }}
+          # Default: everything → frontend nginx, which serves the dashboard
+          # and proxies API paths to the api Service (one entry point, same
+          # shape as the compose stack).
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "ai-classifier.fullname" . }}-frontend
+                port:
+                  number: {{ .Values.frontend.port }}
+          {{- else }}
+          # No frontend → expose the API directly.
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "ai-classifier.fullname" . }}-backend
+                port:
+                  number: {{ .Values.backend.port }}
+          {{- end }}
+{{- end }}

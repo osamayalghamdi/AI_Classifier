@@ -1,0 +1,29 @@
+# Dev overlay — external dev database, no TLS, relaxed resources.
+# Copy into the DevOps repo as values-dev.yaml and adjust.
+image:
+  repository: REGISTRY/ai-classifier
+  tag: dev
+
+# Database: provided outside this chart (dev stack or platform team).
+database:
+  host: pg.dev.internal      # ← the dev database host
+  user: aiuser
+  name: ai_incidents
+  existingSecret: ai-classifier-db
+
+ingress:
+  enabled: true               # opt in per environment: this publishes the app
+  host: ai-classifier.dev.internal
+
+backend:
+  env:
+    TICKETING_DRY_RUN: "true"     # never write back from dev
+    SIMILARITY_THRESHOLD: "0.35"
+  # Every Service/Deployment field is a value here too:
+  # service:
+  #   type: ClusterIP             # keep ClusterIP; NodePort/LoadBalancer
+  #   nodePort: 30800             # publish this on every node — avoid outside dev
+
+# Companion objects (HPA, ServiceMonitor, ExternalSecret …) go through
+# extraManifests, not into the chart — see values.yaml for examples.
+# extraManifests: []

@@ -1,0 +1,87 @@
+{{- if .Values.frontend.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "ai-classifier.fullname" . }}-frontend
+  labels:
+    {{- include "ai-classifier.labels" . | nindent 4 }}
+    app.kubernetes.io/component: frontend
+spec:
+  replicas: {{ .Values.frontend.replicas }}
+  selector:
+    matchLabels:
+      {{- include "ai-classifier.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: frontend
+  template:
+    metadata:
+      labels:
+        {{- include "ai-classifier.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: frontend
+      annotations:
+        # Restart pods when the nginx config changes (subPath-mounted
+        # ConfigMaps don't hot-reload).
+        checksum/nginx-conf: {{ include "ai-classifier.frontendConf" . | sha256sum | trunc 32 }}
+        # Roll pods when the access-control settings change. Changing the
+        # htpasswd Secret's *contents* is not picked up — rollout restart.
+        checksum/access-control: {{ printf "%v|%s|%s" .Values.frontend.accessControl.allowlist .Values.frontend.accessControl.basicAuth.existingSecret .Values.frontend.accessControl.basicAuth.realm | sha256sum | trunc 32 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: nginx
+          image: "{{ .Values.frontend.image.repository }}:{{ .Values.frontend.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.frontend.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.frontend.port }}
+          volumeMounts:
+            - name: nginx-conf
+              mountPath: /etc/nginx/conf.d/default.conf
+              subPath: default.conf
+            {{- if .Values.frontend.accessControl.basicAuth.enabled }}
+            - name: basic-auth
+              mountPath: /etc/nginx/auth
+              readOnly: true
+            {{- end }}
+          readinessProbe:
+            httpGet: { path: /, port: http }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /, port: http }
+            periodSeconds: 15
+          resources:
+            {{- toYaml .Values.frontend.resources | nindent 12 }}
+      volumes:
+        - name: nginx-conf
+          configMap:
+            name: {{ include "ai-classifier.frontendConfigMapName" . }}
+        {{- if .Values.frontend.accessControl.basicAuth.enabled }}
+        # htpasswd lives in a Secret created out-of-band — never in values.
+        - name: basic-auth
+          secret:
+            secretName: {{ required "frontend.accessControl.basicAuth.existingSecret is required when basicAuth.enabled=true" .Values.frontend.accessControl.basicAuth.existingSecret }}
+        {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "ai-classifier.fullname" . }}-frontend
+  labels:
+    {{- include "ai-classifier.labels" . | nindent 4 }}
+    app.kubernetes.io/component: frontend
+  {{- with .Values.frontend.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.frontend.service.type }}
+  ports:
+    - name: http
+      port: {{ .Values.frontend.service.port | default .Values.frontend.port }}
+      targetPort: http
+  selector:
+    {{- include "ai-classifier.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: frontend
+{{- end }}

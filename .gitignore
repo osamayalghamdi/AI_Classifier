@@ -42,6 +42,10 @@ Thumbs.db
 fix_tests.py
 test_incidents.json
 test_*.json
+# Real client ticket text — never commit (the canary test skips when absent).
+# Keep your copy at backend/tests/pairwise_canary_fixture.json, or restore it
+# from local_only/ on a fresh clone.
+pairwise_canary_fixture.json
 
 # Public demo tunnel (cloudflared binary, logs, runtime PID/URL state)
 .tunnel/

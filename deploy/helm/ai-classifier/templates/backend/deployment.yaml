@@ -1,0 +1,136 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "ai-classifier.fullname" . }}-backend
+  labels:
+    {{- include "ai-classifier.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backend
+spec:
+  replicas: {{ .Values.backend.replicas }}
+  {{- with .Values.backend.strategy }}
+  strategy:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "ai-classifier.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: backend
+  template:
+    metadata:
+      labels:
+        {{- include "ai-classifier.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: backend
+      annotations:
+        checksum/env: {{ .Values.backend.env | toYaml | sha256sum }}
+        {{- with .Values.backend.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "ai-classifier.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: api
+          image: {{ include "ai-classifier.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.backend.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.backend.port }}
+          env:
+            # ── DB wiring ── the database is NOT part of this chart: it is
+            # provided and managed by the platform/DB team. This only wires
+            # the connection (config.py reads PG_*, not DB_*).
+            - name: PG_HOST
+              value: {{ required "database.host is required: this chart does not deploy a database — point it at the server your platform team provides (see README.md)" .Values.database.host | quote }}
+            - name: PG_PORT
+              value: {{ .Values.database.port | quote }}
+            - name: PG_USER
+              value: {{ .Values.database.user | quote }}
+            - name: PG_DATABASE
+              value: {{ .Values.database.name | quote }}
+            - name: PG_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.existingSecret }}
+                  key: {{ .Values.database.passwordKey | default "PG_PASSWORD" }}
+            # ── Secrets ──
+            - name: LLM_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.backend.existingSecret }}
+                  key: LLM_API_KEY
+            # Embeddings key — optional: only when the /embeddings endpoint
+            # requires one (internal endpoints often don't).
+            - name: EMBEDDING_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.backend.existingSecret }}
+                  key: EMBEDDING_API_KEY
+                  optional: true
+            - name: INTEGRATION_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.backend.existingSecret }}
+                  key: INTEGRATION_API_TOKEN
+                  optional: true
+            - name: TICKETING_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.backend.existingSecret }}
+                  key: TICKETING_API_TOKEN
+                  optional: true
+            # Separate credential for /admin/* (writes .env, resets the DB,
+            # runs pytest). Optional: unset => the integration token still
+            # opens the console (backward compatible).
+            - name: ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.backend.existingSecret }}
+                  key: ADMIN_TOKEN
+                  optional: true
+            # ── Non-secret env from values ── every capability this app uses
+            # is an external endpoint configured here: LLM, embeddings, OCR.
+            # No model ships in the image.
+            {{- range $k, $v := .Values.backend.env }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+            {{- with .Values.backend.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          startupProbe:
+            httpGet:
+              path: {{ .Values.backend.probes.startup.path }}
+              port: http
+            periodSeconds: {{ .Values.backend.probes.startup.periodSeconds }}
+            failureThreshold: {{ .Values.backend.probes.startup.failureThreshold }}
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.backend.probes.liveness.path }}
+              port: http
+            periodSeconds: {{ .Values.backend.probes.liveness.periodSeconds }}
+            timeoutSeconds: {{ .Values.backend.probes.liveness.timeoutSeconds }}
+            failureThreshold: {{ .Values.backend.probes.liveness.failureThreshold }}
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.backend.probes.readiness.path }}
+              port: http
+            periodSeconds: {{ .Values.backend.probes.readiness.periodSeconds }}
+            timeoutSeconds: {{ .Values.backend.probes.readiness.timeoutSeconds }}
+            failureThreshold: {{ .Values.backend.probes.readiness.failureThreshold }}
+          resources:
+            {{- toYaml .Values.backend.resources | nindent 12 }}
+          # NOTE: the app writes a ".last_sync" poll stamp inside its own
+          # package dir → the container filesystem must stay writable.
+          # Do NOT set readOnlyRootFilesystem until the app exposes a
+          # SYNC_STAMP_PATH env var (see deployment guide, gotcha #3).
+      {{- with .Values.backend.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

@@ -1,0 +1,14 @@
+{{- if .Values.frontend.enabled }}
+# nginx config for the frontend — body comes from values.frontend.configMap.conf
+# (rendered with `tpl`), so an environment tunes it in values, not in the chart.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "ai-classifier.frontendConfigMapName" . }}
+  labels:
+    {{- include "ai-classifier.labels" . | nindent 4 }}
+    app.kubernetes.io/component: frontend
+data:
+  default.conf: |
+{{ include "ai-classifier.frontendConf" . | indent 4 }}
+{{- end }}

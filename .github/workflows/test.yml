@@ -37,9 +37,11 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
+        working-directory: backend
         run: uv sync --group dev
 
       - name: Run tests
+        working-directory: backend
         run: uv run pytest -v
         env:
           PG_HOST: localhost

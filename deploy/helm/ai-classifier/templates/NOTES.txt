@@ -1,0 +1,29 @@
+AI Classifier deployed.
+
+1. Wait for the API to become ready (model load takes up to ~5 min cold):
+     kubectl -n {{ .Release.Namespace }} rollout status deploy/{{ include "ai-classifier.fullname" . }}-backend
+
+2. Smoke test:
+     kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "ai-classifier.fullname" . }}-backend {{ .Values.backend.port }}
+     curl -fsS http://localhost:{{ .Values.backend.port }}/health
+     curl -fsS http://localhost:{{ .Values.backend.port }}/ready
+     curl -fsS http://localhost:{{ .Values.backend.port }}/test/all   # full battery: db → embedding → llm → classify
+
+{{- if .Values.ingress.enabled }}
+3. Dashboard / API: {{ if .Values.ingress.tls }}https{{ else }}http{{ end }}://{{ .Values.ingress.host }}/
+{{- if not .Values.ingress.tls }}
+   WARNING: ingress is enabled WITHOUT TLS — traffic to this host is plaintext.
+{{- end }}
+{{- else }}
+3. No ingress (default): the app is reachable in-cluster only. To look at it:
+     kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "ai-classifier.fullname" . }}-frontend 8082:{{ .Values.frontend.port }}
+   NOTE: port-forward binds 127.0.0.1 by default. Never pass --address 0.0.0.0 —
+   that publishes this dashboard on every host interface, VPN/Tailscale included.
+{{- end }}
+
+Required secrets (create before install if missing):
+  - {{ .Values.backend.existingSecret }} : LLM_API_KEY, INTEGRATION_API_TOKEN, TICKETING_API_TOKEN
+  - {{ .Values.database.existingSecret }} : {{ .Values.database.passwordKey | default "PG_PASSWORD" }} (external DB at {{ .Values.database.host }})
+
+IMPORTANT: keep api.replicas=1 (in-process background workers). See
+DEPLOYMENT_GUIDE.md §Scaling before increasing it.

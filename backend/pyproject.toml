@@ -1,0 +1,29 @@
+[project]
+name = "ai-classification"
+version = "0.2.0"
+description = "AI-powered structured incident classification with semantic similarity"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.34",
+    "pydantic>=2.0",
+    "litellm>=1.60",
+    "python-dotenv>=1.0",
+    "numpy>=2.0",
+    "pillow>=12.2.0",
+    "networkx>=3.6.1",
+    "scikit-learn>=1.8.0",
+    "psycopg2-binary>=2.9",
+]
+
+[project.optional-dependencies]
+# Local model stack — dev boxes and the test suite ONLY. The shipped image
+# installs nothing from here: embeddings come from EMBEDDING_API_URL (see
+# shared/db.py, EMBEDDING_PROVIDER=external).
+local-models = ["sentence-transformers>=3.0"]
+
+[dependency-groups]
+dev = ["pytest>=9.0"]
+
+[tool.setuptools.packages.find]
+include = ["ai_classification*"]

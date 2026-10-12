@@ -1,0 +1,58 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- /* Guard: this policy admits only frontend pods to the api. Anything else
+       that has to reach the api — no frontend deployed, or an ingress path
+       routed straight to the api Service — needs the ingress controller's
+       namespace admitted below, otherwise traffic silently times out (504)
+       at runtime. Fail the render instead of deploying that silently. */ -}}
+{{- $directToApi := false -}}
+{{- if not .Values.frontend.enabled -}}
+{{- $directToApi = true -}}
+{{- end -}}
+{{- if and .Values.ingress.enabled .Values.ingress.paths -}}
+{{- range .Values.ingress.paths -}}
+{{- if eq (default "" .service) "backend" -}}
+{{- $directToApi = true -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- if and $directToApi (not .Values.networkPolicy.ingressController.namespace) -}}
+{{- fail "networkPolicy: the api must accept traffic from outside the frontend (frontend.enabled=false, or an ingress path with `service: backend`), so set networkPolicy.ingressController.namespace (e.g. \"ingress-nginx\"). Better: route everything through the frontend and leave ingress.paths empty — that keeps the frontend access control in front of the data paths too." -}}
+{{- end -}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "ai-classifier.fullname" . }}-backend
+  labels:
+    {{- include "ai-classifier.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backend
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "ai-classifier.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: backend
+  policyTypes: ["Ingress"]
+  ingress:
+    {{- if .Values.frontend.enabled }}
+    # Frontend nginx → api (the dashboard path). Everything else in the
+    # namespace is blocked at the network layer.
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "ai-classifier.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: frontend
+      ports:
+        - protocol: TCP
+          port: {{ .Values.backend.port }}
+    {{- end }}
+    {{- with .Values.networkPolicy.ingressController.namespace }}
+    # Direct api exposure (no frontend, or an ingress path routed to the api
+    # Service): allow the ingress controller's pods through.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ . | quote }}
+      ports:
+        - protocol: TCP
+          port: {{ $.Values.backend.port }}
+    {{- end }}
+{{- end }}

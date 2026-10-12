@@ -1,0 +1,63 @@
+# Prod overlay — EXTERNAL managed Postgres (pgvector required), TLS on.
+# Copy into the DevOps repo as values-prod.yaml and adjust.
+image:
+  repository: REGISTRY/ai-classifier
+  tag: ""            # pin an immutable tag/digest per release, never "latest"
+
+# Database: externally managed (NOT part of this chart). Point the app at
+# the server DevOps/DBA hand over — it must have the pgvector extension.
+database:
+  host: pg.prod.internal     # ← from DevOps/DBA
+  port: 5432
+  user: aiuser
+  name: ai_incidents
+  existingSecret: ai-classifier-db    # key: PG_PASSWORD
+ingress:
+  enabled: true               # opt in per environment: this publishes the app
+  className: nginx
+  host: ai-classifier.example.com
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+  tls:
+    - secretName: ai-classifier-tls
+      hosts: [ai-classifier.example.com]
+
+backend:
+  resources:
+    requests: { cpu: "1", memory: "4Gi" }
+    limits: { cpu: "4", memory: "6Gi" }
+  probes:
+    readiness:
+      path: /ready       # enable once LLM egress from the cluster is confirmed
+  # Service/Deployment fields are values (type, port, annotations,
+  # strategy, podAnnotations, nodeSelector, extraEnv):
+  # service:
+  #   type: LoadBalancer
+  #   annotations:
+  #     service.beta.kubernetes.io/azure-load-balancer-internal: "true"
+  # strategy:
+  #   type: RollingUpdate
+
+# Take over routing from values instead of the default "→ frontend" rule:
+# ingress:
+#   paths:
+#     - { path: /api, pathType: Prefix, service: backend, port: 8000 }
+#     - { path: /,    pathType: Prefix, service: frontend, port: 8082 }
+#     - { path: /dash, pathType: Prefix, service: frontend, port: 8082 }
+
+# Companion/third-party objects are injected from values (each entry is
+# rendered with tpl) — the chart never ships them:
+# extraManifests:
+#   - apiVersion: monitoring.coreos.com/v1
+#     kind: ServiceMonitor
+#     metadata:
+#       name: '{{ include "ai-classifier.fullname" . }}-backend'
+
+# Hardening backstop: only the frontend may reach the api at the network
+# layer (app-level bearer auth on /reset + /test/llm is the real control;
+# this blocks everything else pod→api). kubelet probes + port-forward
+# bypass it, so smoke tests still work. Flip off temporarily if the first
+# deploy shows unexpected connectivity issues.
+networkPolicy:
+  enabled: true
