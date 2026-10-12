@@ -221,7 +221,7 @@ GET /ready      -> 200/503 {"status":"ok|degraded|unhealthy","checks":{...}}
 ```
 
 - `db` = live `SELECT 1`
-- `embedding` = embedding model loaded
+- `embedding` = the configured embeddings endpoint answered
 - `llm` = real 1-token probe against the configured LLM endpoint
   (a company endpoint that is unreachable from the caller's network shows
   as `unreachable` while db/embedding stay `ok` — degraded, not down)

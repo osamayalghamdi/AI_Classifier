@@ -9,7 +9,7 @@ Companion to the `ai-classifier/` Helm chart in this folder. **DevOps/values ref
 | Component | Kind | Notes |
 |---|---|---|
 | `api` | Deployment (replicas **must stay 1** for now) | FastAPI + in-process workers (sync poller, cluster sweep, status monitor, integration retry worker). **No model is baked in**: the LLM, the embeddings (`EMBEDDING_API_URL`) and the OCR (`OCR_SERVICE_URL`) are all external endpoints. Incident attachments are POSTed to the OCR endpoint and the transcription is stored on the record (`extracted_text` + file names in `documents`). |
-| `frontend` | Deployment + ConfigMap | nginx serving the dashboard, proxying API paths to the api Service. **Needs a new image** — see §3. |
+| `frontend` | Deployment + ConfigMap | nginx serving the dashboard, proxying API paths to the backend Service. **Needs a new image** — see §3. |
 | `ocr` | **NOT in this chart** | The OCR service is a separate deployment (own image, own endpoint). The API only needs `backend.env.OCR_SERVICE_URL`. |
 | `ingress` | Ingress (**off by default**) | Single host → frontend (which proxies API), same shape as the compose stack. Turning it on publishes the app — opt in per environment (§1.2). Routing itself is a value — see §1.1. |
 
@@ -46,7 +46,7 @@ extraManifests:
   - apiVersion: monitoring.coreos.com/v1
     kind: ServiceMonitor
     metadata:
-      name: '{{ include "ai-classifier.fullname" . }}-api'
+      name: '{{ include "ai-classifier.fullname" . }}-monitor'
     spec:
       selector:
         matchLabels:
@@ -71,7 +71,7 @@ The defaults publish nothing:
 |---|---|---|
 | API / dashboard outside the cluster | **nothing** | `ingress.enabled: true` (opt in per environment) — pair it with `ingress.tls` |
 | Service types | `ClusterIP` for api, frontend, ocr | setting `*.service.type: NodePort`/`LoadBalancer` publishes on every node / via a cloud LB — avoid outside dev |
-| Pod-to-pod reach to the api | `networkPolicy.enabled: true` — only frontend pods may reach it | turning the policy *off* is the deliberate act, not the other way round |
+| Pod-to-pod reach to the backend | `networkPolicy.enabled: true` — only frontend pods may reach it | turning the policy *off* is the deliberate act, not the other way round |
 | Data-revealing routes through the proxy | `/reset`, `/test/*`, `/docs`, `/redoc`, `/openapi.json` → **403** at nginx | edit `frontend.configMap.conf`, and justify why |
 | Database | **not in this chart at all** | the platform/DB team provides the server; the chart only takes `database.*` connection values (§ README §3) |
 
@@ -168,8 +168,8 @@ helm upgrade --install ai-classifier deploy/helm/ai-classifier \
   -f values-dev.yaml            # your env overlay (see *.example.yaml)
 
 # 3) verify — in this order
-kubectl -n ai-classifier rollout status deploy/ai-classifier-api   # model load ≤ ~5 min
-kubectl -n ai-classifier port-forward svc/ai-classifier-api 8000 &
+kubectl -n ai-classifier rollout status deploy/ai-classifier-backend   # seconds — no model to load
+kubectl -n ai-classifier port-forward svc/ai-classifier-backend 8000 &
 curl -fsS localhost:8000/health      # liveness
 curl -fsS localhost:8000/ready       # db + embedding + llm reachability
 curl -fsS localhost:8000/test/all    # full battery incl. a real classify call
@@ -206,7 +206,7 @@ Either way: **the only thing the app team should routinely change in the DevOps 
    - **App-level (the real fix):** both endpoints require the same Bearer token as `/api/v1/*` (`INTEGRATION_API_TOKEN`, via `api/auth.py` → `require_token`). This works regardless of network path — ingress, pod-to-pod, port-forward, anything. 401 without a valid token.
    - **nginx (chart default):** the frontend ConfigMap hard-blocks `location = /reset` and `location = /test/llm` with `return 403` (exact-match locations that win over the proxy regex and the SPA fallback) — defense in depth, zero cost.
    - **NetworkPolicy (ON by default):** `networkPolicy.enabled: true` restricts api ingress to the frontend pods only (kubelet probes + `kubectl port-forward` bypass it, so smoke tests still work). If you run `frontend.enabled=false` you MUST set `networkPolicy.ingressController.namespace` or Helm fails the render — the api would otherwise be unreachable.
-   - Residuals: `/reset`, `/test/llm`, the whole `/test/` surface and the schema/docs routes (`/docs`, `/redoc`, `/openapi.json`) are now blocked with 403 in the chart's nginx config, so they are not reachable from outside even if the host is exposed. In-cluster access to the api Service is fine (that's how smoke tests run); just never port-forward the pod with `--address 0.0.0.0`.
+   - Residuals: `/reset`, `/test/llm`, the whole `/test/` surface and the schema/docs routes (`/docs`, `/redoc`, `/openapi.json`) are now blocked with 403 in the chart's nginx config, so they are not reachable from outside even if the host is exposed. In-cluster access to the backend Service is fine (that's how smoke tests run); just never port-forward the pod with `--address 0.0.0.0`.
 8. **CORS is `*`** in the app. Harmless while the frontend proxies same-origin, but tighten it (env-configurable origin) before exposing the API host directly to browsers.
 9. **SMAX polling in K8s:** leave `TICKETING_API_TOKEN` empty until real SMAX creds exist — the app logs one line and idles (by design, no crash-loop). When the `integrations/smax` connector from the refactor plan lands, it becomes its own Deployment in this chart (a `smaxConnector:` values block + Deployment template — one small chart bump).
 
@@ -222,7 +222,7 @@ No HPA for the api (see gotcha #2). No PVC in this chart — the database runs o
 
 ## 8. Rollout / rollback
 
-- Deploy = new image tag in env values → `helm upgrade` (or ArgoCD sync). `Recreate` strategy → ~1–5 min gap while the new pod loads the model; schedule accordingly or prioritize the worker split.
+- Deploy = new image tag in env values → `helm upgrade` (or ArgoCD sync). `Recreate` strategy → a few seconds of downtime while the old pod stops and the new one starts (nothing to load, so it is quick); schedule accordingly or prioritize the worker split.
 - Rollback = `helm rollback` / revert the tag. DB schema is additive-idempotent, so rolling the app back is safe; **never** run `migrate_classifier_v3.py --down` against a DB that newer code wrote to.
 - Post-deploy check is always the same three: `/health`, `/ready`, `/test/all`.
 

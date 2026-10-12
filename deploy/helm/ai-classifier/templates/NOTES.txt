@@ -1,6 +1,6 @@
 AI Classifier deployed.
 
-1. Wait for the API to become ready (model load takes up to ~5 min cold):
+1. Wait for the backend to become ready (seconds — nothing loads locally; a slow DB extends it):
      kubectl -n {{ .Release.Namespace }} rollout status deploy/{{ include "ai-classifier.fullname" . }}-backend
 
 2. Smoke test:

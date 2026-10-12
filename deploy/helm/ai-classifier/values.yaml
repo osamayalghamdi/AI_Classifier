@@ -85,7 +85,7 @@ backend:
     capabilities: { drop: ["ALL"] }
     seccompProfile: { type: RuntimeDefault }
 
-  # /ready checks db + embedding + llm; model load takes tens of seconds.
+  # /ready checks db + embedding + llm; nothing loads locally, so startup is quick.
   probes:
     startup:   { path: /health, failureThreshold: 30, periodSeconds: 10 }
     liveness:  { path: /health, periodSeconds: 15, timeoutSeconds: 5, failureThreshold: 4 }
@@ -165,7 +165,7 @@ frontend:
           # Nothing that reveals data or changes state is proxied: the
           # destructive endpoints, the whole /test/ surface and the schema/
           # docs routes are hard-blocked at the proxy. Smoke tests reach the
-          # api Service directly (kubectl port-forward bypasses nginx).
+          # backend Service directly (kubectl port-forward bypasses nginx).
           location = /reset { return 403; }
           location = /test/llm { return 403; }
           location ^~ /test/ { return 403; }
@@ -273,7 +273,7 @@ extraManifests: []
 #      maxReplicas: 4
 
 # ── NetworkPolicy (ON by default — least privilege) ───────────────────
-# Only the frontend pods may reach the api pods; nothing else in the
+# Only the frontend pods may reach the backend pods; nothing else in the
 # cluster gets a route to them at L3/L4. kubelet probes and
 # `kubectl port-forward` come from the node, not a pod, so they still work
 # (that is how smoke tests run).

@@ -82,11 +82,11 @@ helm upgrade --install ai-classifier deploy/helm/ai-classifier \
 Then verify:
 
 ```bash
-kubectl -n ai-classifier rollout status deploy/ai-classifier-api      # first boot loads the model (~1–5 min)
-kubectl -n ai-classifier port-forward svc/ai-classifier-api 8000      # binds 127.0.0.1 — never --address 0.0.0.0
+kubectl -n ai-classifier rollout status deploy/ai-classifier-backend   # seconds — no model to load
+kubectl -n ai-classifier port-forward svc/ai-classifier-backend 8000   # binds 127.0.0.1 — never --address 0.0.0.0
 curl -fsS localhost:8000/health
 curl -fsS localhost:8000/ready       # db + embedding + LLM reachability
-curl -fsS localhost:8000/test/all    # full battery (reach the api Service directly; /test/* is blocked at the proxy)
+curl -fsS localhost:8000/test/all    # full battery (reach the backend Service directly; /test/* is blocked at the proxy)
 ```
 
 ---
@@ -120,12 +120,50 @@ pod. Need a throwaway database for a dev sandbox? Add it yourself through
 
 ---
 
+## 3b. Images — the two you have to build and push
+
+The chart **deploys** images; it never builds them. Two are needed:
+
+| Values that point at it | Dockerfile | Build context | Size |
+|---|---|---|---|
+| `image.repository` / `image.tag` (backend) | `backend/Dockerfile` | `backend/` | ~1.1 GB |
+| `frontend.image.repository` / `.tag` | `frontend/Dockerfile` | `frontend/` | ~95 MB |
+
+```bash
+docker build --platform linux/amd64 -t REGISTRY/ai-classifier:<tag>          backend/
+docker build --platform linux/amd64 -t REGISTRY/ai-classifier-frontend:<tag> frontend/
+docker push REGISTRY/ai-classifier:<tag>
+docker push REGISTRY/ai-classifier-frontend:<tag>
+```
+
+Then point the chart at them — **set both tags explicitly**:
+
+```bash
+helm upgrade --install ai-classifier deploy/helm/ai-classifier \
+  --set image.repository=REGISTRY/ai-classifier          --set image.tag=<tag> \
+  --set frontend.image.repository=REGISTRY/ai-classifier-frontend \
+  --set frontend.image.tag=<tag> \
+  --set database.host=<host> --set database.existingSecret=ai-classifier-db
+```
+
+Notes for whoever builds and deploys:
+
+- **Do not leave `image.tag` blank.** Blank renders `Chart.appVersion` (a stale `0.2.0` that was never pushed) — always set the tag CI built.
+- **Build for the cluster's architecture** (`--platform linux/amd64` unless it is arm64), or pods die with `exec format error`.
+- The backend **runs as UID 1000** (non-root, read-only root FS) and both images are built for that; do not override the container user without rebuilding.
+- **No build args, no secrets and no model download at build time** — the only network use is `pip install`. Nothing is baked in: LLM, embeddings and OCR are endpoint values (§4).
+- **No database image and no OCR image from this chart** — the DB is external (§3) and OCR is a separate deployment the backend reaches via `backend.env.OCR_SERVICE_URL`.
+- `imagePullSecrets` is **top-level** (`imagePullSecrets: [{name: regcred}]`), not per component.
+- The template renders `repository:tag`, so a `sha256:` digest cannot be pinned as-is — pin an immutable tag (ask us for a one-line chart change if you want digest support).
+
+---
+
 ## 4. Values reference
 
 | Key | Default | Notes |
 |---|---|---|
 | `nameOverride` / `fullnameOverride` | `""` | Override the generated names |
-| `image.repository` / `.tag` / `.pullPolicy` | `REGISTRY/ai-classifier` / `""` / `IfNotPresent` | Tag empty → `Chart.appVersion`; the image is multi-GB (`bge-m3` baked in) |
+| `image.repository` / `.tag` / `.pullPolicy` | `REGISTRY/ai-classifier` / `""` / `IfNotPresent` | Tag empty → `Chart.appVersion` (stale `0.2.0` — set the tag CI pushed). Ships no model: ~1.1 GB |
 | `imagePullSecrets` | `[]` | Registry pull secret(s) |
 | `serviceAccount.create` / `.name` / `.annotations` | `true` / `""` / `{}` | IRSA/workload-identity annotations go here |
 | `backend.replicas` | `1` | **Keep 1** — the process runs in-process workers; see DEPLOYMENT_GUIDE §6 |
@@ -144,15 +182,14 @@ pod. Need a throwaway database for a dev sandbox? Add it yourself through
 | `backend.securityContext` | non-root, no caps | Runs as UID 1000 |
 | `backend.probes.*` | `/health` | Switch readiness to `/ready` once LLM egress is confirmed |
 | `backend.strategy` | `Recreate` | No overlap between replicas (worker duplication) |
-| `backend.podAnnotations` / `.nodeSelector` | `{}` | Scheduling hints (e.g. pin to the node pool caching the big image) |
-| `api.service.type` / `.port` / `.annotations` | `ClusterIP` / `""` / `{}` | Avoid `NodePort`/`LoadBalancer` outside dev |
+| `backend.podAnnotations` / `.nodeSelector` | `{}` | Scheduling hints (e.g. pin to a node pool) |
+| `backend.service.type` / `.port` / `.annotations` | `ClusterIP` / `""` / `{}` | Avoid `NodePort`/`LoadBalancer` outside dev |
 | `frontend.enabled` / `.replicas` / `.port` | `true` / `1` / `8082` | nginx dashboard + API proxy |
 | `frontend.image.*` | `REGISTRY/ai-classifier-frontend` | Baked dashboard files |
-| `frontend.service.*` | `ClusterIP` | Same warnings as the api Service |
+| `frontend.service.*` | `ClusterIP` | Same warnings as the backend Service |
 | `frontend.accessControl.allowlist` | `[]` | nginx `allow/deny` in front of the data paths |
 | `frontend.accessControl.basicAuth.enabled` / `.existingSecret` / `.realm` | `false` / `""` / `AI Classifier` | htpasswd Secret; render fails without `existingSecret` |
 | `frontend.configMap.conf` | nginx server block | The whole config is a value (rendered with `tpl`) |
-| `ocr.enabled` / `.image.*` / `.port` / `.env` / `.existingSecret` | `false` / our image / `8001` / company endpoint / `""` | OCR sidecar — calls the company vision endpoint (`ELM_API_URL`/`ELM_MODEL`, key from `.existingSecret`); no local model, so the render fails when enabled without the secret |
 | `database.*` | host required | §3 |
 | `ingress.enabled` | **`false`** | Turning it on publishes the app — opt in per environment |
 | `ingress.className` / `.host` / `.tls` / `.annotations` | `""` / example / `[]` / `{}` | Ask your controller which class; add TLS before exposing |
@@ -168,13 +205,13 @@ pod. Need a throwaway database for a dev sandbox? Add it yourself through
 |---|---|---|
 | API + dashboard outside the cluster | nothing | `ingress.enabled: true` (+ `ingress.tls`) |
 | Service types | `ClusterIP` | `*.service.type` (`NodePort`/`LoadBalancer` publish on every node / via a cloud LB) |
-| Pod-to-pod access to the api | `networkPolicy.enabled: true` | it is the default; turning it *off* is the deliberate act |
+| Pod-to-pod access to the backend | `networkPolicy.enabled: true` | it is the default; turning it *off* is the deliberate act |
 | Data routes (`/reset`, `/test/*`, `/docs`, `/redoc`, `/openapi.json`) | **403** in the proxy | edit `frontend.configMap.conf` if a route must be reachable |
 | Dashboard data (`/incidents`, `/status`, `/reports/*`, …) | open to anyone who can reach the frontend | `frontend.accessControl.basicAuth` **or** `.allowlist` **or** platform SSO via `ingress.annotations` (DEPLOYMENT_GUIDE §1.3) |
 
 Two rules:
 
-- **Route everything through the frontend** (leave `ingress.paths` empty). A path routed straight to the api Service skips the frontend gate, and the chart then requires `networkPolicy.ingressController.namespace` so the controller can reach the api at all.
+- **Route everything through the frontend** (leave `ingress.paths` empty). A path routed straight to the backend Service skips the frontend gate, and the chart then requires `networkPolicy.ingressController.namespace` so the controller can reach the backend at all.
 - `/health` and `/ready` stay ungated on purpose, so your probes and monitors keep working.
 
 `kubectl port-forward` binds `127.0.0.1` by default — correct for inspecting a
@@ -213,13 +250,13 @@ These exist because each one otherwise fails *silently* at runtime.
 
 | Symptom | Cause / fix |
 |---|---|
-| `ImagePullBackOff` on the api | registry/image tag wrong, or the multi-GB image is still pulling |
-| api pod `0/1` for minutes then Ready | first boot loads `bge-m3` (up to ~5 min; `startupProbe` allows it) |
+| `ImagePullBackOff` on the backend | wrong registry/repository/tag, missing `imagePullSecrets`, or an image built for another architecture |
+| backend pod `0/1` for minutes then Ready | first boot creates/validates its tables — a slow or unreachable DB extends it; `/health` is up meanwhile |
 | `/ready` reports `llm: error` | LLM egress blocked from the cluster or `LLM_API_KEY` missing — `/health` and the dashboard still work |
-| **504** through the ingress on `/api/*` | path routed straight to the api Service while the NetworkPolicy only admits the frontend → set `networkPolicy.ingressController.namespace` |
+| **504** through the ingress on `/api/*` | path routed straight to the backend Service while the NetworkPolicy only admits the frontend → set `networkPolicy.ingressController.namespace` |
 | **401/403** on the dashboard | `frontend.accessControl` is on: authenticate, or your source IP is outside `allowlist` |
 | readiness flapping | readiness is pointing at `/ready` while LLM egress is flaky — keep it on `/health` |
-| pods killed by PodSecurity | API image runs as UID 1000; the OCR image needs the default `securityContext` (no `runAsNonRoot`) |
+| pods killed by PodSecurity | the backend image runs as UID 1000; frontend is plain nginx |
 
 ---
 

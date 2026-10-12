@@ -1,7 +1,7 @@
 {{- if .Values.networkPolicy.enabled }}
 {{- /* Guard: this policy admits only frontend pods to the api. Anything else
        that has to reach the api — no frontend deployed, or an ingress path
-       routed straight to the api Service — needs the ingress controller's
+       routed straight to the backend Service — needs the ingress controller's
        namespace admitted below, otherwise traffic silently times out (504)
        at runtime. Fail the render instead of deploying that silently. */ -}}
 {{- $directToApi := false -}}

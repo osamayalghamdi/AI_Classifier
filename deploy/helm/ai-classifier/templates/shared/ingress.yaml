@@ -38,7 +38,7 @@ spec:
           {{- end }}
           {{- else if .Values.frontend.enabled }}
           # Default: everything → frontend nginx, which serves the dashboard
-          # and proxies API paths to the api Service (one entry point, same
+          # and proxies API paths to the backend Service (one entry point, same
           # shape as the compose stack).
           - path: /
             pathType: Prefix
