@@ -17,6 +17,8 @@ cp .env.example .env
 #   EMBEDDING_API_URL / EMBEDDING_API_KEY / EMBEDDING_MODEL_ID / EMBEDDING_DIM
 #                                                     → similarity (OpenAI-compatible /embeddings)
 #   OCR_SERVICE_URL                                   → attachment text (optional; empty = names only)
+#   ATTACHMENT_VISION_API_URL / ATTACHMENT_VISION_MODEL / ATTACHMENT_VISION_API_KEY
+#                                                     → attachment "layers" (ATTACHMENTS_ENABLED=1; empty = text-only)
 #   POSTGRES_USER / POSTGRES_PASSWORD / POSTGRES_DB    → database
 docker compose up -d        # api + postgres + nginx (dashboard served by nginx)
 ```
@@ -32,6 +34,13 @@ Rules of thumb:
   (`MODEL_<NAME>_ID` / `_API_BASE` / `_API_KEY` override that model's endpoint).
 - Attachment OCR is a **separate service**. To host the bundled one:
   `docker compose --profile ocr up -d` + `OCR_SERVICE_URL=http://ocr:8001`.
+- **Attachment understanding** (universal layers: where / objects / signals /
+  text / summary) is an external vision reader, env-only — set
+  `ATTACHMENTS_ENABLED=1` + `ATTACHMENT_VISION_API_URL` / `_MODEL` / `_API_KEY`.
+  Off by default (text-only, never crashes). Measurement tools:
+  `backend/scripts/attachments_backfill.py` and `backend/evaluation/attachments_eval.py`
+  (both accept `--mock` to run offline); contract in
+  `backend/ai_classification/services/attachments/CONTRACT.md`.
 - Kubernetes: the chart is values-only and deploys the same two workloads
   (api + frontend). DB, OCR, LLM and embeddings are external endpoints there
   too — see `deploy/helm/ai-classifier/README.md` (first install) and `DEPLOYMENT_GUIDE.md`.
@@ -102,17 +111,24 @@ Run it:
 
 ```bash
 cd backend/integrations/smax
-export SMAX_API_URL=<smax-url>            # upstream ticketing system
-export SMAX_API_TOKEN=<token>             # required to poll SMAX
+cp .env.example .env                       # SMAX config lives HERE, not in the app .env
+export SMAX_BASE=https://smax.example.com  # upstream ticketing system (SMAX_API_URL also works)
+export SMAX_TENANT=<tenant>                # TENANTID (login query + cookie)
+export SMAX_USER=<integration-user>
+export SMAX_PASS=<password>                # login exchange — there is NO static token
 export CLASSIFIER_API_URL=http://localhost:8000
 export CLASSIFIER_API_TOKEN=<INTEGRATION_API_TOKEN from .env>
-export SMAX_DRY_RUN=true                  # first: verify nothing is written back
+export SMAX_DRY_RUN=true                   # default; write-back logs, posts nothing
 
-python -m integrations.smax.main --check      # validate config, print masked summary
-python -m integrations.smax.main --once       # one poll + write-back pass
-python -m integrations.smax.main              # run poller + writeback (Ctrl-C to stop)
-python -m integrations.smax.main --backfill incidents.json --since 2026-08-01T00:00:00Z
+.venv/bin/python -m integrations.smax.main --check                     # validate config, masked summary
+.venv/bin/python -m integrations.smax.main --probe <id> --probe-redact  # one incident, structure only
+.venv/bin/python -m integrations.smax.main --once                      # one poll + write-back pass
+.venv/bin/python -m integrations.smax.main                             # poller + writeback (Ctrl-C to stop)
 ```
+
+Write-back is **not implemented yet**: the SMAX handover documents no write
+endpoint, so `write_suggestion` refuses and the loop only logs the payload it
+would post. Confirm the write API before enabling it.
 
 Full contract (payload shapes, env vars, error handling, sequence diagram):
 `backend/integrations/smax/README.md`. The E1-E9 API it consumes is documented in
@@ -181,7 +197,6 @@ sudo usermod -aG docker $USER && newgrp docker
 # 2. Get the code
 git clone git@github.com:osamayalghamdi/AI_Classifier.git
 cd AI_Classifier
-git checkout feat/deploy-integration-ready
 
 # 3. Configure (see "How to change things" below)
 cp .env.example .env
@@ -212,6 +227,7 @@ Everything is documented in detail in `deploy/DEPLOY.md`.
 | Database password (REQUIRED) | `POSTGRES_PASSWORD` |
 | Integration API token | `INTEGRATION_API_TOKEN` (empty = locked) |
 | Duplicate-ticket threshold | `SIMILARITY_THRESHOLD` (0.35 for deploy) |
+| Attachment understanding | `ATTACHMENTS_ENABLED` + `ATTACHMENT_VISION_API_URL` / `_MODEL` / `_API_KEY` |
 
 After editing `.env`, restart the API:
 
