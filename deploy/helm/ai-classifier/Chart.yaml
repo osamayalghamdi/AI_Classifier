@@ -2,13 +2,7 @@ apiVersion: v2
 name: ai-classifier
 description: AI Incident Classifier — LLM classification + pgvector clustering (Nusuk Masar Haj)
 type: application
-version: 0.4.0          # chart version — bump on chart changes
-                        # 0.4.0: layout mirrors the repo — templates/backend|frontend|shared,
-                        #        values key `api:` → `backend:`, workload/Service names
-                        #        <release>-backend / <release>-frontend
-                        # 0.3.0: database is external-only (no DB in the chart);
-                        #        values-only Service/ConfigMap/Deployment/Ingress,
-                        #        secure defaults, frontend access control
+version: 0.5.0          # chart version — bump on chart changes
 appVersion: "0.2.0"     # app version — matches FastAPI app version
 keywords:
   - fastapi

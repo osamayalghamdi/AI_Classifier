@@ -63,5 +63,3 @@ auth_basic_user_file /etc/nginx/auth/htpasswd;
 {{- end }}
 {{- end -}}
 
-{{/* Superseded: the database is externally managed, so the PG_* helpers
-     that used to compute in-cluster host/user/db/port are gone. */}}

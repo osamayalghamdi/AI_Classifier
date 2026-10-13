@@ -22,8 +22,8 @@ AI Classifier deployed.
 {{- end }}
 
 Required secrets (create before install if missing):
-  - {{ .Values.backend.existingSecret }} : LLM_API_KEY, INTEGRATION_API_TOKEN, TICKETING_API_TOKEN
+  - {{ .Values.backend.existingSecret }} : LLM_API_KEY, INTEGRATION_API_TOKEN, EMBEDDING_API_KEY, ATTACHMENT_VISION_API_KEY (as needed)
   - {{ .Values.database.existingSecret }} : {{ .Values.database.passwordKey | default "PG_PASSWORD" }} (external DB at {{ .Values.database.host }})
 
-IMPORTANT: keep api.replicas=1 (in-process background workers). See
+IMPORTANT: keep backend.replicas=1 (in-process background workers). See
 DEPLOYMENT_GUIDE.md §Scaling before increasing it.
