@@ -68,3 +68,21 @@ def test_attributes_are_string_capped():
     layers = _layers(objects=[{"type": "t", "attributes": {"k" * 400: "v" * 400}}])
     attr = layers.objects[0].attributes
     assert len(list(attr.keys())[0]) == 300 and len(list(attr.values())[0]) == 300
+
+
+def test_status_defaults_to_ok():
+    assert _layers(summary_en="x").status == "ok"
+
+
+def test_grounding_matches_dashes_against_spaces():
+    # code "TX-778201" is grounded by transcription "TX 778201"
+    layers = _layers(text="ref TX 778201 here",
+                     signals=[{"type": "error", "code": "TX-778201"}])
+    assert layers.signals[0].code == "TX-778201"
+
+
+def test_grounding_matches_arabic_indic_digits_in_transcription():
+    # ASCII code 778201 is grounded by Arabic-Indic digits ٧٧٨٢٠١ in the text
+    layers = _layers(text="رقم ٧٧٨٢٠١",
+                     signals=[{"type": "error", "code": "778201"}])
+    assert layers.signals[0].code == "778201"

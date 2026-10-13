@@ -99,6 +99,7 @@ class AttachmentLayers(BaseModel):
     text: str = ""
     summary_en: str = ""
     quality: Literal["clear", "partial", "unreadable"] = "clear"
+    status: Literal["ok", "failed"] = "ok"
     relation_hint: str | None = None
 
     @field_validator("text")
