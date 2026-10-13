@@ -33,8 +33,9 @@ from .http_client import DEFAULT_TIMEOUT_S, JsonHttpClient
 _log = logging.getLogger(__name__)
 
 AUTH_PATH = "/auth/authentication-endpoint/authenticate/token"
-# The fields every search asks for (the handover's layout). Entity_c is
-# overridden by settings.smax_entity_field when a tenant uses another field.
+# The fields every search asks for (the handover's layout). The tenant's
+# entity field (settings.smax_entity_field, `Entity_c` by default) is added on
+# top of this tuple by _layout_for() — see there for why it is never omitted.
 DEFAULT_LAYOUT = (
     "Id", "DisplayLabel", "Description", "Status",
     "EmsCreationTime", "LastUpdateTime", "IncidentAttachments", "NumberOfAttachments",
@@ -116,9 +117,17 @@ def build_filter(*, start=None, end=None, entity_ids=None, incident_ids=None,
 
 
 def _layout_for(entity_field: str) -> str:
-    """The layout string: the handover's fields, with the tenant's entity field."""
+    """The layout string: the handover's fields, plus the tenant's entity field.
+
+    The entity field is requested even when it carries the default name
+    (`Entity_c`). Dropping it at the default name is what left `--probe`
+    unable to verify the field against a real tenant at all: a field that is
+    never asked for never comes back, so the mapping could not be confirmed
+    (or debugged) from the probe's raw dump. A tenant that names the field
+    differently sets SMAX_ENTITY_FIELD and gets that name instead.
+    """
     fields: list[str] = list(DEFAULT_LAYOUT)
-    if entity_field != "Entity_c":
+    if entity_field not in fields:
         fields.append(entity_field)
     return ",".join(fields)
 

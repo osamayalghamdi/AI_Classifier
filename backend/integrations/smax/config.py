@@ -81,7 +81,9 @@ class Settings:
     # Safety cap on submissions per poll tick. 0 = no cap (default). Set it for a
     # first live run: the connector then advances its stamp only to the last
     # ticket it actually sent, so the remainder is picked up next tick — nothing
-    # is dropped, and a backlog cannot hit the classifier all at once.
+    # is dropped, and a backlog cannot hit the classifier all at once. It bounds
+    # the READ as well: a capped tick lists one ticket past the cap rather than
+    # pulling the whole change list off SMAX to hold it back.
     smax_max_incidents_per_tick: int = int(_env("SMAX_MAX_INCIDENTS_PER_TICK", "0"))
     # Write-back gate: when true (DEFAULT), the connector only LOGS the
     # suggestion payload it would post to SMAX — nothing is written.

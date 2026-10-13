@@ -91,7 +91,8 @@ Why it is hard to break:
   a ticket that was already ingested is matched, not duplicated.
 - **A cap defers, it never drops.** The stamp stops *before* the tickets held
   back, so the next tick resumes there; nothing is skipped and nothing is
-  re-sent twice.
+  re-sent twice. It bounds the **read** as well: a capped tick lists one ticket
+  past the cap instead of dragging the whole change list off SMAX.
 - **One bad ticket cannot lose the batch.** Unreadable attachment metadata, a
   failed download, a missing `Id` — each is logged and skipped; the rest of the
   tick continues.
@@ -142,7 +143,7 @@ its permissions before enabling it.
 | `SMAX_USER` / `SMAX_PASS` | *(unset — required)* | The integration account. Auth is a login exchange — there is **no** static token. |
 | `SMAX_TOKEN_TTL_S` | `1500` | Client-side token refresh interval; a 401/403 always forces a refresh anyway. |
 | `SMAX_PAGE_SIZE` | `250` | Search page size (the SMAX API caps it at 250). |
-| `SMAX_ENTITY_FIELD` | `Entity_c` | The tenant's custom entity field, if it is named differently. |
+| `SMAX_ENTITY_FIELD` | `Entity_c` | The tenant's custom entity field, if it is named differently. Always requested in the layout — asking for it is how `--probe` verifies the field name against a real tenant. |
 | `SMAX_UTC_OFFSET_HOURS` | `3` | Fixed UTC offset used to turn date boundaries into epoch ms (3 = Riyadh). |
 | `SMAX_MAX_ATTACHMENT_MB` | `15` | Attachments up to this size are downloaded and sent as base64; larger ones go by name only. |
 | `SMAX_DRY_RUN` | `true` | `true` → write-back only LOGS the suggestion payload; `false` → posts to SMAX. |

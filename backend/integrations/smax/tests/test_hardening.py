@@ -12,6 +12,7 @@ from types import SimpleNamespace
 
 from integrations.smax import main as smax_main
 from integrations.smax import poller
+from integrations.smax.smax_client import SmaxClient
 
 
 def _props(tid: str, updated_ms: int, attachments=None) -> dict:
@@ -94,6 +95,59 @@ class TestSubmissionCap:
         stats = poller.run_once(smax_client, classifier_client, capped)
         assert stats["submitted"] == 2 and stats["limited"] is True
 
+    def test_the_cap_bounds_the_read_not_only_the_submissions(
+            self, fake_smax, classifier_client, fake_classifier, connector_settings):
+        """A capped first run must not drag the whole backlog off SMAX.
+
+        Page size 2, ten changed tickets: fetching the whole change list costs
+        five page requests, a cap of 2 costs two — the cap plus the single
+        ticket held back, which is also the point the next tick resumes at.
+        """
+        capped = connector_settings.__class__(**{**connector_settings.__dict__,
+                                                 "smax_page_size": 2})
+        client = SmaxClient(base_url=f"http://127.0.0.1:{fake_smax.server_address[1]}",
+                            tenant="t1", username="u", password="p", page_size=2)
+        fake_smax.tickets = [_props(f"T-{i}", 1735689600000 + i * 1000) for i in range(10)]
+
+        first = poller.run_once(client, classifier_client, capped, limit=2)
+        assert first["listed"] == 3                    # the cap, plus the one held back
+        assert first["submitted"] == 2 and first["limited"] is True
+        assert first["read_cap"] == 3
+        assert len(fake_smax.filters) == 2             # stopped early: not the 5 a full read needs
+        assert _submitted(fake_classifier) == ["T-0", "T-1"]
+
+        # The next tick resumes exactly where the read stopped — all ten, once each.
+        second = poller.run_once(client, classifier_client, capped)
+        assert second["limited"] is False and second["listed"] == 8
+        assert _submitted(fake_classifier) == [f"T-{i}" for i in range(10)]
+
+    def test_an_uncapped_tick_reads_every_page(
+            self, fake_smax, classifier_client, connector_settings):
+        capped = connector_settings.__class__(**{**connector_settings.__dict__,
+                                                 "smax_page_size": 2})
+        client = SmaxClient(base_url=f"http://127.0.0.1:{fake_smax.server_address[1]}",
+                            tenant="t1", username="u", password="p", page_size=2)
+        fake_smax.tickets = [_props(f"T-{i}", 1735689600000 + i * 1000) for i in range(5)]
+        stats = poller.run_once(client, classifier_client, capped)
+        assert stats["listed"] == 5 and stats["read_cap"] is None
+        assert len(fake_smax.filters) == 3             # 2 + 2 + a short page
+
+    def test_a_cap_never_advances_past_a_ticket_it_cannot_time(
+            self, fake_smax, smax_client, classifier_client, fake_classifier,
+            connector_settings):
+        """The held-back ticket matches the search but carries no usable timestamp,
+        so there is no point to rewind to: the stamp is held rather than stepped
+        over that ticket (an out-of-range epoch-ms value is ignored by the mapper,
+        while the search filter still returns it)."""
+        fake_smax.tickets = [_props("T-1", 1735689600000),
+                             {"Id": "T-2", "DisplayLabel": "unusable timestamp",
+                              "Description": "d", "LastUpdateTime": "99999999999999999"}]
+        stats = poller.run_once(smax_client, classifier_client, connector_settings, limit=1)
+        assert stats["listed"] == 2                    # it WAS read — and held, not stepped over
+        assert stats["submitted"] == 1 and stats["limited"] is True
+        assert stats["advanced"] is None
+        assert poller.read_stamp(connector_settings.smax_sync_stamp_path) == poller.DEFAULT_SINCE_MS
+
 
 class TestProbe:
     def test_probe_shows_the_mapping_and_submits_nothing(
@@ -114,6 +168,8 @@ class TestProbe:
         assert "Nothing was submitted" in out
         # it searched by Id, and posted nothing anywhere
         assert any("Id = '100001'" in expr for expr in fake_smax.filters)
+        # and it ASKS for the entity field, so the raw dump can verify it
+        assert "Entity_c" in fake_smax.layouts[-1].split(",")
         assert fake_smax.suggestions == []
         assert fake_smax.file_requests == []          # no download unless asked
 

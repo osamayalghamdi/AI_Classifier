@@ -102,6 +102,7 @@ class _FakeSmaxHandler(BaseHTTPRequestHandler):
             size = int((query.get("size") or ["250"])[0])
             skip = int((query.get("skip") or ["0"])[0])
             self.server.filters.append(expression)
+            self.server.layouts.append((query.get("layout") or [""])[0])
             rows = [t for t in self.server.tickets if _matches(t, expression)]
             page = rows[skip:skip + size]
             self._json({
@@ -127,6 +128,7 @@ def fake_smax():
     server.tickets = []                         # list of SMAX `properties` dicts
     server.files = {}                           # file_id -> bytes
     server.filters = []                         # every filter expression received
+    server.layouts = []                         # the `layout=` of every search (field verification)
     server.file_requests = []                   # every file id requested
     server.auth_calls = []                      # every login body received
     server.suggestions = []                     # write-back attempts (path, body)

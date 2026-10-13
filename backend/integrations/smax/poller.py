@@ -75,7 +75,10 @@ def run_once(
     Returns stats {"since", "listed", "submitted", "advanced"}.
     `outbox` (optional) receives each submitted reference so the write-back
     loop can poll the classifier for its result. `limit` caps how many tickets
-    this tick submits (the first live run sets it small).
+    this tick submits (the first live run sets it small) — and, because a cap
+    that only limited the submissions would still pull a whole backlog off
+    SMAX, it caps the read too: a capped tick lists exactly one ticket more
+    than it may submit (see `read_limit` below).
 
     Robustness: a malformed entity is skipped, a submit failure holds the stamp
     under that ticket, and a listing failure never advances past what was seen —
@@ -87,9 +90,17 @@ def run_once(
 
     entities: list[dict] = []
     listing_error: str | None = None
+    # A submission cap bounds the READ as well. One ticket past the cap is
+    # enough to submit the cap and still learn the change time of the first
+    # ticket held back (the stamp is rewound to just before it, below), so a
+    # capped tick reads one page instead of every page of the change list.
+    # Without a cap the whole list is read, exactly as before.
+    read_limit = None if cap is None else cap + 1
     try:
         for entity in smax.list_changed(since_ms):
             entities.append(entity)
+            if read_limit is not None and len(entities) >= read_limit:
+                break
     except NotConfiguredError:
         raise
     except Exception as exc:  # noqa: BLE001 — a poll tick must not die on upstream errors
@@ -110,6 +121,8 @@ def run_once(
     for index, entity in enumerate(entities):
         if cap is not None and submitted >= cap:
             limited = True
+            # With a bounded read this is normally the single extra ticket the
+            # tick fetched on purpose: its time is where the next tick resumes.
             remaining = [ms for ms in (_entity_changed_ms(e) for e in entities[index:]) if ms is not None]
             break
         try:
@@ -177,11 +190,12 @@ def run_once(
         _log.info("Poll: %d/%d tickets submitted (since %s, no stamp advance)",
                   submitted, len(entities), since_ms)
     if limited:
-        _log.warning("Poll: submission cap reached (%s) — %d ticket(s) left for the "
-                     "next tick; the stamp was held before them",
+        _log.warning("Poll: submission cap reached (%s) — %d ticket(s) were read but "
+                     "not submitted; the stamp was held before them and the next tick "
+                     "resumes there (the read stopped at the cap, so more may exist)",
                      cap, max(len(entities) - submitted, 0))
     return {"since": since_ms, "listed": len(entities), "submitted": submitted,
-            "skipped": skipped_invalid, "limited": limited,
+            "skipped": skipped_invalid, "limited": limited, "read_cap": read_limit,
             "advanced": latest if advanced else None,
             **({"error": listing_error} if listing_error else {})}
 
