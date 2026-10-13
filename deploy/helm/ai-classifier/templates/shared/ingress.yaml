@@ -21,25 +21,9 @@ spec:
     - host: {{ .Values.ingress.host | quote }}
       http:
         paths:
-          {{- if .Values.ingress.paths }}
-          # Routing from values.ingress.paths: `service` names a chart
-          # component (backend | frontend), `serviceName` a Service you own.
-          {{- range .Values.ingress.paths }}
-          {{- if and .service (not .serviceName) (not (has .service (list "backend" "frontend"))) }}
-          {{- fail (printf "ingress.paths: unknown component %q — chart 0.4.0 renamed `api` to `backend`: use `service: backend` or `service: frontend`, or set `serviceName` for a Service you own" .service) }}
-          {{- end }}
-          - path: {{ .path | quote }}
-            pathType: {{ .pathType | default "Prefix" }}
-            backend:
-              service:
-                name: {{ include "ai-classifier.pathServiceName" (dict "root" $ "component" .service "name" .serviceName) }}
-                port:
-                  number: {{ .port }}
-          {{- end }}
-          {{- else if .Values.frontend.enabled }}
-          # Default: everything → frontend nginx, which serves the dashboard
-          # and proxies API paths to the backend Service (one entry point, same
-          # shape as the compose stack).
+          {{- if .Values.frontend.enabled }}
+          # Everything → the frontend, which serves the dashboard and proxies
+          # the API paths to the backend Service.
           - path: /
             pathType: Prefix
             backend:

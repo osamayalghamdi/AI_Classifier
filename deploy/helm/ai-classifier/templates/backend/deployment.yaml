@@ -22,9 +22,6 @@ spec:
         app.kubernetes.io/component: backend
       annotations:
         checksum/env: {{ .Values.backend.env | toYaml | sha256sum }}
-        {{- with .Values.backend.podAnnotations }}
-        {{- toYaml . | nindent 8 }}
-        {{- end }}
     spec:
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
@@ -33,7 +30,7 @@ spec:
       containers:
         - name: api
           image: {{ include "ai-classifier.image" . }}
-          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          imagePullPolicy: IfNotPresent
           ports:
             - name: http
               containerPort: {{ .Values.backend.port }}
@@ -110,9 +107,6 @@ spec:
             - name: {{ $k }}
               value: {{ $v | quote }}
             {{- end }}
-            {{- with .Values.backend.extraEnv }}
-            {{- toYaml . | nindent 12 }}
-            {{- end }}
           startupProbe:
             httpGet:
               path: {{ .Values.backend.probes.startup.path }}
@@ -139,7 +133,3 @@ spec:
           # package dir → the container filesystem must stay writable.
           # Do NOT set readOnlyRootFilesystem until the app exposes a
           # SYNC_STAMP_PATH env var (see deployment guide, gotcha #3).
-      {{- with .Values.backend.nodeSelector }}
-      nodeSelector:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}

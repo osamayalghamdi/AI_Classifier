@@ -13,10 +13,10 @@ or something your platform already owns.
 | `Service` (api, frontend) | **The database** — required, provided by the DB/platform team (§3); platform infrastructure, *not* a third-party service |
 | `ConfigMap` (nginx config, body is a value) | Ingress controller, TLS certificates |
 | `Deployment` (api, frontend) | Monitoring, HPA, VPA, ServiceMonitor, backups; Secret *contents* (SealedSecrets / ExternalSecrets / Vault) |
-| `Ingress` (only when you enable it) | Any other team's CRs → inject via `extraManifests` |
+| `Ingress` (only when you enable it) | Any other team's CRs (HPAs, ServiceMonitors, …) |
 
 Rule of thumb: if it is not an object this application owns, it does not live in
-`templates/` — it comes from values (`database.*`, `ingress.*`, `extraManifests`).
+`templates/` — it comes from values (`database.*`, `ingress.*`).
 
 ---
 
@@ -27,7 +27,7 @@ The chart keeps the same front/back split as the repository
 
 ```
 deploy/helm/ai-classifier/
-├── Chart.yaml                  version 0.4.0
+├── Chart.yaml                  version 0.5.0
 ├── values.yaml                 the whole configuration (see §4)
 ├── values-{dev,prod}.example.yaml
 └── templates/
@@ -37,23 +37,16 @@ deploy/helm/ai-classifier/
     ├── frontend/               ← the dashboard (nginx)
     │   ├── deployment.yaml
     │   └── configmap.yaml      (the nginx config body is a value)
-    ├── shared/                 ← shared objects
-    │   ├── ingress.yaml        (off by default)
-    │   └── extra-manifests.yaml (third-party objects, from values)
+    ├── shared/
+    │   └── ingress.yaml        (off by default)
     ├── _helpers.tpl            naming/label helpers
     └── NOTES.txt               post-install output
 ```
 
-Values follow the same split: **`backend.*`** (image, env, probes,
-resources, secrets), **`frontend.*`** (image, nginx config, access control),
-and the shared keys (`database.*`, `ingress.*`,
-`extraManifests`). Rendered objects are `<release>-backend` and
-`<release>-frontend`.
-
-> Renamed in chart **0.4.0**: the values key `api:` → `backend:`, the
-> templates moved into `templates/backend|frontend|shared/`, and the workload
-> names became `…-backend` / `…-frontend`. `service: api` in an ingress path
-> now fails the render with a message telling you to use `backend`.
+Values follow the same split: **`backend.*`** (image, env, probes, resources,
+secrets), **`frontend.*`** (image, nginx config), the shared keys
+(`database.*`, `ingress.*`), and the top-level `image` / `imagePullSecrets`.
+Rendered objects are `<release>-backend` and `<release>-frontend`.
 
 ## 2. Install
 
@@ -117,7 +110,7 @@ database:
 
 These become `PG_HOST / PG_PORT / PG_USER / PG_DATABASE / PG_PASSWORD` on the api
 pod. Need a throwaway database for a dev sandbox? Add it yourself through
-`extraManifests` (or your operator) — keeping it out of this chart is deliberate.
+your own operator — keeping it out of this chart is deliberate.
 
 ---
 
@@ -163,8 +156,7 @@ Notes for whoever builds and deploys:
 
 | Key | Default | Notes |
 |---|---|---|
-| `nameOverride` / `fullnameOverride` | `""` | Override the generated names |
-| `image.repository` / `.tag` / `.pullPolicy` | `REGISTRY/ai-classifier` / `""` / `IfNotPresent` | Tag empty → `Chart.appVersion` (stale `0.2.0` — set the tag CI pushed). Ships no model: ~1.1 GB |
+| `image.repository` / `.tag` | `REGISTRY/ai-classifier` / `""` | Tag empty → `Chart.appVersion` (stale `0.2.0` — set the tag CI pushed). Ships no model: ~1.1 GB |
 | `imagePullSecrets` | `[]` | Registry pull secret(s) |
 | `backend.replicas` | `1` | **Keep 1** — the process runs in-process workers; see DEPLOYMENT_GUIDE §6 |
 | `backend.port` | `8000` | Container/service port |
@@ -176,40 +168,33 @@ Notes for whoever builds and deploys:
 |---|---|---|
 | `backend.env.EMBEDDING_PROVIDER` / `.EMBEDDING_API_URL` / `.EMBEDDING_MODEL_ID` / `.EMBEDDING_DIM` | `external` / — / `bge-m3` / `1024` | Embeddings for similarity/clustering come from an OpenAI-compatible `/embeddings` endpoint. `EMBEDDING_DIM` must match what it returns — it is baked into the vector column at first startup. Key: `EMBEDDING_API_KEY` in `backend.existingSecret` (optional). |
 | `backend.env.OCR_ENABLED` / `.OCR_SERVICE_URL` | `"1"` / `https://ocr.example.internal/ocr` | The API POSTs every incident attachment to the OCR service (a **separate deployment**) and stores the returned text on the record (`extracted_text` + file names in `documents`). Empty URL → attachments recorded by name only. |
-| `backend.extraEnv` | `[]` | Extra env (`{name, value}` or `valueFrom`) |
 | `backend.existingSecret` | `ai-classifier-secrets` | `LLM_API_KEY`, `INTEGRATION_API_TOKEN`, `ADMIN_TOKEN`, `TICKETING_API_TOKEN`, `EMBEDDING_API_KEY` (all optional except `LLM_API_KEY`) |
 | `backend.resources` | 250m/512Mi → 2/5Gi | No model in the image — the LLM, embeddings and OCR run on external endpoints |
 | `backend.probes.*` | `/health` | Switch readiness to `/ready` once LLM egress is confirmed |
 | `backend.strategy` | `Recreate` | No overlap between replicas (worker duplication) |
-| `backend.podAnnotations` / `.nodeSelector` | `{}` | Scheduling hints (e.g. pin to a node pool) |
-| `backend.service.type` / `.port` / `.annotations` | `ClusterIP` / `""` / `{}` | Avoid `NodePort`/`LoadBalancer` outside dev |
+| `backend.service.type` / `.port` | `ClusterIP` / `""` | Avoid `NodePort`/`LoadBalancer` outside dev |
 | `frontend.enabled` / `.replicas` / `.port` | `true` / `1` / `8082` | nginx dashboard + API proxy |
 | `frontend.image.*` | `REGISTRY/ai-classifier-frontend` | Baked dashboard files |
 | `frontend.service.*` | `ClusterIP` | Same warnings as the backend Service |
-| `frontend.accessControl.allowlist` | `[]` | nginx `allow/deny` in front of the data paths |
-| `frontend.accessControl.basicAuth.enabled` / `.existingSecret` / `.realm` | `false` / `""` / `AI Classifier` | htpasswd Secret; render fails without `existingSecret` |
 | `frontend.configMap.conf` | nginx server block | The whole config is a value (rendered with `tpl`) |
 | `database.*` | host required | §3 |
 | `ingress.enabled` | **`false`** | Turning it on publishes the app — opt in per environment |
-| `ingress.className` / `.host` / `.tls` / `.annotations` | `""` / example / `[]` / `{}` | Ask your controller which class; add TLS before exposing |
-| `ingress.paths` | `[]` | Blank → everything to the frontend. Set to own the routing (`service: backend\|frontend`, or `serviceName:`) |
-| `extraManifests` | `[]` | Any extra object (HPA, ServiceMonitor, ExternalSecret, CRs) — rendered with `tpl` |
+| `ingress.className` / `.host` / `.tls` / `.annotations` | `""` / example / `[]` / `{}` | Ask your controller which class; add TLS before exposing. Routing is fixed (everything → frontend, or the API when `frontend.enabled=false`) |
 
 ---
 
-## 5. Exposure & access control (defaults publish nothing)
+## 5. Exposure (defaults publish nothing)
 
 | Surface | Default | To publish / protect |
 |---|---|---|
 | API + dashboard outside the cluster | nothing | `ingress.enabled: true` (+ `ingress.tls`) |
 | Service types | `ClusterIP` | `*.service.type` (`NodePort`/`LoadBalancer` publish on every node / via a cloud LB) |
 | Data routes (`/reset`, `/test/*`, `/docs`, `/redoc`, `/openapi.json`) | **403** in the proxy | edit `frontend.configMap.conf` if a route must be reachable |
-| Dashboard data (`/incidents`, `/status`, `/reports/*`, …) | open to anyone who can reach the frontend | `frontend.accessControl.basicAuth` **or** `.allowlist` **or** platform SSO via `ingress.annotations` (DEPLOYMENT_GUIDE §1.3) |
+| Dashboard data (`/incidents`, `/status`, `/reports/*`, …) | open to anyone who can reach the frontend | gate it at the platform (SSO / VPN) — the chart ships no login |
 
-Two rules:
-
-- **Route everything through the frontend** (leave `ingress.paths` empty). A path routed straight to the backend Service skips the frontend gate.
-- `/health` and `/ready` stay ungated on purpose, so your probes and monitors keep working.
+Routing is fixed: everything goes through the frontend, which proxies the API
+paths to the backend. `/health` and `/ready` stay ungated on purpose, so probes
+and monitors keep working.
 
 `kubectl port-forward` binds `127.0.0.1` by default — correct for inspecting a
 deployment. Never add `--address 0.0.0.0`: it publishes the dashboard on every
@@ -236,7 +221,6 @@ change should be the image tag.
 | Guard | Message |
 |---|---|
 | `database.host` empty | "this chart does not deploy a database — point it at the server your platform team provides" |
-| `frontend.accessControl.basicAuth.enabled` without `existingSecret` | "existingSecret is required when basicAuth.enabled=true" |
 
 These exist because each one otherwise fails *silently* at runtime.
 
@@ -249,7 +233,6 @@ These exist because each one otherwise fails *silently* at runtime.
 | `ImagePullBackOff` on the backend | wrong registry/repository/tag, missing `imagePullSecrets`, or an image built for another architecture |
 | backend pod `0/1` for minutes then Ready | first boot creates/validates its tables — a slow or unreachable DB extends it; `/health` is up meanwhile |
 | `/ready` reports `llm: error` | LLM egress blocked from the cluster or `LLM_API_KEY` missing — `/health` and the dashboard still work |
-| **401/403** on the dashboard | `frontend.accessControl` is on: authenticate, or your source IP is outside `allowlist` |
 | readiness flapping | readiness is pointing at `/ready` while LLM egress is flaky — keep it on `/health` |
 
 ---

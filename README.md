@@ -160,7 +160,6 @@ AI_Classifier/
 ├── frontend/                       # the dashboard (no build step)
 │   ├── dashboard/                  # index.html, app.js, admin.html, write-incident.html …
 │   ├── Dockerfile                  # nginx + dashboard files (the image used by k8s)
-│   └── nginx.conf                  # reference proxy config (the live copy lives in the chart)
 ├── deploy/                         # infrastructure
 │   ├── helm/ai-classifier/         # Kubernetes chart — values.yaml is THE config; README.md is the handover
 │   └── DEPLOYMENT_GUIDE.md         # K8s deployment notes + gotchas

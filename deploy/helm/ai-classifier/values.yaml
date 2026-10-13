@@ -1,19 +1,14 @@
 # ── AI Classifier Helm values ─────────────────────────────────────────
 # Everything the chart renders comes from this file: Service, ConfigMap,
-# Deployment, Ingress, and any third-party object (`extraManifests`).
-# Nothing environment-specific is hardcoded in a template.
-# Secrets are NEVER here — they come from pre-created K8s Secrets.
-# The DevOps repo overrides this per environment (values-dev / values-prod).
-
-nameOverride: ""
-fullnameOverride: ""
+# Deployment, Ingress. Secrets are NEVER here — they come from a pre-created
+# K8s Secret (`existingSecret`). Override per environment with an overlay
+# (values-dev.yaml / values-prod.yaml).
 
 image:
   # API image (CI-built from the repo Dockerfile). Ships NO model (~1.1 GB):
   # the LLM, embeddings and OCR are external endpoints (backend.env.*).
   repository: REGISTRY/ai-classifier
   tag: ""                    # blank → Chart.appVersion
-  pullPolicy: IfNotPresent
 
 imagePullSecrets: []
 #  - name: regcred
@@ -27,7 +22,7 @@ backend:
 
   # ══ ENV — the single configuration surface ══════════════════════════
   # This is the ONLY env file: everything the API reads is here, except
-  #   • secrets         → `existingSecret` below (never in values),
+  #   • secrets           → `existingSecret` below (never in values),
   #   • the DB connection → `database.*` below.
   # There is no .env in this repo. Edit this file (or an overlay), then
   # `helm upgrade`. Every value is a string — the app coerces them.
@@ -108,7 +103,6 @@ backend:
     # ── Import field mapping (which fields hold title / description) ─────
     TICKET_TITLE_FIELDS: "DisplayLabel,display_label,title,Title"
     TICKET_DESCRIPTION_FIELDS: "Description,description,desc"
-  extraEnv: []               # [{name, value} | {name, valueFrom}]
 
   # Secrets — created out-of-band, NEVER in values:
   #   LLM_API_KEY, EMBEDDING_API_KEY, ATTACHMENT_VISION_API_KEY,
@@ -120,9 +114,8 @@ backend:
   resources:
     requests:
       cpu: "250m"
-      memory: "512Mi"         # no model in the image: the heavy lifting
-                              # (LLM, embeddings) happens on external endpoints
-    limits:
+      memory: "512Mi"          # no model in the image: the heavy lifting
+    limits:                    # (LLM, embeddings) happens on external endpoints
       cpu: "2"
       memory: "5Gi"
 
@@ -135,59 +128,25 @@ backend:
   # Recreate, not RollingUpdate: no overlap (would duplicate the workers).
   strategy:
     type: Recreate
-  podAnnotations: {}
-  nodeSelector: {}           # e.g. pin to the node pool holding the big image
 
   service:
-    type: ClusterIP           # ClusterIP | NodePort | LoadBalancer
-    port: ""                  # blank → api.port
-    annotations: {}
+    type: ClusterIP            # ClusterIP | NodePort | LoadBalancer
+    port: ""                   # blank → backend.port
 
 # ── Frontend (nginx: dashboard + API proxy) ───────────────────────────
 frontend:
   enabled: true
   replicas: 1
-  # Optional: expose the browser-side OCR preview (the write-incident page
-  # posts attachments to /ocr). Set your OCR service's URL to enable it,
-  # e.g. "https://ocr.example.internal/ocr". Left empty the path is not
-  # exposed at all — the API still OCRs attachments server-side through
-  # backend.env.OCR_SERVICE_URL, which is the path that matters.
-  ocrProxyUrl: ""
   image:
     repository: REGISTRY/ai-classifier-frontend
     tag: ""
-    pullPolicy: IfNotPresent
   port: 8082
   resources:
     requests: { cpu: "50m", memory: "64Mi" }
     limits: { cpu: "200m", memory: "128Mi" }
   service:
     type: ClusterIP
-    port: ""                  # blank → frontend.port
-    annotations: {}
-
-  # ── Who may read the data ────────────────────────────────────────────
-  # Gate in front of every proxied data path (/api, /admin, /incidents,
-  # /status, /reports, /clusters …). Static files and "/" stay open
-  # so the kubelet probes keep working. No application change needed — the
-  # dashboard's own requests get 401, the browser prompts once, then it
-  # works normally.
-  accessControl:
-    # IP allow/deny (nginx allow/deny). Anything not listed is denied.
-    # Ingress-controller pods / VPN ranges go here, e.g.:
-    #   allowlist: ["10.244.0.0/16", "192.168.0.0/16"]
-    allowlist: []
-    # HTTP basic auth. Create the Secret out-of-band (never in values):
-    #   htpasswd -bc /tmp/auth <user> <password>
-    #   kubectl -n <ns> create secret generic ai-classifier-basic-auth \
-    #     --from-file=htpasswd=/tmp/auth && rm /tmp/auth
-    basicAuth:
-      enabled: false
-      existingSecret: ""       # required when enabled
-      realm: "AI Classifier"
-    # Prefer your platform's SSO? Leave basicAuth off and put the
-    # oauth2-proxy / external-auth annotations on ingress.annotations
-    # instead — see DEPLOYMENT_GUIDE §1.2.
+    port: ""                   # blank → frontend.port
 
   # nginx config — the whole file body is a value, rendered with `tpl` so
   # chart helpers work inside it. Tune per environment here, not in the chart.
@@ -216,20 +175,7 @@ frontend:
 
           location / { try_files $uri $uri/ /index.html; }
 
-          {{- if .Values.frontend.ocrProxyUrl }}
-          # Browser-side OCR preview (write-incident page) → your OCR
-          # service. Off unless frontend.ocrProxyUrl is set; attachments are
-          # always OCRd server-side via backend.env.OCR_SERVICE_URL.
-          location = /ocr {
-          {{- include "ai-classifier.dataAuth" . | nindent 8 }}
-              proxy_pass {{ .Values.frontend.ocrProxyUrl }};
-              proxy_read_timeout 300s;
-              client_max_body_size 20m;
-          }
-          {{- end }}
-
-          # Liveness/readiness for external probes — up/down only, no data,
-          # so they stay reachable while the data paths are gated below.
+          # Liveness/readiness for external probes — up/down only, no data.
           location ~ ^/(health|ready)$ {
               proxy_pass http://{{ include "ai-classifier.fullname" . }}-backend:{{ .Values.backend.port }};
               access_log off;
@@ -237,7 +183,6 @@ frontend:
 
           # An unlisted path falls through to index.html.
           location ~ ^/(api/|admin/|status|classify|incidents|all-incidents|import|reports|review-queue|cluster-proposals|cluster/|clusters|taxonomy-gaps) {
-          {{- include "ai-classifier.dataAuth" . | nindent 4 }}
               proxy_pass http://{{ include "ai-classifier.fullname" . }}-backend:{{ .Values.backend.port }};
               proxy_set_header Host $host;
               proxy_set_header X-Real-IP $remote_addr;
@@ -251,9 +196,6 @@ frontend:
 # ── OCR — NOT part of this chart ──────────────────────────────────────
 # The OCR service is its own deployment (own image, own endpoint, own key).
 # Point the API at it with `backend.env.OCR_SERVICE_URL` (+ `OCR_ENABLED`) above.
-# The optional implementation that used to live here (backend/ocr/) still
-# exists in the repo if the platform team prefers to host it themselves; it
-# ships no local model either — it calls the vision endpoint.
 
 # ── Database — REQUIRED INFRASTRUCTURE, provided by the platform team ──
 # The app needs a database to run; the platform/DB team already runs it
@@ -267,8 +209,6 @@ frontend:
 #   * the password lives in a Secret you create — never in values:
 #       kubectl -n <ns> create secret generic ai-classifier-db \
 #         --from-literal=PG_PASSWORD='<password>'
-# Want an in-cluster database for a dev sandbox? Add it yourself through
-# `extraManifests` or your operator — this chart stays application-only.
 database:
   host: ""                     # REQUIRED — e.g. pg.internal or a managed host
   port: 5432
@@ -278,10 +218,11 @@ database:
   passwordKey: PG_PASSWORD
 
 # ── Ingress (EXTERNAL EXPOSURE — opt-in, OFF by default) ──────────────
-# Enabling this publishes the app outside the cluster. Only turn it on in
-# an environment that is *meant* to be reachable, and pair it with TLS.
-# Left off, the app is reachable in-cluster only — smoke
-# tests use `kubectl port-forward`, which never leaves the node.
+# Enabling this publishes the app outside the cluster. Only turn it on in an
+# environment that is *meant* to be reachable, and pair it with TLS. Left off,
+# the app is reachable in-cluster only (smoke tests use `kubectl port-forward`).
+# Routing is fixed: everything → the frontend (or the backend when
+# frontend.enabled=false).
 ingress:
   enabled: false
   className: ""               # e.g. nginx — ask DevOps which controller
@@ -291,25 +232,3 @@ ingress:
   tls: []
   #  - secretName: ai-classifier-tls
   #    hosts: [ai-classifier.example.com]
-  # Routing is a value. Blank → everything to the frontend (or to the api
-  # when frontend.enabled=false). `service` names a chart component
-  # (backend | frontend); use `serviceName` for a Service you own.
-  paths: []
-  #  - { path: /api, pathType: Prefix, service: backend, port: 8000 }
-  #  - { path: /,    pathType: Prefix, service: frontend, port: 8082 }
-
-# ── Third-party / companion objects (HPA, ServiceMonitor, …) ──────────
-# Anything this app doesn't own goes HERE instead of into a template.
-# Rendered with `tpl`, so chart helpers work inside each entry.
-extraManifests: []
-#  - apiVersion: autoscaling/v2
-#    kind: HorizontalPodAutoscaler
-#    metadata:
-#      name: '{{ include "ai-classifier.fullname" . }}-backend'
-#    spec:
-#      scaleTargetRef:
-#        apiVersion: apps/v1
-#        kind: Deployment
-#        name: '{{ include "ai-classifier.fullname" . }}-backend'
-#      minReplicas: 1
-#      maxReplicas: 4

@@ -23,7 +23,3 @@ backend:
   # service:
   #   type: ClusterIP             # keep ClusterIP; NodePort/LoadBalancer
   #   nodePort: 30800             # publish this on every node — avoid outside dev
-
-# Companion objects (HPA, ServiceMonitor, ExternalSecret …) go through
-# extraManifests, not into the chart — see values.yaml for examples.
-# extraManifests: []

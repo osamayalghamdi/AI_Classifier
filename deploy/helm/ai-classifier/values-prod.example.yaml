@@ -30,8 +30,7 @@ backend:
   probes:
     readiness:
       path: /ready       # enable once LLM egress from the cluster is confirmed
-  # Service/Deployment fields are values (type, port, annotations,
-  # strategy, podAnnotations, nodeSelector, extraEnv):
+  # Service/Deployment fields are values (type, port, strategy):
   # service:
   #   type: LoadBalancer
   #   annotations:
@@ -39,17 +38,5 @@ backend:
   # strategy:
   #   type: RollingUpdate
 
-# Take over routing from values instead of the default "→ frontend" rule:
-# ingress:
-#   paths:
-#     - { path: /api, pathType: Prefix, service: backend, port: 8000 }
-#     - { path: /,    pathType: Prefix, service: frontend, port: 8082 }
-#     - { path: /dash, pathType: Prefix, service: frontend, port: 8082 }
-
-# Companion/third-party objects are injected from values (each entry is
-# rendered with tpl) — the chart never ships them:
-# extraManifests:
-#   - apiVersion: monitoring.coreos.com/v1
-#     kind: ServiceMonitor
-#     metadata:
-#       name: '{{ include "ai-classifier.fullname" . }}-backend'
+# Routing is fixed (everything → the frontend). Monitoring / HPA / other
+# companion objects are not part of this chart — the platform deploys them.

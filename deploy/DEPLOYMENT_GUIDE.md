@@ -19,49 +19,24 @@ Secrets are **never** in values files — they come from pre-created K8s Secrets
 
 ### 1.1 Everything is a value (no hardcoded resources)
 
-Every field of every object this chart renders — Service, ConfigMap, Deployment, Ingress — plus any third-party/companion object comes from `values.yaml` / the env overlay. Nothing environment-specific lives inside a template, so an environment change is a **values** change, never a chart change.
+Every field of every object this chart renders — Service, ConfigMap, Deployment, Ingress — comes from `values.yaml` / the env overlay. Nothing environment-specific lives inside a template, so an environment change is a **values** change, never a chart change.
 
 | What | Where |
 |---|---|
-| Service type / port / annotations | `api.service.*`, `frontend.service.*`, `ocr.service.*` |
+| Service type / port | `backend.service.*`, `frontend.service.*` |
 | nginx ConfigMap (the whole file body) | `frontend.configMap.conf` — rendered with `tpl`, so chart helpers (`{{ include "ai-classifier.fullname" . }}`) work inside it |
-| Deployment shape | `backend.strategy`, `backend.podAnnotations`, `backend.nodeSelector`, `backend.extraEnv` (plus `replicas`, `resources`, `probes`, `env` for all components) |
-| Ingress routing | `ingress.host`, `ingress.paths`, `ingress.className`, `ingress.annotations`, `ingress.tls` |
-| Third-party / companion objects (HPA, ServiceMonitor, ExternalSecret, CRs …) | `extraManifests` (each entry rendered with `tpl`) |
+| Deployment shape | `backend.strategy`, `backend.replicas`, `backend.resources`, `backend.probes`, `backend.env` |
+| Ingress | `ingress.enabled`, `ingress.host`, `ingress.className`, `ingress.annotations`, `ingress.tls` |
 
-The surface is deliberately small: the chart's original fields plus exactly the five things above. Anything else that isn't here was removed on purpose — if an environment needs another knob, it's a few-line addition.
-
-> **Gotcha:** an overlay that sets a default map to `{}` does *not* clear it — Helm deep-merges. To actually clear a map (say `backend.podAnnotations`) in one environment, set it to `null` (`--set backend.podAnnotations=null`), then confirm with `kubectl get deploy … -o jsonpath='{.spec.template.metadata.annotations}'`.
+The surface is deliberately small. Anything not listed here was removed on purpose — if an environment needs another knob, it's a few-line addition. Routing is fixed (everything → the frontend, or the API when `frontend.enabled=false`).
 
 Third-party infrastructure is **not** shipped in this chart:
 
-- **Database** — required platform infrastructure (`database.host/port/name/user/existingSecret`), provided by the DB/platform team — not a third-party service. The chart only wires the connection; provisioning, backups, the pgvector extension and the schema belong to the DB/platform team. An in-cluster database for a sandbox goes in through `extraManifests`, not into a template here.
+- **Database** — required platform infrastructure (`database.host/port/name/user/existingSecret`), provided by the DB/platform team — not a third-party service. The chart only wires the connection; provisioning, backups, the pgvector extension and the schema belong to the DB/platform team.
 - `backend.env.EMBEDDING_*` — embeddings come from an OpenAI-compatible `/embeddings` endpoint (`EMBEDDING_API_URL`, `EMBEDDING_MODEL_ID`, `EMBEDDING_DIM`). **`EMBEDDING_DIM` is baked into the vector column on first startup** — set it before the first run; changing it later needs a fresh schema.
 - `backend.env.OCR_ENABLED` / `backend.env.OCR_SERVICE_URL` — attachment OCR through a separate service; empty URL records attachments by name only.
 
-So the chart only owns AI-Classifier objects; anything owned by another team or operator is injected from values and can be added/removed without a chart release:
-
-```yaml
-extraManifests:
-  - apiVersion: monitoring.coreos.com/v1
-    kind: ServiceMonitor
-    metadata:
-      name: '{{ include "ai-classifier.fullname" . }}-monitor'
-    spec:
-      selector:
-        matchLabels:
-          app.kubernetes.io/instance: '{{ .Release.Name }}'
-```
-
-Same for routing — leave `ingress.paths: []` for the default "everything → frontend" rule, or take it over entirely from values:
-
-```yaml
-ingress:
-  paths:
-    - { path: /api, pathType: Prefix, service: backend, port: 8000 }   # component name
-    - { path: /,    pathType: Prefix, service: frontend, port: 8082 }
-    # or serviceName: <your-own-service> for a Service this chart doesn't own
-```
+The chart only owns AI-Classifier objects; anything owned by another team or operator (monitoring, HPA, CRs) is deployed separately, not through this chart.
 
 ### 1.2 Exposure — what is reachable, and when
 
@@ -76,37 +51,11 @@ The defaults publish nothing:
 
 `kubectl port-forward` binds `127.0.0.1` by default and is the sanctioned way to look at a deployment. **Never** add `--address 0.0.0.0`: that publishes the dashboard on every host interface — including a VPN/Tailscale interface. (Learned the hard way during the kind try-out: the forward showed connections from a Tailscale peer.)
 
-### 1.3 Protecting the data paths — no application change
+### 1.3 Protecting the data paths — the platform gates it, not the chart
 
-The dashboard itself has no login, so the read endpoints (`/incidents`, `/all-incidents`, `/status`, `/reports/*`, `/clusters`, `/review-queue`) serve incident data to whoever can reach the frontend. All three options below are **values-only** — no code change, and the dashboard keeps working (`/health`, `/ready`, the static shell and the kubelet probes stay open).
+The dashboard itself has no login, so the read endpoints (`/incidents`, `/all-incidents`, `/status`, `/reports/*`, `/clusters`, `/review-queue`) serve incident data to whoever can reach the frontend. **The chart ships no access control** — gate the app outside it:
 
-**a) HTTP basic auth in the frontend (works however the app is reached — ingress, NodePort, port-forward):**
-
-```bash
-htpasswd -bc /tmp/auth <user> <password>
-kubectl -n ai-classifier create secret generic ai-classifier-basic-auth --from-file=htpasswd=/tmp/auth
-rm -f /tmp/auth
-```
-```yaml
-frontend:
-  accessControl:
-    basicAuth:
-      enabled: true
-      existingSecret: ai-classifier-basic-auth
-      realm: "AI Classifier"
-```
-The browser prompts once (`WWW-Authenticate: Basic realm="AI Classifier"`) and then the dashboard works normally. Rotating the password means replacing the Secret's contents **plus** a rollout restart — the pods don't watch the Secret.
-
-**b) IP allow/deny (no login friction, good for internal-only hosts):**
-
-```yaml
-frontend:
-  accessControl:
-    allowlist: ["10.244.0.0/16", "192.168.0.0/16"]   # pod CIDR + VPN/office ranges
-```
-Anything not listed is denied (403) — including requests with valid credentials, so remember to allow the ingress-controller pods' CIDR.
-
-**c) Platform SSO (recommended when ELM has an IdP)** — leave `basicAuth` off and let the ingress controller delegate auth to oauth2-proxy; it is pure `ingress.annotations`, no chart or app change:
+**a) Platform SSO / external auth (recommended)** — let the ingress controller delegate to oauth2-proxy; it is pure `ingress.annotations`, no chart or app change:
 
 ```yaml
 ingress:
@@ -117,12 +66,9 @@ ingress:
     nginx.ingress.kubernetes.io/auth-response-headers: "x-auth-request-user, x-auth-request-email"
 ```
 
-Layer (a) or (b) under (c): keep `ingress.enabled: false` wherever the app is not meant to be reachable at all.
+**b) Network-level** — keep `ingress.enabled: false` (the app is then reachable in-cluster only) and/or restrict at the platform (VPN, firewall, a `NetworkPolicy` the platform team owns).
 
-**Two routing rules that matter for all of the above:**
-
-- **Route everything through the frontend** (leave `ingress.paths` empty). If you add a path with `service: backend`, that path goes straight to the backend Service and **skips the frontend gate in (a)/(b)**.
-- Keep `/health` and `/ready` on the frontend path (they are served ungated on purpose) so the ingress controller or an external monitor can still probe the app.
+Keep `/health` and `/ready` reachable — they are served ungated on purpose, so the ingress controller and external monitors can still probe the app.
 
 ## 2. Prerequisites checklist — questions for the DevOps team
 
