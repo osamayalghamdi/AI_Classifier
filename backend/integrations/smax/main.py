@@ -141,7 +141,17 @@ def main(argv: list[str] | None = None) -> int:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
 
-    smax = SmaxClient(api_url=settings.smax_api_url, token=settings.smax_api_token)
+    smax = SmaxClient(
+        base_url=settings.smax_base,
+        tenant=settings.smax_tenant,
+        username=settings.smax_user,
+        password=settings.smax_pass,
+        token_ttl=settings.smax_token_ttl_s,
+        entity_field=settings.smax_entity_field,
+        utc_offset_hours=settings.smax_utc_offset_hours,
+        page_size=settings.smax_page_size,
+        max_attachment_bytes=int(settings.smax_max_attachment_mb * 1024 * 1024),
+    )
     classifier = ClassifierClient(
         api_url=settings.classifier_api_url, token=settings.classifier_api_token
     )

@@ -137,6 +137,11 @@ def run_once(
             smax.write_suggestion(ref, payload)
             written += 1
             _log.info("Write-back: suggestion posted for %s", ref)
+        except NotImplementedError as exc:
+            # Expected until SMAX's write API is confirmed: the handover documents
+            # no write endpoint, so the payload is logged instead of invented.
+            dry_run += 1
+            _log.warning("Write-back unavailable for %s (%s) — payload: %s", ref, exc, payload)
         except Exception as exc:  # noqa: BLE001
             _log.error("Write-back POST failed for %s: %s", ref, exc)
             skipped += 1

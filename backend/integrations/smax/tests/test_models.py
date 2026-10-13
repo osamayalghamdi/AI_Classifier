@@ -32,25 +32,35 @@ class TestFromSmax:
         assert inc.affected_system == ""
         assert inc.attachments == []
 
-    def test_maps_the_system_the_ticketing_system_supplies(self):
-        """The classifier PINS the system when the ticketing system supplies
-        one — the connector must not drop it on the floor."""
-        inc = from_smax({"ticket_id": "INC-101", "title": "t", "description": "d",
-                         "AffectedSystem": "Nusuk Masar Haj"})
-        assert inc.affected_system == "Nusuk Masar Haj"
-        assert from_smax({"ticket_id": "x", "title": "t", "affected_system": "CRM"}).affected_system == "CRM"
-        assert from_smax({"ticket_id": "x", "title": "t", "system": "CRM"}).affected_system == "CRM"
+    def test_the_queue_id_is_not_treated_as_a_system(self):
+        """SMAX's Entity_c is a queue/entity id, not one of our taxonomy systems.
+
+        Mapping it to affected_system would be pinned as if the ticketing system
+        had named the system, so the connector leaves it empty and the classifier
+        resolves the system from the text."""
+        inc = from_smax({"Id": "INC-101", "DisplayLabel": "t", "Description": "d",
+                         "Entity_c": "200001"})
+        assert inc.affected_system == ""
 
     def test_missing_system_stays_empty(self):
         assert from_smax({"ticket_id": "x", "title": "t"}).affected_system == ""
 
-    def test_alternate_key_aliases(self):
-        inc = from_smax({"number": "T-9", "subject": "subj", "notes": "note text",
-                         "opened_at": "2025-02-01T00:00:00+00:00"})
+    def test_real_field_names_and_tolerant_aliases(self):
+        """The handover's fields live under `properties`; a renamed field degrades."""
+        inc = from_smax({"properties": {"Id": "T-9", "DisplayLabel": "subj",
+                                        "Description": "note text",
+                                        "Status": "verified",
+                                        "EmsCreationTime": 1738368000000}})
         assert inc.source_reference == "T-9"
         assert inc.title == "subj"
         assert inc.description == "note text"
+        assert inc.status == "verified"
         assert inc.created_at is not None
+        alt = from_smax({"ticket_id": "T-10", "title": "t",
+                         "created_at": "2025-02-01T00:00:00+00:00"})
+        assert alt.source_reference == "T-10"
+        assert alt.title == "t"
+        assert alt.created_at is not None
 
     def test_malformed_payload_degrades_gracefully(self):
         inc = from_smax({})

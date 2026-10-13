@@ -14,8 +14,10 @@ committed to git.
 
 from __future__ import annotations
 
+import base64
 import logging
 import queue
+import re
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -28,21 +30,34 @@ from .smax_models import from_smax
 
 _log = logging.getLogger(__name__)
 
-DEFAULT_SINCE = "2020-01-01T00:00:00+00:00"
+# 2020-01-01T00:00:00Z — the epoch floor the first run lists from.
+DEFAULT_SINCE_MS = 1577836800000
 
 
 # ── Stamp file (runtime state, never committed) ───────────────────────
+# The stamp is epoch MILLISECONDS because that is what the SMAX update-time
+# filter compares against (LastUpdateTime). An older ISO stamp is converted
+# once, so upgrading the connector does not re-list history.
 
-def read_stamp(path: str | Path) -> str:
-    """Last-sync timestamp, or the epoch default when no stamp exists."""
+def read_stamp(path: str | Path) -> int:
+    """Last-sync time in epoch ms, or the epoch floor when no stamp exists."""
     try:
-        return Path(path).read_text().strip() or DEFAULT_SINCE
+        raw = Path(path).read_text().strip()
     except FileNotFoundError:
-        return DEFAULT_SINCE
+        return DEFAULT_SINCE_MS
+    if not raw:
+        return DEFAULT_SINCE_MS
+    if re.fullmatch(r"\d{10,17}", raw):
+        return int(raw)
+    try:  # legacy ISO stamp
+        return int(datetime.fromisoformat(raw).timestamp() * 1000)
+    except ValueError:
+        _log.warning("Stamp %r is neither epoch ms nor ISO — re-listing from epoch", raw)
+        return DEFAULT_SINCE_MS
 
 
-def write_stamp(path: str | Path, ts: str) -> None:
-    Path(path).write_text(ts)
+def write_stamp(path: str | Path, ts_ms: int) -> None:
+    Path(path).write_text(str(int(ts_ms)))
 
 
 # ── One poll tick ─────────────────────────────────────────────────────
@@ -60,88 +75,120 @@ def run_once(
     `outbox` (optional) receives each submitted reference so the write-back
     loop can poll the classifier for its result.
     """
-    since_raw = read_stamp(settings.smax_sync_stamp_path)
-    try:
-        since = datetime.fromisoformat(since_raw)
-        _log.debug("Poll since=%s (parsed %s)", since_raw, since)
-    except ValueError:
-        _log.warning("Stamp %r is not a valid ISO timestamp — re-listing from epoch", since_raw)
-        since = datetime.fromisoformat(DEFAULT_SINCE)
+    since_ms = read_stamp(settings.smax_sync_stamp_path)
 
     try:
-        payloads = smax.list_changed(since.isoformat())
+        entities = list(smax.list_changed(since_ms))
     except NotConfiguredError:
         raise
-    except Exception as exc:  # noqa: BLE001 — poll tick must not die on upstream errors
+    except Exception as exc:  # noqa: BLE001 — a poll tick must not die on upstream errors
         _log.error("Poll failed: %s", exc)
-        return {"since": since_raw, "listed": 0, "submitted": 0, "advanced": None, "error": str(exc)}
+        return {"since": since_ms, "listed": 0, "submitted": 0, "advanced": None, "error": str(exc)}
 
     submitted = 0
-    newest_submitted: str | None = None   # max(updated_at) of the OK submits
-    oldest_failed: str | None = None      # min(updated_at) of the failures
+    newest_submitted: int | None = None   # max(changed) of the OK submits
+    oldest_failed: int | None = None      # min(changed) of the failures
     failed_unstamped = False              # a failure we cannot pin a time to
-    for payload in payloads:
-        incident = from_smax(payload)
+    for entity in entities:
+        incident = from_smax(entity)
         if not incident.source_reference:
             # Log KEY NAMES only — a whole payload dumps ticket text.
-            _log.warning("SMAX payload without a source_reference — skipped (keys: %s)",
-                         sorted(payload.keys()))
+            _log.warning("SMAX entity without an Id — skipped (keys: %s)",
+                         sorted((entity.get("properties") or entity).keys()))
             continue
+        incident.attachments = _ingest_attachments(smax, entity, settings)
         try:
             ref = classifier.submit(incident)
         except Exception as exc:  # noqa: BLE001
             _log.error("Submit failed for %s: %s", incident.source_reference, exc)
-            iso = _incident_changed_iso(incident)
-            if iso is None:
+            changed = _changed_ms(incident)
+            if changed is None:
                 failed_unstamped = True
-            elif oldest_failed is None or iso < oldest_failed:
-                oldest_failed = iso
+            elif oldest_failed is None or changed < oldest_failed:
+                oldest_failed = changed
             continue
         submitted += 1
         if outbox is not None:
             outbox.put(ref)
-        iso = _incident_changed_iso(incident)
-        if iso is not None and (newest_submitted is None or iso > newest_submitted):
-            newest_submitted = iso
+        changed = _changed_ms(incident)
+        if changed is not None and (newest_submitted is None or changed > newest_submitted):
+            newest_submitted = changed
 
-    latest = newest_submitted or since_raw
+    latest = newest_submitted if newest_submitted is not None else since_ms
     if failed_unstamped:
         # No timestamp to re-list this failure precisely — hold the stamp.
         _log.warning("Poll: a failed ticket carried no usable timestamp — "
-                     "stamp held at %s so the whole batch is re-listed", since_raw[:19])
-        latest = since_raw
+                     "stamp held at %s so the whole batch is re-listed", since_ms)
+        latest = since_ms
     elif oldest_failed is not None and oldest_failed <= latest:
         # Never advance PAST a failed ticket: stamp to just before it, so it
         # is re-listed next tick even when a newer ticket submitted fine.
-        latest = _just_before(oldest_failed)
-    advanced = latest > since_raw
+        latest = oldest_failed - 1
+    elif latest > since_ms:
+        # The SMAX filter is `LastUpdateTime >= since`, so stamping the newest
+        # ticket's own time would re-list it on EVERY tick, for ever. Advance
+        # one millisecond past it instead.
+        latest = latest + 1
+    advanced = latest > since_ms
     if advanced:
         write_stamp(settings.smax_sync_stamp_path, latest)
         _log.info("Poll: %d/%d tickets submitted (since %s, stamp now %s)",
-                  submitted, len(payloads), since_raw[:19], latest[:19])
+                  submitted, len(entities), since_ms, latest)
     else:
         _log.info("Poll: %d/%d tickets submitted (since %s, no stamp advance)",
-                  submitted, len(payloads), since_raw[:19])
-    return {"since": since_raw, "listed": len(payloads), "submitted": submitted,
+                  submitted, len(entities), since_ms)
+    return {"since": since_ms, "listed": len(entities), "submitted": submitted,
             "advanced": latest if advanced else None}
 
 
-def _incident_changed_iso(incident) -> str | None:
-    """The ticket's change time as a normalized UTC ISO string (updated_at
-    wins over created_at), or None when the payload carried neither."""
+def _ingest_attachments(smax: SmaxClient, entity: dict, settings: Settings) -> list[dict]:
+    """Download this incident's visible attachments for the ingest payload.
+
+    One entry per attachment: `name` always, `content_base64` + `content_type`
+    when the bytes came through. A file that is too large or fails to download
+    is still listed by name — the classifier records it, it just cannot be
+    transcribed by the OCR service. One bad attachment never fails the ticket.
+    """
+    entries: list[dict] = []
+    limit = int(settings.smax_max_attachment_mb * 1024 * 1024)
+    try:
+        metadata = list(smax.iter_attachments(entity))
+    except Exception as exc:  # noqa: BLE001 — metadata errors must not lose the ticket
+        _log.warning("Attachment metadata unreadable (%s) — incident sent without files", exc)
+        return entries
+    for meta in metadata:
+        entry: dict = {"name": meta["file_name"]}
+        if meta.get("mime_type"):
+            entry["content_type"] = meta["mime_type"]
+        size = meta.get("expected_size")
+        if size is not None and size > limit:
+            _log.warning("Attachment %s is %s bytes (> %s limit) — sent by name only",
+                         meta["file_name"], size, limit)
+            entries.append(entry)
+            continue
+        try:
+            raw = smax.download_file(meta["file_id"], max_bytes=limit)
+            entry["content_base64"] = base64.b64encode(raw).decode("ascii")
+        except Exception as exc:  # noqa: BLE001 — download failure keeps the ticket
+            _log.warning("Attachment %s (%s) not downloaded: %s",
+                         meta["file_name"], meta["file_id"], exc)
+        entries.append(entry)
+    return entries
+
+
+def _changed_ms(incident) -> int | None:
+    """The ticket's change time in epoch ms (updated_at wins over created_at),
+    or None when the entity carried neither."""
     changed = incident.updated_at or incident.created_at
-    return _as_utc_iso(changed) if changed is not None else None
-
-
-def _just_before(iso: str) -> str:
-    """One microsecond before an ISO timestamp — the stamp floor under a
-    failed submit (the poll query is `updated_at > since`)."""
-    return (datetime.fromisoformat(iso) - timedelta(microseconds=1)).isoformat()
+    if changed is None:
+        return None
+    if changed.tzinfo is None:
+        changed = changed.replace(tzinfo=timezone.utc)
+    return int(changed.timestamp() * 1000)
 
 
 def _as_utc_iso(dt: datetime) -> str:
-    """ISO string in UTC — datetime.fromisoformat accepts offset forms;
-    normalizing keeps lexicographic comparison correct."""
+    """ISO string in UTC — kept for logs and for older callers."""
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(timezone.utc).isoformat()

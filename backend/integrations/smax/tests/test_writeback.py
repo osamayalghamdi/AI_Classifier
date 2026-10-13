@@ -34,31 +34,33 @@ class TestDryRun:
 
 
 class TestRealMode:
-    def test_posts_suggestion(self, fake_smax, smax_client, classifier_client):
+    def test_write_back_is_unavailable_until_the_api_is_confirmed(self, fake_smax, smax_client,
+                                                                 classifier_client, caplog):
+        """The handover documents no write endpoint, so with dry-run OFF the
+        connector must still not invent one: it logs the payload and posts nothing."""
         classifier_client.submit(Incident(source_reference="T-2", title="t", description="d"))
         settings = Settings(
-            smax_api_url="http://smax.invalid", smax_api_token="tok",
+            smax_base="http://smax.invalid", smax_tenant="t1",
+            smax_user="u", smax_pass="p",
             smax_dry_run=False, smax_poll_s=0.01,
             smax_sync_stamp_path="/tmp/never-used", smax_write_back="suggestions",
             classifier_api_url="http://classifier.invalid", classifier_api_token="tok",
         )
-        stats = writeback.run_once(smax_client, classifier_client, settings, ["T-2"],
-                                   max_attempts=3, poll_interval=0.01)
-        assert stats["written"] == 1
-        assert len(fake_smax.suggestions) == 1
-        path, payload = fake_smax.suggestions[0]
-        assert path == "/tickets/T-2/suggestions"
-        assert payload["classification"]["affected_system"] == "SAP ERP"
-        assert payload["similar_ticket_ids"] == ["T-100", "T-200"]
-        assert payload["suggestions"] == ["Restart the payment gateway service"]
-        assert payload["confidence"] == "high"
+        import logging
+        with caplog.at_level(logging.WARNING):
+            stats = writeback.run_once(smax_client, classifier_client, settings, ["T-2"],
+                                       max_attempts=3, poll_interval=0.01)
+        assert stats["written"] == 0
+        assert fake_smax.suggestions == []          # nothing posted anywhere
+        assert any("Write-back unavailable" in r.message for r in caplog.records)
 
 
 class TestModeNone:
     def test_never_posts(self, fake_smax, smax_client, classifier_client):
         classifier_client.submit(Incident(source_reference="T-3", title="t", description="d"))
         settings = Settings(
-            smax_api_url="http://smax.invalid", smax_api_token="tok",
+            smax_base="http://smax.invalid", smax_tenant="t1",
+            smax_user="u", smax_pass="p",
             smax_dry_run=False, smax_poll_s=0.01,
             smax_sync_stamp_path="/tmp/never-used", smax_write_back="none",
             classifier_api_url="http://classifier.invalid", classifier_api_token="tok",

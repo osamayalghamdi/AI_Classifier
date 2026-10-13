@@ -55,8 +55,26 @@ def _truthy(value: str) -> bool:
 @dataclass(frozen=True)
 class Settings:
     # ── SMAX (upstream ticketing system) ───────────────────────────────
-    smax_api_url: str = _env("SMAX_API_URL", "")
-    smax_api_token: str = _env("SMAX_API_TOKEN", "")
+    # Auth is a login exchange, not a static token: the connector POSTs
+    # user/password to /auth/authentication-endpoint/authenticate/token and
+    # carries the returned JWT in a Cookie (see smax_client.py). SMAX_API_URL
+    # is accepted as a legacy alias for SMAX_BASE.
+    smax_base: str = _env("SMAX_BASE") or _env("SMAX_API_URL", "")
+    smax_tenant: str = _env("SMAX_TENANT", "")
+    smax_user: str = _env("SMAX_USER", "")
+    smax_pass: str = _env("SMAX_PASS", "")
+    # Client-side token refresh interval. The handover's example uses 25 min;
+    # it is a refresh hint, not a promise about the server's token lifetime —
+    # a 401/403 always forces a refresh.
+    smax_token_ttl_s: float = float(_env("SMAX_TOKEN_TTL_S", "1500"))
+    # Search: page size (the API caps at 250), the custom entity field, and the
+    # fixed UTC offset used to convert date boundaries (3 = Riyadh).
+    smax_page_size: int = int(_env("SMAX_PAGE_SIZE", "250"))
+    smax_entity_field: str = _env("SMAX_ENTITY_FIELD", "Entity_c")
+    smax_utc_offset_hours: int = int(_env("SMAX_UTC_OFFSET_HOURS", "3"))
+    # Attachments: only the bytes we are willing to carry through the ingest
+    # API (base64) are downloaded; larger ones are recorded by name.
+    smax_max_attachment_mb: float = float(_env("SMAX_MAX_ATTACHMENT_MB", "15"))
     # Write-back gate: when true (DEFAULT), the connector only LOGS the
     # suggestion payload it would post to SMAX — nothing is written.
     smax_dry_run: bool = _truthy(_env("SMAX_DRY_RUN", "true"))
@@ -64,7 +82,8 @@ class Settings:
     smax_poll_s: float = float(_env("SMAX_POLL_S", "60"))
     # Local since-stamp file — runtime state, never committed to git.
     smax_sync_stamp_path: str = _env("SMAX_SYNC_STAMP_PATH", "./.last_sync")
-    # Write-back mode: none | suggestions (default) | full.
+    # Write-back mode: none | suggestions (default) | full. NOTE: the SMAX
+    # handover documents no write endpoint, so write-back stays dry-run only.
     smax_write_back: str = _env("SMAX_WRITE_BACK", "suggestions")
 
     # ── Classifier public API (E1-E9 integration contract) ────────────
@@ -74,15 +93,20 @@ class Settings:
     # ── Startup guards ─────────────────────────────────────────────────
     def require_smax(self) -> None:
         """Fail loudly when the SMAX side is enabled but not configured."""
-        if not self.smax_api_url:
+        missing = [
+            name for name, value in (
+                ("SMAX_BASE", self.smax_base),
+                ("SMAX_TENANT", self.smax_tenant),
+                ("SMAX_USER", self.smax_user),
+                ("SMAX_PASS", self.smax_pass),
+            ) if not value
+        ]
+        if missing:
             raise NotConfiguredError(
-                "SMAX side enabled but SMAX_API_URL is unset — the connector "
-                "cannot poll the ticketing system."
-            )
-        if not self.smax_api_token:
-            raise NotConfiguredError(
-                "SMAX side enabled but SMAX_API_TOKEN is unset — set it to "
-                "authenticate against SMAX (SMAX_API_URL is configured)."
+                "SMAX side enabled but not configured — missing "
+                + ", ".join(missing)
+                + ". The connector authenticates with the integration account "
+                "(POST /auth/authentication-endpoint/authenticate/token)."
             )
 
     def require_classifier(self) -> None:
@@ -100,10 +124,17 @@ class Settings:
             )
 
     def summary(self) -> dict:
-        """Resolved config for --check / logs. Tokens are masked."""
+        """Resolved config for --check / logs. Secrets are masked."""
         return {
-            "smax_api_url": self.smax_api_url or "(unset)",
-            "smax_api_token": "<set>" if self.smax_api_token else "(unset)",
+            "smax_base": self.smax_base or "(unset)",
+            "smax_tenant": self.smax_tenant or "(unset)",
+            "smax_user": self.smax_user or "(unset)",
+            "smax_pass": "<set>" if self.smax_pass else "(unset)",
+            "smax_token_ttl_s": self.smax_token_ttl_s,
+            "smax_page_size": self.smax_page_size,
+            "smax_entity_field": self.smax_entity_field,
+            "smax_utc_offset_hours": self.smax_utc_offset_hours,
+            "smax_max_attachment_mb": self.smax_max_attachment_mb,
             "smax_dry_run": self.smax_dry_run,
             "smax_poll_s": self.smax_poll_s,
             "smax_sync_stamp_path": self.smax_sync_stamp_path,

@@ -17,6 +17,7 @@ the containment grep).
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -63,18 +64,24 @@ class PipelineResult:
     processed_at: datetime | None = None
 
 
-# ── SMAX field name → our Incident field ──────────────────────────────
-# Only place in the codebase where SMAX's payload keys are named.
-_TITLE_KEYS = ("title", "summary", "subject", "name")
-_DESC_KEYS = ("description", "details", "body", "notes")
-# The ticketing system's own view of which platform the ticket belongs to.
-# When present the classifier pins it (no LLM guess); a value outside the
-# taxonomy is ignored upstream, so an unknown queue name is harmless.
-_SYSTEM_KEYS = ("affected_system", "affectedSystem", "AffectedSystem",
-                "affected_system_name", "system")
-_ID_KEYS = ("ticket_id", "id", "incident_id", "number")
-_CREATED_KEYS = ("created_at", "created", "created_date", "opened_at")
-_UPDATED_KEYS = ("updated_at", "updated", "last_modified")
+# ── SMAX entity → our Incident field ──────────────────────────────────
+# The ONLY place in the codebase where SMAX's payload keys are named. SMAX
+# sends entities as {"properties": {...}} (SMAX_INTEGRATION.md §4); the first
+# name in each tuple is the documented field, the rest are tolerant fallbacks
+# so a tenant that renames one degrades instead of crashing.
+_ID_KEYS = ("Id", "id", "ticket_id")
+_TITLE_KEYS = ("DisplayLabel", "displayLabel", "title", "Name")
+_DESC_KEYS = ("Description", "description", "details")
+_STATUS_KEYS = ("Status", "status")
+_CREATED_KEYS = ("EmsCreationTime", "emsCreationTime", "created_at")
+_UPDATED_KEYS = ("LastUpdateTime", "lastUpdateTime", "updated_at")
+
+
+def properties_of(payload: dict) -> dict:
+    """The fields of an SMAX entity live under `properties`; a bare properties
+    dict is accepted too, so callers can pass either shape."""
+    props = payload.get("properties") if isinstance(payload, dict) else None
+    return props if isinstance(props, dict) else (payload or {})
 
 
 def _first(payload: dict, keys: tuple[str, ...], default: str = "") -> str:
@@ -85,10 +92,19 @@ def _first(payload: dict, keys: tuple[str, ...], default: str = "") -> str:
     return default
 
 
-def _iso(payload: dict, keys: tuple[str, ...]) -> datetime | None:
+def _timestamp(payload: dict, keys: tuple[str, ...]) -> datetime | None:
+    """SMAX sends epoch milliseconds; ISO strings are accepted as a fallback
+    (the webhook side, and any tenant that formats differently)."""
     raw = _first(payload, keys)
     if not raw:
         return None
+    if re.fullmatch(r"\d{10,17}", raw):
+        seconds = int(raw) / 1000.0
+        try:
+            return datetime.fromtimestamp(seconds, tz=timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            _log.warning("SMAX payload has out-of-range timestamp %r — ignored", raw)
+            return None
     try:
         return datetime.fromisoformat(raw.replace("Z", "+00:00")).astimezone(timezone.utc)
     except ValueError:
@@ -97,20 +113,27 @@ def _iso(payload: dict, keys: tuple[str, ...]) -> datetime | None:
 
 
 def from_smax(payload: dict) -> Incident:
-    """Translate a raw SMAX payload into the normalized Incident shape.
+    """Translate a raw SMAX entity into the normalized Incident shape.
 
-    Unknown keys are ignored (SMAX returns many fields we don't consume);
-    malformed payloads degrade to empty strings rather than raising, so a
-    schema drift in upstream never takes the connector down.
+    Unknown fields are ignored (SMAX returns many we don't consume) and a
+    malformed value degrades to an empty string, so upstream schema drift
+    never takes the connector down.
+
+    `affected_system` is deliberately left empty: SMAX's `Entity_c` is a
+    queue/entity id, not one of our taxonomy systems, and sending a raw id
+    would be pinned as if the ticketing system had named the system. The
+    classifier resolves the system from the text instead.
     """
+    props = properties_of(payload)
     return Incident(
-        source_reference=_first(payload, _ID_KEYS),
-        title=_first(payload, _TITLE_KEYS),
-        description=_first(payload, _DESC_KEYS),
-        affected_system=_first(payload, _SYSTEM_KEYS),
-        attachments=[],  # fetched separately via client.get_attachments
-        created_at=_iso(payload, _CREATED_KEYS),
-        updated_at=_iso(payload, _UPDATED_KEYS),
+        source_reference=_first(props, _ID_KEYS),
+        title=_first(props, _TITLE_KEYS),
+        description=_first(props, _DESC_KEYS),
+        status=_first(props, _STATUS_KEYS, "active") or "active",
+        affected_system="",
+        attachments=[],  # filled by the poller from client.iter_attachments
+        created_at=_timestamp(props, _CREATED_KEYS),
+        updated_at=_timestamp(props, _UPDATED_KEYS),
     )
 
 

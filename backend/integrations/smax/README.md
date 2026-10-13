@@ -36,8 +36,10 @@ it). Endpoint methods are then 1–2 lines each.
 
 ```bash
 # From the repo root (env-driven, no code config):
-export SMAX_API_URL=https://smax.example.com
-export SMAX_API_TOKEN=secret
+export SMAX_BASE=https://smax.example.com
+export SMAX_TENANT=mytenant
+export SMAX_USER=integration-user
+export SMAX_PASS=…
 export CLASSIFIER_API_URL=http://localhost:8000
 export CLASSIFIER_API_TOKEN=secret   # same as the server's INTEGRATION_API_TOKEN
 export SMAX_DRY_RUN=true             # default: log only, post nothing
@@ -92,12 +94,26 @@ docker compose -f docker-compose.yml \
                --profile smax up -d smax-connector
 ```
 
+### Write-back is not implemented
+
+The handover documents authentication, incident search and attachment download —
+**no write endpoint**. `write_suggestion()` therefore refuses (and the write-back
+loop logs the payload instead of posting), so `SMAX_WRITE_BACK` /
+`SMAX_DRY_RUN` cannot yet change what happens on the wire. Confirm the API and
+its permissions before enabling it.
+
 ## Environment variables
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `SMAX_API_URL` | *(unset — required)* | Base URL of the SMAX REST API. |
-| `SMAX_API_TOKEN` | *(unset — required)* | Bearer token for SMAX. Connector refuses to start without it. |
+| `SMAX_BASE` | *(unset — required)* | Base URL of the SMAX server (`SMAX_API_URL` is accepted as an alias). |
+| `SMAX_TENANT` | *(unset — required)* | Target tenant id, sent as the `TENANTID` query param and cookie. |
+| `SMAX_USER` / `SMAX_PASS` | *(unset — required)* | The integration account. Auth is a login exchange — there is **no** static token. |
+| `SMAX_TOKEN_TTL_S` | `1500` | Client-side token refresh interval; a 401/403 always forces a refresh anyway. |
+| `SMAX_PAGE_SIZE` | `250` | Search page size (the SMAX API caps it at 250). |
+| `SMAX_ENTITY_FIELD` | `Entity_c` | The tenant's custom entity field, if it is named differently. |
+| `SMAX_UTC_OFFSET_HOURS` | `3` | Fixed UTC offset used to turn date boundaries into epoch ms (3 = Riyadh). |
+| `SMAX_MAX_ATTACHMENT_MB` | `15` | Attachments up to this size are downloaded and sent as base64; larger ones go by name only. |
 | `SMAX_DRY_RUN` | `true` | `true` → write-back only LOGS the suggestion payload; `false` → posts to SMAX. |
 | `SMAX_POLL_S` | `60` | Poll interval (seconds) for the SMAX change poller. |
 | `SMAX_SYNC_STAMP_PATH` | `./.last_sync` | Local since-stamp file (runtime state; never committed). |

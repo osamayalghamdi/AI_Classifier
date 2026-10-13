@@ -12,13 +12,21 @@ from integrations.smax import poller
 from integrations.smax.smax_models import from_smax
 
 
+def _ms(iso: str) -> int:
+    """SMAX speaks epoch milliseconds; tests keep writing ISO for readability."""
+    from datetime import datetime
+    return int(datetime.fromisoformat(iso).timestamp() * 1000)
+
+
 def _ticket(tid: str, title: str, updated: str) -> dict:
+    """One SMAX `properties` dict, using the handover's real field names."""
     return {
-        "id": tid,
-        "title": title,
-        "description": f"desc {tid}",
-        "created_at": "2025-01-01T00:00:00+00:00",
-        "updated_at": updated,
+        "Id": tid,
+        "DisplayLabel": title,
+        "Description": f"desc {tid}",
+        "Status": "active",
+        "EmsCreationTime": _ms("2025-01-01T00:00:00+00:00"),
+        "LastUpdateTime": _ms(updated),
     }
 
 
@@ -33,10 +41,11 @@ class TestRunOnce:
         stats = poller.run_once(smax_client, classifier_client, connector_settings)
         assert stats["listed"] == 2
         assert stats["submitted"] == 2
-        assert stats["advanced"] == "2025-01-02T09:00:00+00:00"
-        # Stamp file advanced to the newest updated_at.
+        # The filter is `>= since`, so the stamp advances one ms PAST the newest
+        # ticket — otherwise that ticket would be re-listed on every tick.
+        assert stats["advanced"] == _ms("2025-01-02T09:00:00+00:00") + 1
         assert Path(connector_settings.smax_sync_stamp_path).read_text() == \
-            "2025-01-02T09:00:00+00:00"
+            str(_ms("2025-01-02T09:00:00+00:00") + 1)
         # Both tickets reached the classifier API.
         submitted_refs = {r[3]["source_reference"] for r in fake_classifier.requests
                           if r[0] == "POST" and r[1] == "/api/v1/incidents"}
@@ -81,7 +90,8 @@ class TestRunOnce:
 
     def test_payload_without_reference_skipped(self, fake_smax, smax_client,
                                                classifier_client, connector_settings):
-        fake_smax.tickets = [{"title": "no id", "updated_at": "2025-01-01T10:00:00+00:00"}]
+        fake_smax.tickets = [{"DisplayLabel": "no id",
+                              "LastUpdateTime": _ms("2025-01-01T10:00:00+00:00")}]
         stats = poller.run_once(smax_client, classifier_client, connector_settings)
         assert stats["listed"] == 1
         assert stats["submitted"] == 0
@@ -89,12 +99,18 @@ class TestRunOnce:
 
 class TestStamp:
     def test_read_defaults_to_epoch(self, tmp_path):
-        assert poller.read_stamp(tmp_path / "missing") == poller.DEFAULT_SINCE
+        assert poller.read_stamp(tmp_path / "missing") == poller.DEFAULT_SINCE_MS
 
     def test_roundtrip(self, tmp_path):
         path = tmp_path / ".last_sync"
-        poller.write_stamp(path, "2025-01-02T09:00:00+00:00")
-        assert poller.read_stamp(path) == "2025-01-02T09:00:00+00:00"
+        poller.write_stamp(path, _ms("2025-01-02T09:00:00+00:00"))
+        assert poller.read_stamp(path) == _ms("2025-01-02T09:00:00+00:00")
+
+    def test_legacy_iso_stamp_is_converted(self, tmp_path):
+        """An older connector left an ISO stamp; upgrading must not re-list history."""
+        path = tmp_path / ".last_sync"
+        path.write_text("2025-01-02T09:00:00+00:00")
+        assert poller.read_stamp(path) == _ms("2025-01-02T09:00:00+00:00")
 
     def test_from_smax_roundtrip_shape(self):
         """from_smax output feeds submit — the connector's core mapping."""

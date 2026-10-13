@@ -8,8 +8,10 @@ classifier app anywhere in this package's tests.
 from __future__ import annotations
 
 import json
+import re
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
@@ -19,60 +21,115 @@ from integrations.smax.smax_client import SmaxClient
 
 
 # ── Fake SMAX server ──────────────────────────────────────────────────
+# Implements the real handover contract (SMAX_INTEGRATION.md):
+#   POST /auth/authentication-endpoint/authenticate/token?TENANTID=…
+#   GET  /rest/<tenant>/ems/Incident?layout=&filter=&size=&skip=
+#   GET  /rest/<tenant>/frs/file-list/<file_id>
+# Cookie auth is ENFORCED (401 without it) and `token_expired` forces one 401
+# so the client's refresh-and-retry path is exercised rather than assumed.
+
+def _matches(ticket: dict, expression: str) -> bool:
+    """Understand the conditions build_filter() produces (Id, LastUpdateTime)."""
+    single = re.search(r"Id = '([^']+)'", expression)
+    if single and str(ticket.get("Id")) != single.group(1):
+        return False
+    listed = re.search(r"Id in \(([^)]*)\)", expression)
+    if listed:
+        ids = {v.strip().strip("'") for v in listed.group(1).split(",")}
+        if str(ticket.get("Id")) not in ids:
+            return False
+    updated = re.search(r"LastUpdateTime >= (\d+)", expression)
+    if updated and int(ticket.get("LastUpdateTime", 0)) < int(updated.group(1)):
+        return False
+    created = re.search(r"EmsCreationTime >= (\d+)", expression)
+    if created and int(ticket.get("EmsCreationTime", 0)) < int(created.group(1)):
+        return False
+    return True
+
 
 class _FakeSmaxHandler(BaseHTTPRequestHandler):
     def log_message(self, *args):  # silence request logging
         pass
 
     # ── helpers ───────────────────────────────────────────────────────
-    def _json(self, obj, code: int = 200):
-        data = json.dumps(obj).encode("utf-8")
+    def _send(self, data: bytes, code: int = 200, content_type: str = "application/json"):
         self.send_response(code)
-        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
 
+    def _json(self, obj, code: int = 200):
+        self._send(json.dumps(obj).encode("utf-8"), code)
+
     def _body(self) -> dict:
         length = int(self.headers.get("Content-Length", 0))
-        return json.loads(self.rfile.read(length).decode("utf-8"))
+        return json.loads(self.rfile.read(length).decode("utf-8")) if length else {}
 
-    @staticmethod
-    def _changed_iso(ticket: dict) -> str:
-        return ticket.get("updated_at") or ticket.get("created_at") or ""
+    def _authed(self) -> bool:
+        if self.server.token_expired:
+            # Simulate server-side expiry: 401 once. The client refreshes, the
+            # login handler rotates the token in, and the retry succeeds.
+            self._json({"error": {"code": "UNAUTHORIZED"}}, 401)
+            return False
+        cookie = self.headers.get("Cookie", "")
+        ok = (f"SMAX_AUTH_TOKEN={self.server.token}" in cookie
+              and f"TENANTID={self.server.tenant}" in cookie)
+        if not ok:
+            self._json({"error": {"code": "UNAUTHORIZED"}}, 401)
+        return ok
 
-    # ── GET ───────────────────────────────────────────────────────────
-    def do_GET(self):
-        if self.path.startswith("/tickets?changed_since="):
-            since = self.path.split("=", 1)[1]
-            tickets = [t for t in self.server.tickets if self._changed_iso(t) > since]
-            self._json({"tickets": tickets})
-            return
-        if self.path.startswith("/tickets/"):
-            ticket_id = self.path.rsplit("/", 1)[-1]
-            for t in self.server.tickets:
-                if str(t.get("id")) == ticket_id:
-                    self._json(t)
-                    return
-            self._json({"error": "not found"}, 404)
-            return
-        self._json({"error": "not found"}, 404)
-
-    # ── POST ──────────────────────────────────────────────────────────
+    # ── POST: the login exchange ──────────────────────────────────────
     def do_POST(self):
-        body = self._body()
-        if "/suggestions" in self.path:
-            self.server.suggestions.append((self.path, body))
-            self._json({"ok": True})
+        if self.path.startswith("/auth/authentication-endpoint/authenticate/token"):
+            body = self._body()
+            self.server.auth_calls.append(body)
+            if self.server.token_expired:
+                self.server.token_expired = False          # one forced refresh
+                self.server.token = "refreshed.jwt.token"
+            # SMAX answers with a bare JWT as text/plain.
+            self._send(self.server.token.encode("utf-8"), content_type="text/plain")
             return
-        self._json({"error": "not found"}, 404)
+        self._json({"error": {"code": "NOT_FOUND"}}, 404)
+
+    # ── GET: search + file service ────────────────────────────────────
+    def do_GET(self):
+        if not self._authed():
+            return
+        if "/ems/Incident" in self.path:
+            query = parse_qs(urlsplit(self.path).query)
+            expression = (query.get("filter") or [""])[0]
+            size = int((query.get("size") or ["250"])[0])
+            skip = int((query.get("skip") or ["0"])[0])
+            self.server.filters.append(expression)
+            rows = [t for t in self.server.tickets if _matches(t, expression)]
+            page = rows[skip:skip + size]
+            self._json({
+                "entities": [{"properties": t} for t in page],
+                "meta": {"completion_status": "OK", "total": len(rows)},
+            })
+            return
+        if "/frs/file-list/" in self.path:
+            file_id = self.path.rsplit("/", 1)[-1]
+            self.server.file_requests.append(file_id)
+            self._send(self.server.files.get(file_id, b""),
+                       content_type="application/octet-stream")
+            return
+        self._json({"error": {"code": "NOT_FOUND"}}, 404)
 
 
 @pytest.fixture
 def fake_smax():
     server = ThreadingHTTPServer(("127.0.0.1", 0), _FakeSmaxHandler)
-    server.tickets = []
-    server.suggestions = []  # list of (path, payload) POSTed
+    server.tenant = "t1"
+    server.token = "header.payload.signature"   # a 3-part JWT, like SMAX
+    server.token_expired = False                # set True to force one 401
+    server.tickets = []                         # list of SMAX `properties` dicts
+    server.files = {}                           # file_id -> bytes
+    server.filters = []                         # every filter expression received
+    server.file_requests = []                   # every file id requested
+    server.auth_calls = []                      # every login body received
+    server.suggestions = []                     # write-back attempts (path, body)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     yield server
@@ -83,7 +140,8 @@ def fake_smax():
 @pytest.fixture
 def smax_client(fake_smax):
     url = f"http://127.0.0.1:{fake_smax.server_address[1]}"
-    return SmaxClient(api_url=url, token="smax-token")
+    return SmaxClient(base_url=url, tenant=fake_smax.tenant,
+                      username="integration-user", password="integration-pass")
 
 
 # ── Fake classifier API server ────────────────────────────────────────
@@ -208,8 +266,10 @@ def classifier_client(fake_classifier):
 @pytest.fixture
 def connector_settings(tmp_path) -> Settings:
     return Settings(
-        smax_api_url="http://smax.invalid",
-        smax_api_token="smax-token",
+        smax_base="http://smax.invalid",
+        smax_tenant="t1",
+        smax_user="integration-user",
+        smax_pass="integration-pass",
         smax_dry_run=True,
         smax_poll_s=0.01,
         smax_sync_stamp_path=str(tmp_path / ".last_sync"),
