@@ -30,7 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from ai_classification.services.attachments.extract import extract_attachment
 from ai_classification.services.attachments.normalize import normalize
-from ai_classification.services.attachments.provider import build_reader
+from ai_classification.services.attachments.provider import MockReader, build_reader
 
 _EXT_MIME = {
     ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
@@ -82,6 +82,8 @@ def main() -> int:
     parser.add_argument("--out", metavar="DIR", help="write layers.jsonl + report.json here")
     parser.add_argument("--reader-check", action="store_true",
                         help="one provider call, then exit (proves the transport)")
+    parser.add_argument("--mock", action="store_true",
+                        help="use the deterministic offline MockReader (no network)")
     args = parser.parse_args()
 
     if args.reader_check:
@@ -110,6 +112,7 @@ def main() -> int:
     if out_dir:
         out_dir.mkdir(parents=True, exist_ok=True)
     layers_fh = (out_dir / "layers.jsonl").open("w", encoding="utf-8") if out_dir else None
+    reader = MockReader() if args.mock else None
 
     for path in files[: args.limit] if args.limit else files:
         total += 1
@@ -118,7 +121,7 @@ def main() -> int:
         cache_hit = digest in seen
         seen.add(digest)
         start = time.monotonic()
-        layers = extract_attachment(data, _EXT_MIME[path.suffix.lower()])
+        layers = extract_attachment(data, _EXT_MIME[path.suffix.lower()], reader=reader)
         latencies.append(time.monotonic() - start)
         quality[layers.quality] += 1
         if layers.signals:

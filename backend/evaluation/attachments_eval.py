@@ -29,6 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from ai_classification.services.attachments.extract import extract_attachment
 from ai_classification.services.attachments.normalize import normalize
+from ai_classification.services.attachments.provider import MockReader
 
 _EXT_MIME = {
     ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
@@ -62,6 +63,8 @@ def main() -> int:
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--folder", required=True, help="folder of the sample files")
     parser.add_argument("--truth", required=True, help="the hand-labeled CSV")
+    parser.add_argument("--mock", action="store_true",
+                        help="use the deterministic offline MockReader (no network)")
     args = parser.parse_args()
 
     root = Path(args.folder)
@@ -75,13 +78,15 @@ def main() -> int:
     correct = {k: 0 for k in fields}
     total = 0
     mismatches: list[str] = []
+    reader = MockReader() if args.mock else None
 
     for row in rows:
         path = root / row["file"].strip()
         if not path.exists():
             mismatches.append(f"{row['file']}: file not found")
             continue
-        layers = extract_attachment(path.read_bytes(), _EXT_MIME[path.suffix.lower()])
+        layers = extract_attachment(path.read_bytes(), _EXT_MIME[path.suffix.lower()],
+                                    reader=reader)
         total += 1
         ok = {
             "page": _matches_page(layers, row["page"]),

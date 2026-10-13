@@ -15,17 +15,22 @@ endpoints expect.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import logging
 import re
-from typing import Protocol
+from typing import Literal, Protocol
 
 from ai_classification.shared.config import settings
 
 from .prompts import ATTACHMENT_SYSTEM_PROMPT
-from .schema import AttachmentLayers
+from .schema import AttachmentLayers, AttObject, Signal, Where
 
 _log = logging.getLogger("attachments")
+
+_QUALITIES: tuple[Literal["clear", "partial", "unreadable"], ...] = (
+    "clear", "partial", "unreadable",
+)
 
 
 class AttachmentReader(Protocol):
@@ -131,3 +136,39 @@ def build_reader() -> AttachmentReader:
         timeout_s=settings.attachment_timeout_s,
         max_pdf_pages=settings.attachment_max_pdf_pages,
     )
+
+
+_MOCK_MARKER = b"ATTACHMENT_MOCK_JSON\n"
+
+
+class MockReader:
+    """Deterministic offline reader for `--mock` runs of the scripts.
+
+    If the file bytes start with ``ATTACHMENT_MOCK_JSON\\n`` the remainder is
+    parsed as an ``AttachmentLayers`` JSON descriptor — so mock data is
+    self-describing and a truth CSV can be written to match it exactly.
+    Otherwise it returns a stable, varied record keyed by the byte hash, so a
+    folder of arbitrary files still exercises the full report (quality spread,
+    signal codes, object types, cache hits).
+    """
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def read(self, data: bytes, mime_type: str,
+             *, pages: list[bytes] | None = None) -> AttachmentLayers:
+        self.calls += 1
+        if data.startswith(_MOCK_MARKER):
+            return AttachmentLayers.model_validate(json.loads(data[len(_MOCK_MARKER):]))
+        digest = hashlib.sha256(data).hexdigest()
+        n = int(digest[:8], 16)
+        code = f"{10000000 + n % 90000000}"
+        oid = f"INV-{10000 + n % 90000}"
+        return AttachmentLayers(
+            where=Where(page=f"Page{n % 3}"),
+            objects=[AttObject(type="invoice", id=oid)],
+            signals=[Signal(type="error", code=code, text="demo error")],
+            text=f"Error {code} on invoice {oid}. Demo transcription.",
+            summary_en="mock attachment",
+            quality=_QUALITIES[n % 3],
+        )

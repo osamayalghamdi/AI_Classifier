@@ -6,5 +6,10 @@ The reader turns any image/PDF attachment into one `AttachmentLayers` record
 
 from .schema import AttachmentLayers, AttObject, Signal, Where  # noqa: F401
 from .normalize import normalize  # noqa: F401
-from .provider import AttachmentReader, OcrThenLLMReader, VisionLLMReader  # noqa: F401
+from .provider import (  # noqa: F401
+    AttachmentReader,
+    MockReader,
+    OcrThenLLMReader,
+    VisionLLMReader,
+)
 from .extract import extract_attachment  # noqa: F401
