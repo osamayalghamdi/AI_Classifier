@@ -42,8 +42,11 @@ Rules of thumb:
   (both accept `--mock` to run offline); contract in
   `backend/ai_classification/services/attachments/CONTRACT.md`.
 - Kubernetes: the chart is values-only and deploys the same two workloads
-  (api + frontend). DB, OCR, LLM and embeddings are external endpoints there
-  too — see `deploy/helm/ai-classifier/README.md` (first install) and `DEPLOYMENT_GUIDE.md`.
+  (api + frontend). The **database is required platform infrastructure** — the
+  platform/DB team runs it, it is *not* in the chart, and it is not a
+  third-party service. The **only third-party external services are the models**
+  (LLM, embeddings, OCR, vision). See `deploy/helm/ai-classifier/README.md`
+  (first install) and `DEPLOYMENT_GUIDE.md`.
 
 ## Stack
 

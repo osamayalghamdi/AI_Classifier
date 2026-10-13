@@ -223,10 +223,12 @@ frontend:
 # exists in the repo if the platform team prefers to host it themselves; it
 # ships no local model either — it calls the vision endpoint.
 
-# ── Database — EXTERNALLY MANAGED, not deployed by this chart ─────────
-# The platform/DB team owns provisioning, backups, the pgvector extension
-# and the schema. This chart only wires the connection. Requirements on
-# the server they hand over:
+# ── Database — REQUIRED INFRASTRUCTURE, provided by the platform team ──
+# The app needs a database to run; the platform/DB team already runs it
+# (provisioning, backups, the pgvector extension, the schema) — it is NOT
+# deployed by this chart, and it is NOT a third-party service. The only
+# third-party external services are the models (LLM/embeddings/OCR/vision).
+# This chart only wires the connection. Requirements on the server they hand over:
 #   * reachable from the cluster
 #   * `CREATE EXTENSION vector` permitted for the app user (the app
 #     creates its own tables at startup)

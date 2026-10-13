@@ -10,7 +10,7 @@ or something your platform already owns.
 
 | In this chart | Not in this chart (you provide / platform owns) |
 |---|---|
-| `ServiceAccount`, `Service` (api, frontend) | **The database** — external, managed by the DB/platform team (§3) |
+| `ServiceAccount`, `Service` (api, frontend) | **The database** — required, provided by the DB/platform team (§3); platform infrastructure, *not* a third-party service |
 | `ConfigMap` (nginx config, body is a value) | Ingress controller, TLS certificates |
 | `Deployment` (api, frontend) | Monitoring, HPA, VPA, ServiceMonitor, backups |
 | `NetworkPolicy` (on by default) | Secret *contents* (SealedSecrets / ExternalSecrets / Vault) |
@@ -91,10 +91,14 @@ curl -fsS localhost:8000/test/all    # full battery (reach the backend Service d
 
 ---
 
-## 3. Database — **external, not managed by this chart**
+## 3. Database — **required, provided by the platform team (not in this chart)**
 
-The chart only wires the connection. The team that owns the database is
-responsible for provisioning, HA, backups, upgrades and the schema.
+The app needs a database to run, but this chart does not deploy one: the
+database is **platform infrastructure** that the DB/platform team already runs
+(provisioning, HA, backups, upgrades, schema). It is **not a third-party
+service** — the only third-party external services are the models (LLM,
+embeddings, OCR, vision), which are endpoint values (§4). The chart only wires
+the connection.
 
 Requirements on the server they hand over:
 
@@ -152,7 +156,7 @@ Notes for whoever builds and deploys:
 - **Build for the cluster's architecture** (`--platform linux/amd64` unless it is arm64), or pods die with `exec format error`.
 - The backend **runs as UID 1000** (non-root, read-only root FS) and both images are built for that; do not override the container user without rebuilding.
 - **No build args, no secrets and no model download at build time** — the only network use is `pip install`. Nothing is baked in: LLM, embeddings and OCR are endpoint values (§4).
-- **No database image and no OCR image from this chart** — the DB is external (§3) and OCR is a separate deployment the backend reaches via `backend.env.OCR_SERVICE_URL`.
+- **No database image and no OCR image from this chart** — the DB is platform-provided infra (§3) and OCR is a separate deployment the backend reaches via `backend.env.OCR_SERVICE_URL`.
 - `imagePullSecrets` is **top-level** (`imagePullSecrets: [{name: regcred}]`), not per component.
 - The template renders `repository:tag`, so a `sha256:` digest cannot be pinned as-is — pin an immutable tag (ask us for a one-line chart change if you want digest support).
 
@@ -170,7 +174,7 @@ Notes for whoever builds and deploys:
 | `backend.port` | `8000` | Container/service port |
 | `backend.env` | LLM + integration settings | Non-secret env, merged verbatim |
 
-**Every capability is an external endpoint — the image ships no model:**
+**The models are the only external (third-party) services — the image ships none:**
 
 | Values | Default | What it means |
 |---|---|---|

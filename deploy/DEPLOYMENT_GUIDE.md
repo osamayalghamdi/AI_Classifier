@@ -13,7 +13,7 @@ Companion to the `ai-classifier/` Helm chart in this folder. **DevOps/values ref
 | `ocr` | **NOT in this chart** | The OCR service is a separate deployment (own image, own endpoint). The API only needs `backend.env.OCR_SERVICE_URL`. |
 | `ingress` | Ingress (**off by default**) | Single host → frontend (which proxies API), same shape as the compose stack. Turning it on publishes the app — opt in per environment (§1.2). Routing itself is a value — see §1.1. |
 
-There is **no database object in this chart**: the database is external and owned by the DB/platform team (README §3). The chart only takes connection values and fails the render if `database.host` is empty.
+There is **no database object in this chart**: the database is **required platform infrastructure**, owned by the DB/platform team (README §3) — not a third-party service (only the models are). The chart only takes connection values and fails the render if `database.host` is empty.
 
 Secrets are **never** in values files — they come from pre-created K8s Secrets (`backend.existingSecret`, `database.existingSecret`), ideally via whatever the DevOps team standard is (ExternalSecrets / SealedSecrets / Vault).
 
@@ -35,7 +35,7 @@ The surface is deliberately small: the chart's original fields plus exactly the 
 
 Third-party infrastructure is **not** shipped in this chart:
 
-- **Database** — external (`database.host/port/name/user/existingSecret`). The chart only wires the connection; provisioning, backups, the pgvector extension and the schema belong to the DB/platform team. An in-cluster database for a sandbox goes in through `extraManifests`, not into a template here.
+- **Database** — required platform infrastructure (`database.host/port/name/user/existingSecret`), provided by the DB/platform team — not a third-party service. The chart only wires the connection; provisioning, backups, the pgvector extension and the schema belong to the DB/platform team. An in-cluster database for a sandbox goes in through `extraManifests`, not into a template here.
 - `backend.env.EMBEDDING_*` — embeddings come from an OpenAI-compatible `/embeddings` endpoint (`EMBEDDING_API_URL`, `EMBEDDING_MODEL_ID`, `EMBEDDING_DIM`). **`EMBEDDING_DIM` is baked into the vector column on first startup** — set it before the first run; changing it later needs a fresh schema.
 - `backend.env.OCR_ENABLED` / `backend.env.OCR_SERVICE_URL` — attachment OCR through a separate service; empty URL records attachments by name only.
 
@@ -131,7 +131,7 @@ Ask these **before** the first deploy; the answers change values files:
 
 1. **Registry:** which container registry, and what are the size limits? The API image is **~1.1 GB** (no model — embeddings/OCR/LLM are external endpoints).
 2. **Egress:** the API must reach the LLM endpoint (`https://llms.elm.sa/v1` or OpenRouter) from inside the cluster. If there's an egress proxy or NetworkPolicy default-deny, we need an allowance. Without it, classification silently degrades to low-confidence fallbacks — **test the LLM path from a pod on day one** (`curl -H "Authorization: Bearer $INTEGRATION_API_TOKEN" .../test/llm` — the endpoint is token-gated now, see gotcha #7).
-3. **Postgres (external, their responsibility):** we do **not** deploy a database. Ask for host / port / database name / user, and how the password reaches the namespace (their secret tooling). Requirement on the server: the **pgvector extension installed** and the app role permitted to run `CREATE EXTENSION IF NOT EXISTS vector` — the app also creates its own tables at first startup. Backups, HA and upgrades are theirs; if they cannot provide pgvector, the app cannot start (that is a hard blocker, not a config we can work around).
+3. **Postgres (required platform infra, their responsibility):** we do **not** deploy a database (only the models are third-party external services). Ask for host / port / database name / user, and how the password reaches the namespace (their secret tooling). Requirement on the server: the **pgvector extension installed** and the app role permitted to run `CREATE EXTENSION IF NOT EXISTS vector` — the app also creates its own tables at first startup. Backups, HA and upgrades are theirs; if they cannot provide pgvector, the app cannot start (that is a hard blocker, not a config we can work around).
 4. **Ingress controller + TLS:** which ingress class, who issues certs (cert-manager?), and what hostname do we get.
 5. **Secrets workflow:** how do secrets land in the namespace in their GitOps flow (we must not commit them to the DevOps repo).
 6. **GitOps tooling:** ArgoCD or Flux or plain `helm upgrade` in CI? This decides the repo layout (§5).
