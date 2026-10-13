@@ -147,10 +147,12 @@ class TestProbe:
 
         assert smax_main._probe("100001", raw=True, download=False, redact=True) == 0
         out = capsys.readouterr().out
-        for key in ("DisplayLabel", "Description", "IncidentAttachments", "LastUpdateTime"):
+        for key in ("DisplayLabel", "Description", "IncidentAttachments", "LastUpdateTime",
+                    "source_reference"):
             assert key in out                       # the structure is the point
+        assert "100001" in out                      # the id stays (it is what you share)
         for secret in ("SECRET TITLE", "secret body", "secret.pdf"):
-            assert secret not in out                # the content never is
+            assert secret not in out                # the content never is — anywhere
 
     def test_check_mode_needs_no_credentials(self, capsys):
         assert smax_main.main(["--check"]) == 0

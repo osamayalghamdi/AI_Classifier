@@ -179,18 +179,19 @@ def _probe(reference: str, *, raw: bool, download: bool, redact: bool = False) -
         print("WARNING: no Id on this entity — a real run would SKIP it.", file=sys.stderr)
 
     description = incident.description or ""
+    title = (f"<str:{len(incident.title)}>" if redact else incident.title)
     print("--- mapped ---")
     print(json.dumps({
-        "source_reference": incident.source_reference,
-        "title": incident.title,
+        "source_reference": incident.source_reference,   # the id is what you share with me
+        "title": title,
         "description_chars": len(description),
-        "description_preview": description[:160],
+        "description_preview": ("<hidden — redact mode>" if redact else description[:160]),
         "status": incident.status,
         "created_at": incident.created_at.isoformat() if incident.created_at else None,
         "updated_at": incident.updated_at.isoformat() if incident.updated_at else None,
         "affected_system": incident.affected_system or "(none — the classifier resolves it)",
     }, indent=2, ensure_ascii=False, sort_keys=True))
-    if not incident.source_reference:
+    if not incident.source_reference and not raw:
         print("WARNING: no Id on this entity — a real run would SKIP it.", file=sys.stderr)
 
     try:
@@ -201,6 +202,12 @@ def _probe(reference: str, *, raw: bool, download: bool, redact: bool = False) -
     print(f"--- attachments ({len(metadata)} visible) ---")
     for meta in metadata:
         size = meta.get("expected_size")
+        if redact:
+            print(f"  file_name=<str:{len(meta['file_name'])}>  "
+                  f"mime_type={meta['mime_type'] or 'unknown type'}  "
+                  f"{size if size is not None else 'size unknown'} bytes  "
+                  f"id=<str:{len(meta['file_id'])}>")
+            continue
         print(f"  {meta['file_name']}  ({meta['mime_type'] or 'unknown type'}, "
               f"{size if size is not None else 'size unknown'} bytes, id={meta['file_id']})")
         if download:
@@ -217,9 +224,11 @@ def _probe(reference: str, *, raw: bool, download: bool, redact: bool = False) -
                            for m in metadata]
     body = incident_payload(preview)
     size = len(json.dumps(body, ensure_ascii=False))
+    shown = json.dumps(_redacted(body) if redact else body,
+                       indent=2, ensure_ascii=False, sort_keys=True)
     print("--- ingest body that WOULD be sent (NOT sent) ---")
     print(f"POST {settings.classifier_api_url}/api/v1/incidents   ({size} bytes, no attachments downloaded)")
-    print(json.dumps(body, indent=2, ensure_ascii=False, sort_keys=True)[:2000])
+    print(shown[:2000])
     print("\nNothing was submitted. Run with --once --limit 1 to send one real ticket.")
     return 0
 
