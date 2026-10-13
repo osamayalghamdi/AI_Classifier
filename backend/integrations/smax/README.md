@@ -120,14 +120,10 @@ straight from here with no exports:
 The only value shared with the app is the classifier token: `CLASSIFIER_API_TOKEN`
 here must equal the server's `INTEGRATION_API_TOKEN`.
 
-Running it in docker compose — the service definition is in this folder too:
-
-```bash
-docker compose build api                                # the api image also carries integrations/
-docker compose -f docker-compose.yml \
-               -f backend/integrations/smax/docker-compose.smax.yml \
-               --profile smax up -d smax-connector
-```
+Running it in Kubernetes — the connector is its own Deployment; the manifest
+belongs in this folder and points at the classifier Service the app exposes
+(`CLASSIFIER_API_URL=http://ai-classifier-backend.<ns>.svc:8000`). Its config
+comes from a Secret holding the `SMAX_*` / `CLASSIFIER_API_*` keys.
 
 ### Write-back is not implemented
 

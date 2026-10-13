@@ -4,23 +4,25 @@ LLM-powered incident classification on the Nusuk Masar Haj service-offering mode
 
 <img width="1619" height="903" alt="Screenshot 1448-02-15 at 7 22 01 AM" src="https://github.com/user-attachments/assets/3b288fec-616f-4919-bf4d-00e5852768f4" />
 
-## First run — the env file is the whole configuration
+## Deployment — one config file, inside the chart
 
 No model is installed or baked into the image: every model lives **outside**
-this project, and the app holds only URLs + keys. Copy the template, fill it
-in, start it:
+this project and the app holds only URLs + keys. Kubernetes is the target, and
+**everything is configured in one place:
+`deploy/helm/ai-classifier/values.yaml`**.
 
 ```bash
-cp .env.example .env
-# in .env set:
-#   LLM_API_BASE / LLM_MODEL / LLM_API_KEY            → classification
-#   EMBEDDING_API_URL / EMBEDDING_API_KEY / EMBEDDING_MODEL_ID / EMBEDDING_DIM
-#                                                     → similarity (OpenAI-compatible /embeddings)
-#   OCR_SERVICE_URL                                   → attachment text (optional; empty = names only)
-#   ATTACHMENT_VISION_API_URL / ATTACHMENT_VISION_MODEL / ATTACHMENT_VISION_API_KEY
-#                                                     → attachment "layers" (ATTACHMENTS_ENABLED=1; empty = text-only)
-#   POSTGRES_USER / POSTGRES_PASSWORD / POSTGRES_DB    → database
-docker compose up -d        # api + postgres + nginx (dashboard served by nginx)
+kubectl create namespace ai-classifier
+
+# Secrets (never in values) — the only things set outside the values file:
+kubectl -n ai-classifier create secret generic ai-classifier-secrets \
+  --from-literal=LLM_API_KEY='<llm key>' \
+  --from-literal=INTEGRATION_API_TOKEN='<api token>'
+kubectl -n ai-classifier create secret generic ai-classifier-db \
+  --from-literal=PG_PASSWORD='<db password>'
+
+# Point values.yaml at your database + model endpoints, then:
+helm upgrade --install ai-classifier deploy/helm/ai-classifier -n ai-classifier --wait
 ```
 
 Rules of thumb:
@@ -32,8 +34,8 @@ Rules of thumb:
   to an `openrouter/…` or `openai/…` id enables the matching entry
   automatically; anything else needs `MODEL_<NAME>_ENABLED=1`
   (`MODEL_<NAME>_ID` / `_API_BASE` / `_API_KEY` override that model's endpoint).
-- Attachment OCR is a **separate service**. To host the bundled one:
-  `docker compose --profile ocr up -d` + `OCR_SERVICE_URL=http://ocr:8001`.
+- Attachment OCR is a **separate service** — point `backend.env.OCR_SERVICE_URL`
+  at it (empty = attachments recorded by name only).
 - **Attachment understanding** (universal layers: where / objects / signals /
   text / summary) is an external vision reader, env-only — set
   `ATTACHMENTS_ENABLED=1` + `ATTACHMENT_VISION_API_URL` / `_MODEL` / `_API_KEY`.
@@ -41,12 +43,10 @@ Rules of thumb:
   `backend/scripts/attachments_backfill.py` and `backend/evaluation/attachments_eval.py`
   (both accept `--mock` to run offline); contract in
   `backend/ai_classification/services/attachments/CONTRACT.md`.
-- Kubernetes: the chart is values-only and deploys the same two workloads
-  (api + frontend). The **database is required platform infrastructure** — the
-  platform/DB team runs it, it is *not* in the chart, and it is not a
-  third-party service. The **only third-party external services are the models**
-  (LLM, embeddings, OCR, vision). See `deploy/helm/ai-classifier/README.md`
-  (first install) and `DEPLOYMENT_GUIDE.md`.
+- The **database is required platform infrastructure** — the platform/DB team
+  runs it, it is *not* in the chart, and it is not a third-party service. The
+  **only third-party external services are the models** (LLM, embeddings, OCR,
+  vision). See `deploy/helm/ai-classifier/README.md` and `DEPLOYMENT_GUIDE.md`.
 
 ## Stack
 
@@ -159,22 +159,21 @@ AI_Classifier/
 │   └── pyproject.toml  uv.lock  Dockerfile  entrypoint.sh  smoke_test.sh
 ├── frontend/                       # the dashboard (no build step)
 │   ├── dashboard/                  # index.html, app.js, admin.html, write-incident.html …
-│   ├── Dockerfile                  # nginx + dashboard files (the image used by k8s/compose)
-│   └── nginx.conf                  # dev/compose reverse proxy (the k8s copy lives in the chart)
+│   ├── Dockerfile                  # nginx + dashboard files (the image used by k8s)
+│   └── nginx.conf                  # reference proxy config (the live copy lives in the chart)
 ├── deploy/                         # infrastructure
-│   ├── helm/ai-classifier/         # Kubernetes chart — README.md is the DevOps handover
-│   ├── DEPLOYMENT_GUIDE.md         # K8s deployment notes + gotchas
-│   └── DEPLOY.md                   # Docker-compose server deploy
-├── docker-compose.yml              # local/VM stack (reads .env from the repo root)
+│   ├── helm/ai-classifier/         # Kubernetes chart — values.yaml is THE config; README.md is the handover
+│   └── DEPLOYMENT_GUIDE.md         # K8s deployment notes + gotchas
 └── README.md  ARCHITECTURE.md
 ```
 
-## Quick Start
+## Running locally (dev only — deployment is Helm)
 
 ```bash
-# Backend API
+# There is no .env: export what you need, or render it from the chart values.
 cd ~/projects/AI_Classifier/backend
-source ../.env
+export PG_HOST=localhost PG_USER=aiuser PG_PASSWORD=… PG_DATABASE=ai_incidents
+export LLM_MODEL=openai/qwen3.6 LLM_API_BASE=https://llms.elm.sa/v1 LLM_API_KEY=…
 uv run uvicorn ai_classification.api.routes:app --host 0.0.0.0 --port 8000
 
 # Tests (needs a Postgres; see .github/workflows/test.yml for the CI env)
@@ -183,64 +182,48 @@ cd ~/projects/AI_Classifier/backend && uv run pytest -q
 # Dashboard (separate terminal)
 cd ~/projects/AI_Classifier/frontend/dashboard
 python3 -m http.server 8085 --bind 0.0.0.0
-open http://192.168.1.50:8085
 ```
 
-## Deploy on a Linux VM with Docker (recommended)
+## Build the images
 
-The project runs entirely inside Docker — the VM only needs Docker, ~15 GB
-disk, and internet (for the one-time image build). No Python, Node, or
-database installs on the VM.
+Both images build straight from the repo (the API image is model-free, ~1.1 GB):
 
 ```bash
-# 1. Install Docker (one-time)
-curl -fsSL https://get.docker.com | sh
-sudo usermod -aG docker $USER && newgrp docker
+# API — the context MUST be backend/ (it holds pyproject.toml,
+# ai_classification/, integrations/, entrypoint.sh). Building from the repo
+# root fails with "/ai_classification: not found".
+docker build -f backend/Dockerfile -t REGISTRY/ai-classifier:<tag> backend/
 
-# 2. Get the code
-git clone git@github.com:osamayalghamdi/AI_Classifier.git
-cd AI_Classifier
-
-# 3. Configure (see "How to change things" below)
-cp .env.example .env
-nano .env          # fill in the ELM API key + a database password
-
-# 4. THE GATE — check the AI model works before anything else
-./backend/scripts/canary.sh
-
-# 5. Build + start (~10 min the first time)
-docker compose build api
-docker compose up -d postgres api nginx
-
-# 6. Load demo data (optional)
-./backend/scripts/reseed.sh http://localhost:8000 test_incidents.json
+# Dashboard
+docker build -f frontend/Dockerfile -t REGISTRY/ai-classifier-frontend:<tag> frontend/
 ```
 
-Open the dashboard at `http://<VM-IP>:8082`.
+Push them to your registry, set `image.repository` / `image.tag` (+ the frontend
+equivalents) in `values.yaml`, then deploy with `helm upgrade --install` as shown
+at the top. Full release steps: `deploy/helm/ai-classifier/README.md` §2.
 
-Everything is documented in detail in `deploy/DEPLOY.md`.
+## How to change things (all in one file: `values.yaml`)
 
-## How to change things (all in one file: `.env`)
-
-| What you want to change | Line in `.env` |
+| What you want to change | Where (chart `values.yaml`) |
 |---|---|
-| The AI model | `LLM_MODEL` (e.g. `openai/qwen3.6` or `ollama/qwen2.5:7b`) |
-| The AI service URL | `LLM_API_BASE` (e.g. `https://llms.elm.sa/v1`) |
-| The AI API key | `LLM_API_KEY` |
-| Database password (REQUIRED) | `POSTGRES_PASSWORD` |
-| Integration API token | `INTEGRATION_API_TOKEN` (empty = locked) |
-| Duplicate-ticket threshold | `SIMILARITY_THRESHOLD` (0.35 for deploy) |
-| Attachment understanding | `ATTACHMENTS_ENABLED` + `ATTACHMENT_VISION_API_URL` / `_MODEL` / `_API_KEY` |
+| The AI model | `backend.env.LLM_MODEL` (e.g. `openai/qwen3.6`) |
+| The AI service URL | `backend.env.LLM_API_BASE` (e.g. `https://llms.elm.sa/v1`) |
+| The AI API key | Secret `backend.existingSecret` → `LLM_API_KEY` |
+| Database connection | `database.host` / `.port` / `.name` / `.user` + `database.existingSecret` (password) |
+| Integration API token | Secret `backend.existingSecret` → `INTEGRATION_API_TOKEN` |
+| Duplicate-ticket threshold | `backend.env.SIMILARITY_THRESHOLD` |
+| Attachment understanding | `backend.env.ATTACHMENTS_ENABLED` + `ATTACHMENT_VISION_*` (+ the key in the Secret) |
 
-After editing `.env`, restart the API:
+After editing values, upgrade the release:
 
 ```bash
-docker compose restart api
+helm upgrade ai-classifier deploy/helm/ai-classifier -n ai-classifier
 ```
 
-**Status check** — see if everything is healthy:
+**Status check** — see if everything is healthy (from inside the cluster):
 
 ```bash
+kubectl -n ai-classifier port-forward svc/ai-classifier-backend 8000
 curl http://localhost:8000/status
 # {"status":"ok","services":{"db":...,"embedding":...,"llm":...}}
 ```
@@ -250,22 +233,23 @@ AI endpoint is unreachable, and the startup logs print
 `SERVICE LLM: UNREACHABLE` loudly — so a wrong key or unreachable model
 is visible immediately.
 
-**Full detail:** `DEPLOY.md` (deploy runbook) and `docs/worklogs/DEPLOY_STATUS.md`
-(what was verified, gate results, known open items).
+**Full detail:** `deploy/DEPLOYMENT_GUIDE.md` and
+`deploy/helm/ai-classifier/README.md`.
 
 ## Ports & URLs
 
-The deployed stack exposes **3 ports** (all changeable in `.env`):
+In-cluster the chart exposes two Services (both `ClusterIP`): the frontend on
+`frontend.port` (8082) and the API on `backend.port` (8000). Nothing is
+published until you enable `ingress` or set a Service type.
 
-| Port | Service | What it is | URL |
-|---|---|---|---|
-| **8082** | nginx | The dashboard (UI) | `http://<VM-IP>:8082` |
-| **8000** | FastAPI | The API (what integrations call) | `http://<VM-IP>:8000` |
-| **8001** | OCR | OCR microservice (attachments) | `http://<VM-IP>:8001` |
+```bash
+# Reach them from your machine (binds 127.0.0.1 only — never --address 0.0.0.0):
+kubectl -n ai-classifier port-forward svc/ai-classifier-frontend 8082:8082
+kubectl -n ai-classifier port-forward svc/ai-classifier-backend  8000:8000
+```
 
-Postgres (5432) is NOT exposed to the host — only the api reaches it,
-inside the Docker network (deliberately safer). Change ports via
-`API_PORT` in `.env` (e.g. `API_PORT=9000` if 8000 is taken).
+Postgres is required infrastructure the platform team runs — the API reaches it
+over the network; the chart holds only the connection values (`database.*`).
 
 ### Key API URLs (:8000)
 
@@ -287,7 +271,7 @@ inside the Docker network (deliberately safer). Change ports via
 ### What the ticketing-system team needs
 
 Just two things:
-1. **Base URL**: `http://<VM-IP>:8000` (or whatever `API_PORT` is set to)
+1. **Base URL**: the API Service — `http://ai-classifier-backend.<ns>.svc:8000` in-cluster, or your ingress host
 2. **Auth token**: `INTEGRATION_API_TOKEN` from `.env` — every `/api/v1/*`
    call needs `Authorization: Bearer <token>`
 
@@ -359,7 +343,7 @@ taxonomy.
 ## Tests
 
 ```bash
-# Needs a Postgres (compose: docker compose up -d postgres) and the LLM env.
+# Needs a Postgres and the env vars exported (there is no .env in the repo).
 # The suite REFUSES to run against the production database (ai_incidents) —
 # it forces ai_incidents_test automatically.
 PG_PORT=5432 uv run pytest tests/ -q

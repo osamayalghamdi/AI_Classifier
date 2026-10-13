@@ -80,6 +80,12 @@ spec:
                   name: {{ .Values.backend.existingSecret }}
                   key: ATTACHMENT_VISION_API_KEY
                   optional: true
+            - name: ATTACHMENT_OCR_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.backend.existingSecret }}
+                  key: ATTACHMENT_OCR_API_KEY
+                  optional: true
             - name: INTEGRATION_API_TOKEN
               valueFrom:
                 secretKeyRef:

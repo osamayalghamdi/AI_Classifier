@@ -143,7 +143,7 @@ Ask these **before** the first deploy; the answers change values files:
 | `ai-classifier-frontend` | `frontend/Dockerfile` | `frontend/` |
 | `ai-classifier-ocr` (optional) | `backend/ocr/Dockerfile` | `backend/ocr/` |
 
-Why a frontend image: docker-compose bind-mounts `frontend/dashboard` and `frontend/nginx.conf` into a stock nginx container. Bind mounts don't exist in K8s — the dashboard files must be baked into an image. The nginx **config** stays out of the image (it's the chart's ConfigMap, whose body is `frontend.configMap.conf` in values — the proxy target is a cluster DNS name Helm computes, and `tpl` lets values reference it).
+Why a frontend image: the dashboard files must be baked into an image (a stock nginx + the files). The nginx **config** stays out of the image (it's the chart's ConfigMap, whose body is `frontend.configMap.conf` in values — the proxy target is a cluster DNS name Helm computes, and `tpl` lets values reference it).
 
 Tagging rule: immutable tags (git SHA or semver), never `latest` in prod. The chart defaults `image.tag` to `Chart.appVersion` when empty.
 
@@ -206,7 +206,7 @@ Either way: **the only thing the app team should routinely change in the DevOps 
    - **nginx (chart default):** the frontend ConfigMap hard-blocks `location = /reset` and `location = /test/llm` with `return 403` (exact-match locations that win over the proxy regex and the SPA fallback) — defense in depth, zero cost.
    - Residuals: `/reset`, `/test/llm`, the whole `/test/` surface and the schema/docs routes (`/docs`, `/redoc`, `/openapi.json`) are now blocked with 403 in the chart's nginx config, so they are not reachable from outside even if the host is exposed. In-cluster access to the backend Service is fine (that's how smoke tests run); just never port-forward the pod with `--address 0.0.0.0`.
 8. **CORS is `*`** in the app. Harmless while the frontend proxies same-origin, but tighten it (env-configurable origin) before exposing the API host directly to browsers.
-9. **SMAX polling in K8s:** leave `TICKETING_API_TOKEN` empty until real SMAX creds exist — the app logs one line and idles (by design, no crash-loop). The `integrations/smax` connector keeps its own configuration and its own service definition (`.env.example`, `docker-compose.smax.yml`, README — all inside that folder), so nothing SMAX-specific belongs in this chart's values. If the platform team wants it as a cluster workload rather than a sidecar process next to the app, the manifest belongs in that folder too and should reference the same `SMAX_*` / `CLASSIFIER_API_*` names rather than inventing chart-side copies of them.
+9. **SMAX polling in K8s:** leave `TICKETING_API_TOKEN` empty until real SMAX creds exist — the app logs one line and idles (by design, no crash-loop). The `integrations/smax` connector keeps its own configuration and its own service definition (`.env.example` + README, inside that folder), so nothing SMAX-specific belongs in this chart's values. If the platform team wants it as a cluster workload rather than a sidecar process next to the app, the manifest belongs in that folder too and should reference the same `SMAX_*` / `CLASSIFIER_API_*` names rather than inventing chart-side copies of them.
 
 ## 7. Resource sizing (starting points, tune from metrics)
 
@@ -254,7 +254,7 @@ There is **no per-ticket deadline** — every call can burn its full timeout. Fo
 A bearer-auth admin page (same token as `/api/v1/*`) at `/admin.html` covering:
 - **Status** — incident/cluster/embedding counts, model, store health.
 - **Taxonomy** — add services/offerings on top of the FROZEN base taxonomy. Overrides persist in the `taxonomy_overrides` table and take effect immediately (the cascade + validation read the merged view at call time; the base `domain/taxonomy.py` never changes).
-- **Credentials** — set `LLM_API_KEY`, `INTEGRATION_API_TOKEN`, etc. in the env file (default `.env`, override with `ADMIN_ENV_FILE`). Settings load at startup → **restart the container to apply**. Secrets are never returned in full (masked only).
+- **Credentials** — in Kubernetes the env comes from the Deployment (chart values + the Secret), not a writable file: set `LLM_API_KEY` / `INTEGRATION_API_TOKEN` in the Secret and `helm upgrade`. Settings load at startup → **restart the pod to apply**. Secrets are never returned in full (masked only).
 - **Add incident** — classify + store one ticket.
 - **Groups** — create/adjust cluster groups (rename, status, add/remove members).
 - **Run tests** — in-container `smoke_test.sh` (against the live API) and the full `pytest` suite (against `ai_incidents_test`). Requires `tests/`, `scripts/`, `smoke_test.sh` mounted into the api container (compose does this) and pytest in the image (Dockerfile installs it).

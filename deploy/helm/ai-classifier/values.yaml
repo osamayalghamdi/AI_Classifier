@@ -25,50 +25,96 @@ backend:
   replicas: 1
   port: 8000
 
-  # Non-secret env (secrets come from `existingSecret`).
-  # ── Every capability is an EXTERNAL endpoint: the image ships no model ──
-  # one URL (+ key) per capability, nothing to install in the cluster.
+  # ══ ENV — the single configuration surface ══════════════════════════
+  # This is the ONLY env file: everything the API reads is here, except
+  #   • secrets         → `existingSecret` below (never in values),
+  #   • the DB connection → `database.*` below.
+  # There is no .env in this repo. Edit this file (or an overlay), then
+  # `helm upgrade`. Every value is a string — the app coerces them.
   env:
+    # ── LLM — classification (external chat-completions endpoint) ────────
     LLM_MODEL: "openai/qwen3.6"
     LLM_API_BASE: "https://llms.elm.sa/v1"
-    # Embeddings (similarity / clustering) — any OpenAI-compatible
-    # /embeddings endpoint. It must return EMBEDDING_DIM values (default
-    # 1024): that dimension is baked into the vector columns created at first
-    # startup, so set it before the first run.
+    LLM_TIMEOUT_S: "60"          # 0 = provider default
+    LLM_MAX_RETRIES: "3"         # transient only (429/5xx/timeout)
+    LLM_RETRY_BASE_S: "2"
+
+    # ── Embeddings — similarity / clustering (external /embeddings) ──────
+    # EMBEDDING_DIM must equal what the endpoint returns: it sizes the
+    # pgvector column created at first startup — set it before the first run.
     EMBEDDING_PROVIDER: "external"
     EMBEDDING_API_URL: "https://llms.elm.sa/v1"
     EMBEDDING_MODEL_ID: "bge-m3"
     EMBEDDING_DIM: "1024"
-    # Attachment OCR — the API POSTs every incident attachment to
-    # OCR_SERVICE_URL and stores the returned text on the incident record
-    # (extracted_text + the file names in documents). The OCR service is a
-    # SEPARATE deployment; leave the URL empty to record attachments by name
-    # only (no OCR calls).
+    EMBEDDING_TIMEOUT_S: "30"
+
+    # ── OCR — attachment text (a SEPARATE service; "" = names only) ──────
     OCR_ENABLED: "1"
-    OCR_SERVICE_URL: ""        # empty = attachments recorded by name only;
-                               # set your OCR service URL to transcribe them
-    # Attachment understanding (vision reader) — another EXTERNAL endpoint;
-    # the image ships no model. URL/model are values (empty = feature off, no
-    # provider is ever defaulted); the key comes from `existingSecret`.
+    OCR_SERVICE_URL: ""          # empty = attachments recorded by name only
+    OCR_TIMEOUT_S: "60"
+    OCR_MAX_ATTACHMENT_MB: "15"
+    OCR_MAX_TEXT_CHARS: "20000"
+
+    # ── Attachment understanding — vision reader (external; "" = off) ────
+    # URL/model empty = feature off; no provider is ever defaulted. The key
+    # comes from `existingSecret`.
     ATTACHMENTS_ENABLED: "0"
     ATTACHMENT_READER_MODE: "vision_llm"
     ATTACHMENT_VISION_API_URL: ""
     ATTACHMENT_VISION_MODEL: ""
+    ATTACHMENT_OCR_API_URL: ""
+    ATTACHMENT_TIMEOUT_S: "45"
+    ATTACHMENT_MAX_PER_TICKET: "5"
+    ATTACHMENT_MAX_BYTES: "10485760"
+    ATTACHMENT_MAX_PDF_PAGES: "5"
+    ATTACHMENT_CONCURRENCY: "2"
+    ATTACHMENT_IN_PROMPT: "1"
+    ATTACHMENT_LINKING: "0"
+
+    # ── Classification / clustering ──────────────────────────────────────
     SIMILARITY_THRESHOLD: "0.35"
-    SYNC_INTERVAL: "60"
-    TICKETING_SOURCE: "real"
-    TICKETING_API_URL: "http://localhost:8002"
-    TICKETING_DRY_RUN: "false"
+    CLASSIFY_CASCADE_RETRIES: "2"
+    CLASSIFY_BATCH_SLEEP_S: "0"
+    CLASSIFY_SELF_CONSISTENCY: "false"
+    CASCADE_CLASSIFICATION: "true"
+    CLUSTER_AUTO_ACTIVATE: "1"
+    CLUSTER_ASSIGN_ON_ARRIVAL: "0"
+    CLUSTER_AUDIT_INTERVAL_S: "86400"
+    RECLASSIFY_ENABLED: "0"
+    RECLASSIFY_INTERVAL_S: "600"
+    RECLASSIFY_MAX_PER_TICK: "10"
+    REPOOL_INTERVAL: "900"
+
+    # ── Integration API — async ingest + retry worker ────────────────────
     INTEGRATION_WORKER_ENABLED: "1"
     INTEGRATION_WRITE_BACK: "0"
     INTEGRATION_MAX_ATTEMPTS: "3"
     INTEGRATION_POLL_S: "5"
     INTEGRATION_RETRY_BASE_S: "2"
+
+    # ── Ticketing seam (SMAX runs as a separate connector process) ───────
+    TICKETING_SOURCE: "real"
+    TICKETING_API_URL: "http://localhost:8002"
+    TICKETING_DRY_RUN: "false"
+    SYNC_INTERVAL: "60"
+    # SYNC_STAMP_PATH: "/tmp/.last_sync"   # optional: move the poll stamp off the app dir
+
+    # ── Auth / store / CORS ──────────────────────────────────────────────
+    AUTH_OPTIONAL: "0"           # 1 = no credential required (testing only)
+    STORE_REQUIRED: "1"
+    STORE_SETUP_TIMEOUT_S: "120"
+    CORS_ALLOW_ORIGINS: "*"
+
+    # ── Import field mapping (which fields hold title / description) ─────
+    TICKET_TITLE_FIELDS: "DisplayLabel,display_label,title,Title"
+    TICKET_DESCRIPTION_FIELDS: "Description,description,desc"
   extraEnv: []               # [{name, value} | {name, valueFrom}]
 
-  # Secret holding LLM_API_KEY, EMBEDDING_API_KEY, ATTACHMENT_VISION_API_KEY,
-  # INTEGRATION_API_TOKEN, ADMIN_TOKEN, TICKETING_API_TOKEN. The DB password
-  # belongs to the database Secret (database.existingSecret), not here.
+  # Secrets — created out-of-band, NEVER in values:
+  #   LLM_API_KEY, EMBEDDING_API_KEY, ATTACHMENT_VISION_API_KEY,
+  #   ATTACHMENT_OCR_API_KEY, INTEGRATION_API_TOKEN, ADMIN_TOKEN,
+  #   TICKETING_API_TOKEN.
+  # The DB password belongs to the database Secret (database.existingSecret).
   existingSecret: "ai-classifier-secrets"
 
   resources:
@@ -197,8 +243,7 @@ frontend:
               access_log off;
           }
 
-          # Keep in sync with the compose copy (nginx.conf) — an unlisted
-          # path falls through to index.html.
+          # An unlisted path falls through to index.html.
           location ~ ^/(api/|admin/|status|classify|incidents|all-incidents|import|reports|review-queue|cluster-proposals|cluster/|clusters|taxonomy-gaps) {
           {{- include "ai-classifier.dataAuth" . | nindent 4 }}
               proxy_pass http://{{ include "ai-classifier.fullname" . }}-backend:{{ .Values.backend.port }};
