@@ -23,14 +23,6 @@ app.kubernetes.io/name: {{ include "ai-classifier.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 
-{{- define "ai-classifier.serviceAccountName" -}}
-{{- if .Values.serviceAccount.create -}}
-{{- default (include "ai-classifier.fullname" .) .Values.serviceAccount.name -}}
-{{- else -}}
-{{- default "default" .Values.serviceAccount.name -}}
-{{- end -}}
-{{- end -}}
-
 {{- define "ai-classifier.image" -}}
 {{- printf "%s:%s" .Values.image.repository (default .Chart.AppVersion .Values.image.tag) -}}
 {{- end -}}

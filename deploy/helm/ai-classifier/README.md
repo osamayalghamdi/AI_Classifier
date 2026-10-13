@@ -10,10 +10,9 @@ or something your platform already owns.
 
 | In this chart | Not in this chart (you provide / platform owns) |
 |---|---|
-| `ServiceAccount`, `Service` (api, frontend) | **The database** — required, provided by the DB/platform team (§3); platform infrastructure, *not* a third-party service |
+| `Service` (api, frontend) | **The database** — required, provided by the DB/platform team (§3); platform infrastructure, *not* a third-party service |
 | `ConfigMap` (nginx config, body is a value) | Ingress controller, TLS certificates |
-| `Deployment` (api, frontend) | Monitoring, HPA, VPA, ServiceMonitor, backups |
-| `NetworkPolicy` (on by default) | Secret *contents* (SealedSecrets / ExternalSecrets / Vault) |
+| `Deployment` (api, frontend) | Monitoring, HPA, VPA, ServiceMonitor, backups; Secret *contents* (SealedSecrets / ExternalSecrets / Vault) |
 | `Ingress` (only when you enable it) | Any other team's CRs → inject via `extraManifests` |
 
 Rule of thumb: if it is not an object this application owns, it does not live in
@@ -38,10 +37,8 @@ deploy/helm/ai-classifier/
     ├── frontend/               ← the dashboard (nginx)
     │   ├── deployment.yaml
     │   └── configmap.yaml      (the nginx config body is a value)
-    ├── shared/                 ← platform objects, both sides
+    ├── shared/                 ← shared objects
     │   ├── ingress.yaml        (off by default)
-    │   ├── networkpolicy.yaml  (on by default)
-    │   ├── serviceaccount.yaml
     │   └── extra-manifests.yaml (third-party objects, from values)
     ├── _helpers.tpl            naming/label helpers
     └── NOTES.txt               post-install output
@@ -49,7 +46,7 @@ deploy/helm/ai-classifier/
 
 Values follow the same split: **`backend.*`** (image, env, probes,
 resources, secrets), **`frontend.*`** (image, nginx config, access control),
-and the shared keys (`database.*`, `ingress.*`, `networkPolicy.*`,
+and the shared keys (`database.*`, `ingress.*`,
 `extraManifests`). Rendered objects are `<release>-backend` and
 `<release>-frontend`.
 
@@ -169,7 +166,6 @@ Notes for whoever builds and deploys:
 | `nameOverride` / `fullnameOverride` | `""` | Override the generated names |
 | `image.repository` / `.tag` / `.pullPolicy` | `REGISTRY/ai-classifier` / `""` / `IfNotPresent` | Tag empty → `Chart.appVersion` (stale `0.2.0` — set the tag CI pushed). Ships no model: ~1.1 GB |
 | `imagePullSecrets` | `[]` | Registry pull secret(s) |
-| `serviceAccount.create` / `.name` / `.annotations` | `true` / `""` / `{}` | IRSA/workload-identity annotations go here |
 | `backend.replicas` | `1` | **Keep 1** — the process runs in-process workers; see DEPLOYMENT_GUIDE §6 |
 | `backend.port` | `8000` | Container/service port |
 | `backend.env` | LLM + integration settings | Non-secret env, merged verbatim |
@@ -199,7 +195,6 @@ Notes for whoever builds and deploys:
 | `ingress.className` / `.host` / `.tls` / `.annotations` | `""` / example / `[]` / `{}` | Ask your controller which class; add TLS before exposing |
 | `ingress.paths` | `[]` | Blank → everything to the frontend. Set to own the routing (`service: backend\|frontend`, or `serviceName:`) |
 | `extraManifests` | `[]` | Any extra object (HPA, ServiceMonitor, ExternalSecret, CRs) — rendered with `tpl` |
-| `networkPolicy.enabled` | **`true`** | Only frontend pods may reach the api; kubelet probes and port-forward still work |
 
 ---
 
@@ -209,13 +204,12 @@ Notes for whoever builds and deploys:
 |---|---|---|
 | API + dashboard outside the cluster | nothing | `ingress.enabled: true` (+ `ingress.tls`) |
 | Service types | `ClusterIP` | `*.service.type` (`NodePort`/`LoadBalancer` publish on every node / via a cloud LB) |
-| Pod-to-pod access to the backend | `networkPolicy.enabled: true` | it is the default; turning it *off* is the deliberate act |
 | Data routes (`/reset`, `/test/*`, `/docs`, `/redoc`, `/openapi.json`) | **403** in the proxy | edit `frontend.configMap.conf` if a route must be reachable |
 | Dashboard data (`/incidents`, `/status`, `/reports/*`, …) | open to anyone who can reach the frontend | `frontend.accessControl.basicAuth` **or** `.allowlist` **or** platform SSO via `ingress.annotations` (DEPLOYMENT_GUIDE §1.3) |
 
 Two rules:
 
-- **Route everything through the frontend** (leave `ingress.paths` empty). A path routed straight to the backend Service skips the frontend gate, and the chart then requires `networkPolicy.ingressController.namespace` so the controller can reach the backend at all.
+- **Route everything through the frontend** (leave `ingress.paths` empty). A path routed straight to the backend Service skips the frontend gate.
 - `/health` and `/ready` stay ungated on purpose, so your probes and monitors keep working.
 
 `kubectl port-forward` binds `127.0.0.1` by default — correct for inspecting a
@@ -244,7 +238,6 @@ change should be the image tag.
 |---|---|
 | `database.host` empty | "this chart does not deploy a database — point it at the server your platform team provides" |
 | `frontend.accessControl.basicAuth.enabled` without `existingSecret` | "existingSecret is required when basicAuth.enabled=true" |
-| an ingress path routed to `api` (or `frontend.enabled=false`) while `networkPolicy.enabled=true` and `networkPolicy.ingressController.namespace` is empty | "the api must accept traffic from outside the frontend … set networkPolicy.ingressController.namespace" |
 
 These exist because each one otherwise fails *silently* at runtime.
 
@@ -257,7 +250,6 @@ These exist because each one otherwise fails *silently* at runtime.
 | `ImagePullBackOff` on the backend | wrong registry/repository/tag, missing `imagePullSecrets`, or an image built for another architecture |
 | backend pod `0/1` for minutes then Ready | first boot creates/validates its tables — a slow or unreachable DB extends it; `/health` is up meanwhile |
 | `/ready` reports `llm: error` | LLM egress blocked from the cluster or `LLM_API_KEY` missing — `/health` and the dashboard still work |
-| **504** through the ingress on `/api/*` | path routed straight to the backend Service while the NetworkPolicy only admits the frontend → set `networkPolicy.ingressController.namespace` |
 | **401/403** on the dashboard | `frontend.accessControl` is on: authenticate, or your source IP is outside `allowlist` |
 | readiness flapping | readiness is pointing at `/ready` while LLM egress is flaky — keep it on `/health` |
 | pods killed by PodSecurity | the backend image runs as UID 1000; frontend is plain nginx |
@@ -271,7 +263,7 @@ These exist because each one otherwise fails *silently* at runtime.
 | Chart, images, application config, the values reference above | Application team |
 | Environment values (per env), GitOps wiring, secrets delivery | DevOps / platform |
 | Database server, pgvector extension, backups, HA, credentials | Database / platform team |
-| Ingress controller, TLS, SSO/oauth2-proxy, NetworkPolicy exceptions | Platform team |
+| Ingress controller, TLS, SSO/oauth2-proxy | Platform team |
 
 Deeper app-specific notes (probe choices, worker duplication, first-startup DDL,
 dangerous endpoints): see `../../DEPLOYMENT_GUIDE.md`.

@@ -71,7 +71,6 @@ The defaults publish nothing:
 |---|---|---|
 | API / dashboard outside the cluster | **nothing** | `ingress.enabled: true` (opt in per environment) — pair it with `ingress.tls` |
 | Service types | `ClusterIP` for api, frontend, ocr | setting `*.service.type: NodePort`/`LoadBalancer` publishes on every node / via a cloud LB — avoid outside dev |
-| Pod-to-pod reach to the backend | `networkPolicy.enabled: true` — only frontend pods may reach it | turning the policy *off* is the deliberate act, not the other way round |
 | Data-revealing routes through the proxy | `/reset`, `/test/*`, `/docs`, `/redoc`, `/openapi.json` → **403** at nginx | edit `frontend.configMap.conf`, and justify why |
 | Database | **not in this chart at all** | the platform/DB team provides the server; the chart only takes `database.*` connection values (§ README §3) |
 
@@ -118,11 +117,11 @@ ingress:
     nginx.ingress.kubernetes.io/auth-response-headers: "x-auth-request-user, x-auth-request-email"
 ```
 
-Layer (a) or (b) under (c): keep `ingress.enabled: false` wherever the app is not meant to be reachable at all, and leave `networkPolicy.enabled: true` (the default) so only frontend pods can reach the API inside the cluster.
+Layer (a) or (b) under (c): keep `ingress.enabled: false` wherever the app is not meant to be reachable at all.
 
 **Two routing rules that matter for all of the above:**
 
-- **Route everything through the frontend** (leave `ingress.paths` empty). If you add a path with `service: backend`, that path goes straight to the backend Service and **skips the frontend gate in (a)/(b)** — and it also needs the ingress controller admitted by the NetworkPolicy, so the chart now fails the render unless `networkPolicy.ingressController.namespace` is set.
+- **Route everything through the frontend** (leave `ingress.paths` empty). If you add a path with `service: backend`, that path goes straight to the backend Service and **skips the frontend gate in (a)/(b)**.
 - Keep `/health` and `/ready` on the frontend path (they are served ungated on purpose) so the ingress controller or an external monitor can still probe the app.
 
 ## 2. Prerequisites checklist — questions for the DevOps team
@@ -202,10 +201,9 @@ Either way: **the only thing the app team should routinely change in the DevOps 
 4. **Readiness probe choice.** `/ready` genuinely probes db + embedding + **LLM reachability**. That's great for honesty but means a flaky LLM endpoint takes your pod out of the Service. Chart default: readiness on `/health`, switch to `/ready` (prod overlay shows how) only after confirming stable LLM egress. Liveness must stay `/health` — never `/ready` (an LLM outage must not restart-loop the pod).
 5. **Slow requests.** A `/classify` call runs a multi-stage LLM cascade — can take tens of seconds. The chart's nginx ConfigMap sets `proxy_read_timeout 300s`; the prod ingress overlay sets the same on the ingress controller. If DevOps has a global LB timeout < 300s, raise it for this host or route external systems to the **async** API (`POST /api/v1/incidents` → 202 + poll), which was built exactly to avoid long-held connections.
 6. **First startup DDL.** The app creates its own schema (`CREATE EXTENSION vector`, `CREATE TABLE IF NOT EXISTS ...`) at boot. With managed PG, the app role needs those privileges at least once; afterwards it's idempotent. Also run `scripts/migrate_classifier_v3.py up` once against a fresh prod DB (or verify the app-level DDL covers v3 columns on your version).
-7. **Dangerous endpoints exposed.** `POST /reset` deletes ALL incidents and `/test/llm` spends LLM tokens; both used to sit on the same unauthenticated surface as the dashboard endpoints (only `/api/v1/*` had bearer auth). In compose this was fine (private host); behind a real ingress it is not. **This is now closed in three layers:**
+7. **Dangerous endpoints exposed.** `POST /reset` deletes ALL incidents and `/test/llm` spends LLM tokens; both used to sit on the same unauthenticated surface as the dashboard endpoints (only `/api/v1/*` had bearer auth). In compose this was fine (private host); behind a real ingress it is not. **This is now closed in two layers:**
    - **App-level (the real fix):** both endpoints require the same Bearer token as `/api/v1/*` (`INTEGRATION_API_TOKEN`, via `api/auth.py` → `require_token`). This works regardless of network path — ingress, pod-to-pod, port-forward, anything. 401 without a valid token. While testing on a machine of your own you can set `AUTH_OPTIONAL=1` (in `backend.env`) to make that guard optional: every guarded endpoint then accepts a request with no token — or a stale one, which is what saves you when a token is rotated out from under you — and `/admin/*` opens too. It logs a loud warning at startup; leave it off for anything shared or exposed.
    - **nginx (chart default):** the frontend ConfigMap hard-blocks `location = /reset` and `location = /test/llm` with `return 403` (exact-match locations that win over the proxy regex and the SPA fallback) — defense in depth, zero cost.
-   - **NetworkPolicy (ON by default):** `networkPolicy.enabled: true` restricts api ingress to the frontend pods only (kubelet probes + `kubectl port-forward` bypass it, so smoke tests still work). If you run `frontend.enabled=false` you MUST set `networkPolicy.ingressController.namespace` or Helm fails the render — the api would otherwise be unreachable.
    - Residuals: `/reset`, `/test/llm`, the whole `/test/` surface and the schema/docs routes (`/docs`, `/redoc`, `/openapi.json`) are now blocked with 403 in the chart's nginx config, so they are not reachable from outside even if the host is exposed. In-cluster access to the backend Service is fine (that's how smoke tests run); just never port-forward the pod with `--address 0.0.0.0`.
 8. **CORS is `*`** in the app. Harmless while the frontend proxies same-origin, but tighten it (env-configurable origin) before exposing the API host directly to browsers.
 9. **SMAX polling in K8s:** leave `TICKETING_API_TOKEN` empty until real SMAX creds exist — the app logs one line and idles (by design, no crash-loop). The `integrations/smax` connector keeps its own configuration and its own service definition (`.env.example`, `docker-compose.smax.yml`, README — all inside that folder), so nothing SMAX-specific belongs in this chart's values. If the platform team wants it as a cluster workload rather than a sidecar process next to the app, the manifest belongs in that folder too and should reference the same `SMAX_*` / `CLASSIFIER_API_*` names rather than inventing chart-side copies of them.
@@ -262,4 +260,4 @@ A bearer-auth admin page (same token as `/api/v1/*`) at `/admin.html` covering:
 - **Run tests** — in-container `smoke_test.sh` (against the live API) and the full `pytest` suite (against `ai_incidents_test`). Requires `tests/`, `scripts/`, `smoke_test.sh` mounted into the api container (compose does this) and pytest in the image (Dockerfile installs it).
 - **Danger zone** — full DB reset (incidents + clusters + review queue + ingestion jobs).
 
-Notes for prod: `/admin/*` is proxied by nginx (the values-driven ConfigMap regex includes `admin/`), so the same ingress-level protections apply — the bearer token is the only auth, keep the host internal or rely on the NetworkPolicy backstop. The test-runner endpoints execute subprocesses in the container; keep them behind the token (they already are).
+Notes for prod: `/admin/*` is proxied by nginx (the values-driven ConfigMap regex includes `admin/`), so the same ingress-level protections apply — the bearer token is the only auth, keep the host internal. The test-runner endpoints execute subprocesses in the container; keep them behind the token (they already are).

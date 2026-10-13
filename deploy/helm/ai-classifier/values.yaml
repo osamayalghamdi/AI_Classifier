@@ -18,11 +18,6 @@ image:
 imagePullSecrets: []
 #  - name: regcred
 
-serviceAccount:
-  create: true
-  name: ""
-  annotations: {}
-
 # ── API (FastAPI) ─────────────────────────────────────────────────────
 backend:
   # Keep 1: the process runs the in-process background workers (sync
@@ -247,8 +242,8 @@ database:
 
 # ── Ingress (EXTERNAL EXPOSURE — opt-in, OFF by default) ──────────────
 # Enabling this publishes the app outside the cluster. Only turn it on in
-# an environment that is *meant* to be reachable, and pair it with TLS and
-# networkPolicy. Left off, the app is reachable in-cluster only — smoke
+# an environment that is *meant* to be reachable, and pair it with TLS.
+# Left off, the app is reachable in-cluster only — smoke
 # tests use `kubectl port-forward`, which never leaves the node.
 ingress:
   enabled: false
@@ -281,16 +276,3 @@ extraManifests: []
 #        name: '{{ include "ai-classifier.fullname" . }}-backend'
 #      minReplicas: 1
 #      maxReplicas: 4
-
-# ── NetworkPolicy (ON by default — least privilege) ───────────────────
-# Only the frontend pods may reach the backend pods; nothing else in the
-# cluster gets a route to them at L3/L4. kubelet probes and
-# `kubectl port-forward` come from the node, not a pod, so they still work
-# (that is how smoke tests run).
-# If frontend.enabled=false you MUST also set ingressController.namespace,
-# or the api becomes unreachable — the chart fails the render rather than
-# deploying something silently broken.
-networkPolicy:
-  enabled: true
-  ingressController:
-    namespace: ""             # e.g. ingress-nginx

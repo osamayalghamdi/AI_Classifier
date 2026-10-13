@@ -53,11 +53,3 @@ backend:
 #     kind: ServiceMonitor
 #     metadata:
 #       name: '{{ include "ai-classifier.fullname" . }}-backend'
-
-# Hardening backstop: only the frontend may reach the api at the network
-# layer (app-level bearer auth on /reset + /test/llm is the real control;
-# this blocks everything else pod→api). kubelet probes + port-forward
-# bypass it, so smoke tests still work. Flip off temporarily if the first
-# deploy shows unexpected connectivity issues.
-networkPolicy:
-  enabled: true
