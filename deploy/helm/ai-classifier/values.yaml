@@ -126,14 +126,6 @@ backend:
       cpu: "2"
       memory: "5Gi"
 
-  # Runs as the unprivileged `app` user (UID 1000, Dockerfile).
-  securityContext:
-    runAsNonRoot: true
-    runAsUser: 1000
-    allowPrivilegeEscalation: false
-    capabilities: { drop: ["ALL"] }
-    seccompProfile: { type: RuntimeDefault }
-
   # /ready checks db + embedding + llm; nothing loads locally, so startup is quick.
   probes:
     startup:   { path: /health, failureThreshold: 30, periodSeconds: 10 }

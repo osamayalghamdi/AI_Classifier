@@ -25,13 +25,13 @@ Every field of every object this chart renders — Service, ConfigMap, Deploymen
 |---|---|
 | Service type / port / annotations | `api.service.*`, `frontend.service.*`, `ocr.service.*` |
 | nginx ConfigMap (the whole file body) | `frontend.configMap.conf` — rendered with `tpl`, so chart helpers (`{{ include "ai-classifier.fullname" . }}`) work inside it |
-| Deployment shape | `backend.strategy`, `backend.podAnnotations`, `backend.nodeSelector`, `backend.extraEnv` (plus `replicas`, `resources`, `probes`, `securityContext`, `env` for all components) |
+| Deployment shape | `backend.strategy`, `backend.podAnnotations`, `backend.nodeSelector`, `backend.extraEnv` (plus `replicas`, `resources`, `probes`, `env` for all components) |
 | Ingress routing | `ingress.host`, `ingress.paths`, `ingress.className`, `ingress.annotations`, `ingress.tls` |
 | Third-party / companion objects (HPA, ServiceMonitor, ExternalSecret, CRs …) | `extraManifests` (each entry rendered with `tpl`) |
 
 The surface is deliberately small: the chart's original fields plus exactly the five things above. Anything else that isn't here was removed on purpose — if an environment needs another knob, it's a few-line addition.
 
-> **Gotcha:** an overlay that sets a default map to `{}` does *not* clear it — Helm deep-merges. To actually remove (say) the api `securityContext` in one environment, set it to `null` (`--set backend.securityContext=null`), then confirm with `kubectl get deploy … -o jsonpath='{.spec.template.spec.containers[0].securityContext}'`.
+> **Gotcha:** an overlay that sets a default map to `{}` does *not* clear it — Helm deep-merges. To actually clear a map (say `backend.podAnnotations`) in one environment, set it to `null` (`--set backend.podAnnotations=null`), then confirm with `kubectl get deploy … -o jsonpath='{.spec.template.metadata.annotations}'`.
 
 Third-party infrastructure is **not** shipped in this chart:
 

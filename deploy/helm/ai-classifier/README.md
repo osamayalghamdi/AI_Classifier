@@ -179,7 +179,6 @@ Notes for whoever builds and deploys:
 | `backend.extraEnv` | `[]` | Extra env (`{name, value}` or `valueFrom`) |
 | `backend.existingSecret` | `ai-classifier-secrets` | `LLM_API_KEY`, `INTEGRATION_API_TOKEN`, `ADMIN_TOKEN`, `TICKETING_API_TOKEN`, `EMBEDDING_API_KEY` (all optional except `LLM_API_KEY`) |
 | `backend.resources` | 250m/512Mi → 2/5Gi | No model in the image — the LLM, embeddings and OCR run on external endpoints |
-| `backend.securityContext` | non-root, no caps | Runs as UID 1000 |
 | `backend.probes.*` | `/health` | Switch readiness to `/ready` once LLM egress is confirmed |
 | `backend.strategy` | `Recreate` | No overlap between replicas (worker duplication) |
 | `backend.podAnnotations` / `.nodeSelector` | `{}` | Scheduling hints (e.g. pin to a node pool) |
@@ -252,7 +251,6 @@ These exist because each one otherwise fails *silently* at runtime.
 | `/ready` reports `llm: error` | LLM egress blocked from the cluster or `LLM_API_KEY` missing — `/health` and the dashboard still work |
 | **401/403** on the dashboard | `frontend.accessControl` is on: authenticate, or your source IP is outside `allowlist` |
 | readiness flapping | readiness is pointing at `/ready` while LLM egress is flaky — keep it on `/health` |
-| pods killed by PodSecurity | the backend image runs as UID 1000; frontend is plain nginx |
 
 ---
 

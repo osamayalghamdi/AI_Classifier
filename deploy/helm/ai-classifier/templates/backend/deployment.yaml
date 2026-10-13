@@ -34,10 +34,6 @@ spec:
         - name: api
           image: {{ include "ai-classifier.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          {{- with .Values.backend.securityContext }}
-          securityContext:
-            {{- toYaml . | nindent 12 }}
-          {{- end }}
           ports:
             - name: http
               containerPort: {{ .Values.backend.port }}
