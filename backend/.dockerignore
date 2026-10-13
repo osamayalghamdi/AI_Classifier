@@ -1,0 +1,26 @@
+# Build context for the backend image is `backend/` (NOT the repo root):
+#   docker build -f backend/Dockerfile -t REGISTRY/ai-classifier:<tag> backend/
+# The Dockerfile COPYs only pyproject.toml, ai_classification/,
+# integrations/ and entrypoint.sh — everything else below stays out of the
+# context so the upload stays small and secrets never reach the daemon.
+
+# Python / venv
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+
+# Secrets & env — never send these to the build daemon
+.env
+.env*
+
+# Not part of the runtime image (the Dockerfile never COPYs them)
+tests/
+docs/
+simulator/
+legacy/
+ocr/
+evaluation/
+scripts/
+uv.lock
+smoke_test.sh

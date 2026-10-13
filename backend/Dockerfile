@@ -6,6 +6,12 @@
 #     OCR_SERVICE_URL                               → attachment text
 # There is deliberately no torch, no transformers, no sentence-transformers
 # and no model cache in here — the build asserts it (see the guard below).
+#
+# Build — the context MUST be `backend/` (it contains pyproject.toml,
+# ai_classification/, integrations/ and entrypoint.sh). Building from the repo
+# root fails with `"/ai_classification": not found`:
+#   docker build -f backend/Dockerfile -t REGISTRY/ai-classifier:<tag> backend/
+#   # or via compose (already set to `build: ./backend`): docker compose build api
 FROM python:3.12-slim
 
 WORKDIR /app
