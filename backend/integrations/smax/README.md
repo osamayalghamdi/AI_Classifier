@@ -65,6 +65,41 @@ incidents `{source_reference, title, description, status?, created_at?, updated_
 — raw SMAX payloads (keys like `ticket_id`/`title`) are also accepted and
 translated with `from_smax`.
 
+## First live run (nothing to break)
+
+Work up in four steps; each one is safe to repeat.
+
+```bash
+# 1. configuration — no network, no credentials needed
+python -m integrations.smax.main --check
+
+# 2. ONE incident: proves login, the search filter and the field mapping.
+#    Submits nothing, writes nothing. Add --probe-download to fetch the files
+#    as well, or --probe-raw to see the raw entity (to verify field names).
+python -m integrations.smax.main --probe 100001
+
+# 3. one REAL ticket, capped, write-back still dry-run
+SMAX_MAX_INCIDENTS_PER_TICK=1 python -m integrations.smax.main --once --limit 1
+
+# 4. normal operation
+python -m integrations.smax.main
+```
+
+Why it is hard to break:
+
+- **Re-running is always safe.** The classifier dedupes by `source_reference`, so
+  a ticket that was already ingested is matched, not duplicated.
+- **A cap defers, it never drops.** The stamp stops *before* the tickets held
+  back, so the next tick resumes there; nothing is skipped and nothing is
+  re-sent twice.
+- **One bad ticket cannot lose the batch.** Unreadable attachment metadata, a
+  failed download, a missing `Id` — each is logged and skipped; the rest of the
+  tick continues.
+- **A failed listing never advances the stamp**, so the worst case is re-listing.
+- **SMAX is never written to.** Write-back has no documented endpoint, so it
+  logs the payload it would post and posts nothing.
+- Every mode exits `1` with a one-line message instead of a traceback.
+
 ## Configuration
 
 **Everything SMAX-specific lives in this folder** — nothing belongs in the app's

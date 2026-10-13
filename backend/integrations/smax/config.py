@@ -75,6 +75,14 @@ class Settings:
     # Attachments: only the bytes we are willing to carry through the ingest
     # API (base64) are downloaded; larger ones are recorded by name.
     smax_max_attachment_mb: float = float(_env("SMAX_MAX_ATTACHMENT_MB", "15"))
+    # Read timeout for one SMAX request (seconds). A big search page can be slow;
+    # the handover's example allows 120s.
+    smax_timeout_s: float = float(_env("SMAX_TIMEOUT_S", "60"))
+    # Safety cap on submissions per poll tick. 0 = no cap (default). Set it for a
+    # first live run: the connector then advances its stamp only to the last
+    # ticket it actually sent, so the remainder is picked up next tick — nothing
+    # is dropped, and a backlog cannot hit the classifier all at once.
+    smax_max_incidents_per_tick: int = int(_env("SMAX_MAX_INCIDENTS_PER_TICK", "0"))
     # Write-back gate: when true (DEFAULT), the connector only LOGS the
     # suggestion payload it would post to SMAX — nothing is written.
     smax_dry_run: bool = _truthy(_env("SMAX_DRY_RUN", "true"))
@@ -135,6 +143,8 @@ class Settings:
             "smax_entity_field": self.smax_entity_field,
             "smax_utc_offset_hours": self.smax_utc_offset_hours,
             "smax_max_attachment_mb": self.smax_max_attachment_mb,
+            "smax_timeout_s": self.smax_timeout_s,
+            "smax_max_incidents_per_tick": self.smax_max_incidents_per_tick,
             "smax_dry_run": self.smax_dry_run,
             "smax_poll_s": self.smax_poll_s,
             "smax_sync_stamp_path": self.smax_sync_stamp_path,
