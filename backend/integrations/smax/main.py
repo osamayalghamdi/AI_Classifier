@@ -125,7 +125,27 @@ def _build_classifier_client() -> ClassifierClient:
                             token=settings.classifier_api_token)
 
 
-def _probe(reference: str, *, raw: bool, download: bool) -> int:
+def _redacted(value):
+    """Replace every value with its shape — keys and types survive, content does not.
+
+    Used by `--probe-raw --probe-redact` so the entity structure can be shared
+    (e.g. to fix a field name) without exposing ticket text or file names.
+    """
+    if isinstance(value, dict):
+        return {k: _redacted(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_redacted(value[0]), f"… +{len(value) - 1} more"] if value else []
+    if isinstance(value, str):
+        # Field NAMES matter, values do not: show the type and the length.
+        return f"<str:{len(value)}>"
+    if isinstance(value, bool):
+        return f"<bool:{value}>"
+    if isinstance(value, (int, float)):
+        return f"<num:{value}>"
+    return value
+
+
+def _probe(reference: str, *, raw: bool, download: bool, redact: bool = False) -> int:
     """Fetch ONE incident and show what would be sent — no submission at all.
 
     Proves, against the real tenant: authentication, the search filter, the
@@ -148,8 +168,15 @@ def _probe(reference: str, *, raw: bool, download: bool) -> int:
 
     incident = from_smax(entity)
     if raw:
-        print("--- raw SMAX entity (contains ticket text) ---")
-        print(json.dumps(entity, indent=2, ensure_ascii=False, sort_keys=True))
+        title = "raw SMAX entity, VALUES HIDDEN (keys + shapes)" if redact \
+            else "raw SMAX entity (contains ticket text — do not paste this publicly)"
+        print(f"--- {title} ---")
+        print(json.dumps(_redacted(entity) if redact else entity,
+                         indent=2, ensure_ascii=False, sort_keys=True))
+        if redact:
+            print("(share this block: it shows every field name the tenant sends)")
+    if not incident.source_reference and not raw:
+        print("WARNING: no Id on this entity — a real run would SKIP it.", file=sys.stderr)
 
     description = incident.description or ""
     print("--- mapped ---")
@@ -217,6 +244,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="with --probe: also print the raw SMAX entity (contains ticket text)",
     )
     parser.add_argument(
+        "--probe-redact", action="store_true",
+        help="with --probe: print the raw entity with VALUES HIDDEN (keys and shapes "
+             "only) — safe to share when a field name needs fixing",
+    )
+    parser.add_argument(
         "--probe-download", action="store_true",
         help="with --probe: download the attachments too (proves the file service works)",
     )
@@ -268,7 +300,8 @@ def main(argv: list[str] | None = None) -> int:
 
 def _dispatch(args) -> int:
     if args.probe:
-        return _probe(args.probe, raw=args.probe_raw, download=args.probe_download)
+        return _probe(args.probe, raw=args.probe_raw or args.probe_redact,
+                      download=args.probe_download, redact=args.probe_redact)
 
     if args.backfill:
         return _run_backfill(args.backfill, args.since)

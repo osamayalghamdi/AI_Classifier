@@ -129,6 +129,29 @@ class TestProbe:
         assert smax_main._probe("NOPE", raw=False, download=False) == 1
         assert "no incident with Id" in capsys.readouterr().err
 
+    def test_probe_redact_keeps_keys_and_hides_values(
+            self, fake_smax, smax_client, monkeypatch, capsys):
+        """`--probe-raw --probe-redact` is the shareable artefact: field names
+        visible, ticket text and file names gone."""
+        fake_smax.tickets = [{
+            "Id": "100001", "DisplayLabel": "SECRET TITLE", "Description": "secret body",
+            "Status": "active", "EmsCreationTime": 1735689600000,
+            "LastUpdateTime": 1735689600000,
+            "IncidentAttachments": '[{"id": "f1", "file_name": "secret.pdf", "size": 5}]',
+        }]
+        monkeypatch.setattr(smax_main, "_build_smax_client", lambda: smax_client)
+        monkeypatch.setattr(smax_main, "settings", SimpleNamespace(
+            smax_base="https://smax.test.local", smax_tenant="t1",
+            classifier_api_url="http://classifier.invalid",
+            require_smax=lambda: None))
+
+        assert smax_main._probe("100001", raw=True, download=False, redact=True) == 0
+        out = capsys.readouterr().out
+        for key in ("DisplayLabel", "Description", "IncidentAttachments", "LastUpdateTime"):
+            assert key in out                       # the structure is the point
+        for secret in ("SECRET TITLE", "secret body", "secret.pdf"):
+            assert secret not in out                # the content never is
+
     def test_check_mode_needs_no_credentials(self, capsys):
         assert smax_main.main(["--check"]) == 0
         assert "smax_base" in capsys.readouterr().out
