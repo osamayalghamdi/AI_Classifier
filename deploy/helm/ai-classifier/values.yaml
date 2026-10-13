@@ -52,6 +52,13 @@ backend:
     OCR_ENABLED: "1"
     OCR_SERVICE_URL: ""        # empty = attachments recorded by name only;
                                # set your OCR service URL to transcribe them
+    # Attachment understanding (vision reader) — another EXTERNAL endpoint;
+    # the image ships no model. URL/model are values (empty = feature off, no
+    # provider is ever defaulted); the key comes from `existingSecret`.
+    ATTACHMENTS_ENABLED: "0"
+    ATTACHMENT_READER_MODE: "vision_llm"
+    ATTACHMENT_VISION_API_URL: ""
+    ATTACHMENT_VISION_MODEL: ""
     SIMILARITY_THRESHOLD: "0.35"
     SYNC_INTERVAL: "60"
     TICKETING_SOURCE: "real"
@@ -64,9 +71,9 @@ backend:
     INTEGRATION_RETRY_BASE_S: "2"
   extraEnv: []               # [{name, value} | {name, valueFrom}]
 
-  # Secret holding LLM_API_KEY, INTEGRATION_API_TOKEN, ADMIN_TOKEN,
-  # TICKETING_API_TOKEN. The DB password belongs to the database Secret
-  # (database.existingSecret), not here.
+  # Secret holding LLM_API_KEY, EMBEDDING_API_KEY, ATTACHMENT_VISION_API_KEY,
+  # INTEGRATION_API_TOKEN, ADMIN_TOKEN, TICKETING_API_TOKEN. The DB password
+  # belongs to the database Secret (database.existingSecret), not here.
   existingSecret: "ai-classifier-secrets"
 
   resources:

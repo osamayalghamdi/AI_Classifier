@@ -73,6 +73,14 @@ spec:
                   name: {{ .Values.backend.existingSecret }}
                   key: EMBEDDING_API_KEY
                   optional: true
+            # Attachment vision key — optional: only needed when
+            # ATTACHMENTS_ENABLED=1 (default off, so a fresh install is quiet).
+            - name: ATTACHMENT_VISION_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.backend.existingSecret }}
+                  key: ATTACHMENT_VISION_API_KEY
+                  optional: true
             - name: INTEGRATION_API_TOKEN
               valueFrom:
                 secretKeyRef:
