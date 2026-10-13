@@ -357,5 +357,35 @@ class Settings:
     # Set CLUSTER_AUTO_ACTIVATE=0 to restore the human approval gate.
     cluster_auto_activate: bool = _is_truthy(getenv("CLUSTER_AUTO_ACTIVATE", "1"))
 
+    # ── Attachment understanding (universal layers) ─────────────────────
+    # The reader reads EVERYTHING from the environment — no provider, model or
+    # URL is ever baked in, and URL/model/key have NO defaults: a missing value
+    # while the feature is on means "text-only" (one loud startup warning),
+    # never a crash. Phase 1 ships the reader + schema + measurement tools;
+    # the flags below that are not read yet are defined now so .env.example can
+    # carry them.
+    attachments_enabled: bool = _is_truthy(getenv("ATTACHMENTS_ENABLED", "0"))
+    attachment_reader_mode: str = getenv("ATTACHMENT_READER_MODE", "vision_llm")
+    attachment_vision_api_url: str = getenv("ATTACHMENT_VISION_API_URL", "")
+    attachment_vision_model: str = getenv("ATTACHMENT_VISION_MODEL", "")
+    attachment_vision_api_key: str = getenv("ATTACHMENT_VISION_API_KEY", "")
+    # ocr_then_llm is a stub in this phase (raises NotImplementedError).
+    attachment_ocr_api_url: str = getenv("ATTACHMENT_OCR_API_URL", "")
+    attachment_ocr_api_key: str = getenv("ATTACHMENT_OCR_API_KEY", "")
+    attachment_timeout_s: float = float(getenv("ATTACHMENT_TIMEOUT_S", "45"))
+    attachment_max_per_ticket: int = int(getenv("ATTACHMENT_MAX_PER_TICKET", "5"))
+    attachment_max_bytes: int = int(getenv("ATTACHMENT_MAX_BYTES", "10485760"))
+    attachment_max_pdf_pages: int = int(getenv("ATTACHMENT_MAX_PDF_PAGES", "5"))
+    attachment_concurrency: int = int(getenv("ATTACHMENT_CONCURRENCY", "2"))
+    attachment_in_prompt: bool = _is_truthy(getenv("ATTACHMENT_IN_PROMPT", "1"))
+    attachment_linking: bool = _is_truthy(getenv("ATTACHMENT_LINKING", "0"))
+
+    def attachment_reader_configured(self) -> bool:
+        """True when the vision reader has its three values. The OCR keys are
+        ignored — ocr_then_llm is not implemented in this phase."""
+        return bool(self.attachment_vision_api_url
+                    and self.attachment_vision_model
+                    and self.attachment_vision_api_key)
+
 
 settings = Settings()

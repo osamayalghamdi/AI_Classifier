@@ -79,6 +79,12 @@ async def lifespan(app: FastAPI):
             "/test/*, /reset and /admin/* accept a request with no token or a stale "
             "one. Convenient on your own machine; never on a shared or exposed host."
         )
+    if settings.attachments_enabled and not settings.attachment_reader_configured():
+        _log.warning(
+            "ATTACHMENTS_ENABLED=1 but the vision reader is not configured "
+            "(ATTACHMENT_VISION_API_URL / ATTACHMENT_VISION_MODEL / "
+            "ATTACHMENT_VISION_API_KEY missing) — running text-only."
+        )
     deadline = time.monotonic() + settings.store_setup_timeout_s
     store.setup()
     while not store.ready and time.monotonic() < deadline:

@@ -1,0 +1,3 @@
+file,page,error_code,object_ids,has_signal
+example-screenshot.png,المحفظة (Wallet),,INV-55821,1
+example-receipt.pdf,,,TX-778201;G-1182,0
