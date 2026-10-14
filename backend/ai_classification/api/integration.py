@@ -25,6 +25,7 @@ from ai_classification.services.jobs.integration.schemas import (
 )
 from ai_classification.seams.port import Incident
 from ai_classification.seams.pipeline import persist_result, process_incident
+from ai_classification.shared.model_config import classifier_blocking, summary as model_config_summary
 
 _log = logging.getLogger(__name__)
 
@@ -164,6 +165,11 @@ def tick_worker(limit: int = Query(default=10, ge=1, le=100)):
 
 # ── E4: readiness — exempt from auth, checks reported individually ────
 # App-level (no /api/v1 prefix) so it sits next to /health.
+#
+# An unconfigured MODEL never makes the host unready (that is the point of the
+# model-configuration report): /ready is 503 only when the DB is down or the
+# embedding capability is genuinely unavailable, and the `models` block carries
+# the full list of what is missing, what to set, and what degrades meanwhile.
 
 ready_router = APIRouter(tags=["integration"])
 
@@ -186,13 +192,20 @@ def readiness(llm: bool = Query(True, description="false = skip the live LLM pro
         _log.warning("/ready db check failed: %s", exc)
         checks["db"] = f"error: {type(exc).__name__}"
 
-    # Embedding model
+    # Embedding capability — asks the store's own public probe, which knows the
+    # difference between a local model (loaded = ok) and an external endpoint
+    # (configured = ok). Reading store._model directly reported "model not
+    # loaded" for every external-embedding deployment, i.e. a permanent 503
+    # that named no fix.
     try:
         from ai_classification.shared.store import store
-        if store._model is None:
-            checks["embedding"] = "error: model not loaded"
+        if not settings.embedding_api_url and not store.embedding_provider_is_local():
+            checks["embedding"] = "error: embeddings are external but EMBEDDING_API_URL is unset"
+        elif store.embedding_ready():
+            checks["embedding"] = ("ok" if store.embedding_provider_is_local()
+                                   else f"ok: external {settings.embedding_api_url}")
         else:
-            checks["embedding"] = "ok"
+            checks["embedding"] = "error: the local embedding model is not loaded"
     except Exception as exc:  # noqa: BLE001
         _log.warning("/ready embedding check failed: %s", exc)
         checks["embedding"] = f"error: {type(exc).__name__}"
@@ -200,8 +213,14 @@ def readiness(llm: bool = Query(True, description="false = skip the live LLM pro
     # LLM reachability — a real 1-token probe with a short timeout.
     # Skippable (?llm=false): a k8s probe hitting this every 10s would spend
     # LLM calls and flap the pod whenever the provider is slow.
+    # When the classifier is not CONFIGURED the probe is pointless (it would
+    # time out against a placeholder endpoint): report why, name the fix, and
+    # do not spend a call.
+    blocked = classifier_blocking(settings)
     if not llm:
         checks["llm"] = "skipped"
+    elif blocked is not None:
+        checks["llm"] = f"not configured: {blocked.summary} — set {' / '.join(blocked.env)}"
     else:
         try:
             from litellm import completion
@@ -221,12 +240,13 @@ def readiness(llm: bool = Query(True, description="false = skip the live LLM pro
         except Exception as exc:  # noqa: BLE001
             checks["llm"] = f"unreachable: {type(exc).__name__}"
 
-    degraded = checks.get("db") != "ok" or checks.get("embedding") != "ok"
+    degraded = checks.get("db") != "ok" or not checks.get("embedding", "").startswith("ok")
     status = "ok" if (not degraded and checks.get("llm") in ("ok", "skipped")) else (
         "degraded" if not degraded else "unhealthy"
     )
     code = 200 if not degraded else 503
-    return _json_response(code, {"status": status, "checks": checks})
+    body = {"status": status, "checks": checks, "models": model_config_summary(settings)}
+    return _json_response(code, body)
 
 
 def _json_response(code: int, body: dict):

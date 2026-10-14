@@ -9,7 +9,6 @@ startup in ai_classification/shared/store.py — both moved here verbatim
 Pipeline position: 50_api — FastAPI app."""
 
 import logging
-import os
 import time
 from contextlib import asynccontextmanager
 
@@ -29,6 +28,7 @@ from ai_classification.services.jobs.sync import start_sync_worker
 from ai_classification.services.review.cluster_proposal_routes import router as cluster_proposal_router
 from ai_classification.services.review.taxonomy_gaps_routes import router as taxonomy_gaps_router
 from ai_classification.shared.config import settings
+from ai_classification.shared.model_config import inspect_model_config, report_lines
 import ai_classification.shared.store as store_mod
 
 _log = logging.getLogger(__name__)
@@ -56,34 +56,35 @@ async def lifespan(app: FastAPI):
         settings.pg_database,
         settings.embedding_model_name,
     )
-    # D3: fail loud on missing/invalid LLM config — never a silent fallback
-    # to the ollama default in config.py.
-    if not os.environ.get("LLM_MODEL"):
-        raise RuntimeError(
-            "LLM_MODEL is not set. Export LLM_MODEL explicitly (e.g. "
-            "LLM_MODEL=openrouter/qwen/qwen3.6-35b-a3b) — refusing to start "
-            "with an implicit default model."
+    # D3 (revised): a missing model is a CONFIGURATION FACT, not a reason to
+    # die. The app is hosted with whatever IS configured and the report below
+    # names every gap, the variables that fix it, and what still works until
+    # they are set. Refusing to start used to turn "set one env var" into an
+    # exit loop whose single line scrolled away with the pod.
+    issues = inspect_model_config(settings)
+    if issues:
+        lines = report_lines(issues)
+        _log.warning("MODEL CONFIGURATION INCOMPLETE — %s", lines[0])
+        for line in lines[1:]:
+            _log.warning("%s", line)
+        _log.warning(
+            "Hosting anyway: the dashboard, ingest, review and the E1-E9 API are up; "
+            "classification / OCR / similarity degrade until the values above are set. "
+            "GET /ready serves this same list."
         )
-    if settings.llm_model.startswith("openrouter/") and not (settings.llm_api_key or "").strip():
-        raise RuntimeError(
-            "LLM_API_KEY is required when LLM_MODEL starts with 'openrouter/' — "
-            "export LLM_API_KEY. Refusing to start with an unauthenticated LLM config."
+    else:
+        active = settings.active_classifier_model
+        _log.info(
+            "Model configuration complete — classifier=%s (base=%s), embeddings=%s",
+            active.model_id if active else settings.llm_model,
+            (active.api_base if active else settings.llm_api_base) or "(provider default)",
+            settings.embedding_api_url or f"local:{settings.embedding_model_name}",
         )
-    # Retry while Postgres comes up (k8s starts the pod and the DB together;
-    # compose's depends_on has no k8s equivalent). A store that never comes
-    # up drops every write silently, so by default refuse to start — the
-    # orchestrator restarts the pod and the failure is visible.
     if settings.auth_optional:
         _log.warning(
             "AUTH_OPTIONAL=1 — credentials are NOT required: /api/v1/*, /classify, "
             "/test/*, /reset and /admin/* accept a request with no token or a stale "
             "one. Convenient on your own machine; never on a shared or exposed host."
-        )
-    if settings.attachments_enabled and not settings.attachment_reader_configured():
-        _log.warning(
-            "ATTACHMENTS_ENABLED=1 but the vision reader is not configured "
-            "(ATTACHMENT_VISION_API_URL / ATTACHMENT_VISION_MODEL / "
-            "ATTACHMENT_VISION_API_KEY missing) — running text-only."
         )
     deadline = time.monotonic() + settings.store_setup_timeout_s
     store.setup()

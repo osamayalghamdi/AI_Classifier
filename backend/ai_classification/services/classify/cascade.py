@@ -5,6 +5,7 @@ failure degrades to the generic fallback.
 
 import logging
 import re
+import threading
 
 from ai_classification.domain.models import ClassificationResult, OFFERING_GAP_SENTINEL
 from ai_classification.domain.taxonomy import (
@@ -44,6 +45,36 @@ from ai_classification.services.classify.verification import (
 
 
 _log = logging.getLogger(__name__)
+
+
+# ── The last stage failure, per thread ────────────────────────────────
+# The cascade degrades instead of raising, and the fallback used to name only
+# the stage that gave up ("service selection failed") — which says nothing when
+# the real reason was a 402, an unreachable host, or no model being configured
+# at all. Every failing stage records its cause here and `_cascade_fallback`
+# quotes it, so the ticket's own record carries WHY. Thread-local because
+# classification runs in worker threads.
+
+
+class _StageErrors(threading.local):
+    text: str = ""
+
+
+_STAGE_ERROR = _StageErrors()
+
+
+def _note_stage_error(text) -> None:
+    """Record why a stage failed (the next fallback on this thread quotes it)."""
+    _STAGE_ERROR.text = str(text)[:600]
+
+
+def _clear_stage_error() -> None:
+    """Start-of-classification reset so a stale reason can never be quoted."""
+    _STAGE_ERROR.text = ""
+
+
+def _last_stage_error() -> str:
+    return getattr(_STAGE_ERROR, "text", "")
 
 
 def _triage(title: str, description: str, *, incident_ref: str | None = None) -> TicketKind:
@@ -219,7 +250,16 @@ def _cascade_fallback(title: str, err: str, kind: TicketKind = TicketKind.incide
     ticket lands on the system's generic service. Throwing a known-good system
     away and calling the ticket "Other" is a wrong classification, not an
     honest failure — the system is evidence the pipeline already had.
+
+    ``err`` names the stage that gave up; the CAUSE recorded by that stage is
+    appended, because "service selection failed" on its own tells an operator
+    nothing when the real reason was a 402, an unreachable host or a missing
+    model. This text is what /ready-adjacent surfaces, the job record and the
+    dashboard show, so it has to carry the reason, not just the location.
     """
+    cause = _last_stage_error()
+    if cause and cause not in err:
+        err = f"{err} — cause: {cause}"
     resolved = system or AffectedSystem.other
     return ClassificationResult(
         affected_system=resolved,
@@ -315,6 +355,7 @@ def _stage_system_llm(
         ], max_tokens=600, temperature=temperature)
     except Exception as e:
         _log.warning("Cascade stage 1/3 (system) LLM call failed: %s", e)
+        _note_stage_error(e)
         _log_classification(incident_ref, log_stage, f"<stage call failed: {e}>", extra=log_extra)
         return None
     _log_classification(incident_ref, log_stage, raw, extra=log_extra)
@@ -354,6 +395,7 @@ def _stage_service_llm(
         ], max_tokens=600, temperature=temperature)
     except Exception as e:
         _log.warning("Cascade stage 2/3 (service) failed for system '%s': %s", system.value, e)
+        _note_stage_error(e)
         _log_classification(incident_ref, log_stage, f"<stage call failed: {e}>", extra=log_extra)
         return None
     _log_classification(incident_ref, log_stage, raw, extra=log_extra)
@@ -370,6 +412,7 @@ def _stage_service_llm(
                 "system '%s' (%s) — stored '%s'", system.value, e, repaired.service)
             return repaired
         _log.warning("Cascade stage 2/3 (service) failed for system '%s': %s", system.value, e)
+        _note_stage_error(e)
         return None
 
 
@@ -451,6 +494,7 @@ def _stage_offering_llm(
             ], max_tokens=600, temperature=temperature)
         except Exception as e:
             last_error = str(e)
+            _note_stage_error(e)
             _log.warning("Cascade stage 3/3 (offering) LLM call failed for service '%s': %s", key, last_error)
             _log_classification(incident_ref, log_stage, f"<stage call failed: {last_error}>",
                                 extra={**extra, "attempt": attempt})
@@ -460,6 +504,7 @@ def _stage_offering_llm(
             parsed, suggested = _parse_stage_offering(raw, key)
         except Exception as e:
             last_error = str(e)
+            _note_stage_error(e)
             _log.warning("Cascade stage 3/3 (offering) invalid for service '%s': %s", key, last_error)
             continue
         if parsed.service.endswith(OFFERING_GAP_SENTINEL):
@@ -693,6 +738,9 @@ def _classify_v3(
     # stays observable.
     max_retries = int(getattr(settings, "cascade_retries", 2) or 0)
     result = None
+    # Reset the per-thread stage cause: the fallback quotes it, and a stale one
+    # from an earlier ticket on this worker thread would be a lie.
+    _clear_stage_error()
     for attempt in range(max_retries + 1):
         if attempt:
             _log.warning(

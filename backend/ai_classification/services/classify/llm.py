@@ -140,8 +140,11 @@ def call_llm(
         entry = settings.active_classifier_model
         if entry is None:
             raise ValueError(
-                "No classifier model is ENABLED. Enable one via "
-                "MODEL_<NAME>_ENABLED=1 (admin console → Models) and restart."
+                "No classifier model is ENABLED — nothing can classify until one is. Set "
+                "LLM_MODEL=openai/qwen3.6 with BASE_URL + UNIVERSAL_API_KEY (company endpoint), or "
+                "LLM_MODEL=openrouter/qwen/qwen3.6-35b-a3b with LLM_API_KEY, or enable a catalog "
+                "entry directly with MODEL_<NAME>_ENABLED=1 (admin console → Models). GET /ready "
+                "lists every missing model value and what to set."
             )
 
     kwargs: dict = dict(

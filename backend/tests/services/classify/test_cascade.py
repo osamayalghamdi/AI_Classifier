@@ -517,3 +517,61 @@ class TestFlagOff:
         ))
         result = classifier_mod.classify("OldSM email down", "cannot send email")
         assert result.confidence == "high"  # a real taxonomy service keeps its confidence
+
+
+class TestStageCauseReachesTheRecord:
+    """The fallback must name WHY, not only WHERE.
+
+    "service selection failed" told an operator nothing when the real reason was
+    a 402 (no credits), an unreachable host, or no classifier model configured
+    at all. This reasoning text is what the job record, the dashboard and the
+    heal worker show, so the cause has to travel with it.
+    """
+
+    def test_a_failing_stage_contributes_its_cause(self, monkeypatch):
+        import ai_classification.services.classify.cascade as cascade_mod
+
+        def boom(*args, **kwargs):
+            raise RuntimeError("litellm.APIError: Insufficient credits (402)")
+
+        monkeypatch.setattr(cascade_mod, "call_llm", boom)
+        monkeypatch.setattr(classifier_mod, "settings", _settings_with(True))
+
+        result = classifier_mod.classify("random ticket", "no system hints here")
+        reasoning = result.reasoning or ""
+
+        assert result.classification_status == "failed"
+        assert reasoning.startswith("Classification failed after")   # E5 marker intact
+        assert "Insufficient credits" in reasoning                   # the cause
+        assert "system resolution failed" in reasoning               # and the stage
+
+    def test_an_unconfigured_model_reaches_the_record_verbatim(self, monkeypatch):
+        import ai_classification.services.classify.cascade as cascade_mod
+        import ai_classification.services.classify.llm as mod_llm
+
+        def no_model(*args, **kwargs):
+            raise ValueError("No classifier model is ENABLED — set LLM_MODEL=… (see /ready)")
+
+        monkeypatch.setattr(mod_llm, "completion", no_model)
+        monkeypatch.setattr(cascade_mod, "call_llm", no_model)
+        monkeypatch.setattr(classifier_mod, "settings", _settings_with(True))
+
+        result = classifier_mod.classify("random ticket", "no system hints here")
+        reasoning = result.reasoning or ""
+
+        assert result.classification_status == "failed"
+        assert "No classifier model is ENABLED" in reasoning
+        assert "LLM_MODEL" in reasoning
+
+    def test_a_stale_cause_is_never_quoted(self, monkeypatch):
+        """A worker thread classifies many tickets: ticket N+1 must not carry
+        ticket N's cause when its own failure recorded nothing."""
+        import ai_classification.services.classify.cascade as cascade_mod
+
+        cascade_mod._note_stage_error("a cause from an earlier ticket")
+        quoted = cascade_mod._cascade_fallback("t", "offering selection failed").reasoning or ""
+        assert "earlier ticket" in quoted                      # quoted when current
+        cascade_mod._clear_stage_error()
+        fresh = cascade_mod._cascade_fallback("t", "offering selection failed").reasoning or ""
+        assert "earlier ticket" not in fresh
+        assert fresh.endswith("Last error: offering selection failed")

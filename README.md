@@ -34,6 +34,11 @@ Rules of thumb:
   to an `openrouter/…` or `openai/…` id enables the matching entry
   automatically; anything else needs `MODEL_<NAME>_ENABLED=1`
   (`MODEL_<NAME>_ID` / `_API_BASE` / `_API_KEY` override that model's endpoint).
+- A missing model **does not stop the app**: it hosts with whatever is
+  configured and names every gap. The startup log carries the list (variable,
+  example value, what degrades meanwhile) and `GET /ready` serves the same as
+  `models.issues`. Only classification / OCR / similarity are affected — the
+  dashboard, ingest, review and the E1-E9 API stay up.
 - Attachment OCR is a **separate service** — point `backend.env.OCR_SERVICE_URL`
   at it (empty = attachments recorded by name only).
 - **Attachment understanding** (universal layers: where / objects / signals /

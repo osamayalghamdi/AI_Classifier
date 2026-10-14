@@ -120,7 +120,11 @@ curl -fsS localhost:8000/ready       # db + embedding + llm reachability
 curl -fsS localhost:8000/test/all    # full battery incl. a real classify call
 ```
 
-If `/test/all` shows `llm: error` → egress problem (checklist #2). If `db: error` → check PG secret/host. The app **fails loudly at startup** if `LLM_MODEL` is unset or an OpenRouter model has no key — that's by design (lifespan guard), not a chart bug.
+If `/test/all` shows `llm: error` → egress problem (checklist #2). If `db: error` → check PG secret/host. An
+unset `LLM_MODEL` (or an OpenRouter model with no key) **no longer stops the app**: it starts, logs the
+model-configuration report (each missing value, the variable that sets it, what degrades meanwhile) and serves
+that same list at `GET /ready` under `models.issues`. Classification jobs fail with `LLM_UNAVAILABLE` quoting
+it; nothing else is affected. Fix the values and restart — no chart change needed.
 
 ## 5. DevOps repo layout (suggested)
 

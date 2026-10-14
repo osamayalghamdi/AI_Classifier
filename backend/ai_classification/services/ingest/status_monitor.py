@@ -61,10 +61,14 @@ class _Monitor:
         st.resolved = {"model": settings.embedding_model_name}
         try:
             from ai_classification.shared.store import store
-            if store._model is None:
-                st.status, st.detail = "error", "model not loaded"
-            else:
+            # The store's public probe knows the external-endpoint case; reading
+            # store._model directly called every external deployment broken.
+            if store.embedding_ready():
                 st.status, st.detail = "ok", ""
+            elif store.embedding_provider_is_local():
+                st.status, st.detail = "error", "the local embedding model is not loaded"
+            else:
+                st.status, st.detail = "error", "EMBEDDING_API_URL is unset for external embeddings"
         except Exception as exc:  # noqa: BLE001
             st.status, st.detail = "error", f"{type(exc).__name__}: {exc}"
         return st
@@ -75,6 +79,15 @@ class _Monitor:
             "model": settings.llm_model,
             "api_base": settings.llm_api_base or "(provider default)",
         }
+        # An unconfigured classifier is not an unreachable one: say what to set
+        # instead of reporting a connection error against a placeholder host.
+        from ai_classification.shared.model_config import classifier_blocking
+        blocked = classifier_blocking(settings)
+        if blocked is not None:
+            st.resolved["fix"] = f"set {' / '.join(blocked.env)}"
+            st.status = "unreachable"
+            st.detail = f"not configured: {blocked.summary}"
+            return st
         try:
             from litellm import completion
             kwargs: dict = dict(

@@ -20,9 +20,13 @@ Consumers: services/classify, services/ingest, services/jobs, services/cluster, 
 ## config.py — env-based settings, fail-loud
 - Frozen dataclass `Settings`; `load_dotenv()` is CWD-relative — env must be exported by the
   caller (compose/systemd). All knobs env-driven (LLM, PG, integration E1-E9, heal, repool).
-- Fail-loud: lifespan refuses to start without explicit `LLM_MODEL`; `openrouter/*` models
-  require `LLM_API_KEY`; empty `integration_token` → 401 on every protected endpoint
+- Fail-loud on the pieces that must be right: an empty `integration_token` → 401 on every protected endpoint
   (never a default secret).
+- **A missing model is NOT fatal** (revised): the lifespan logs a
+  model-configuration report — every gap with the env vars that fix it and what degrades meanwhile — and hosts
+  anyway; `GET /ready` serves the same list as `models.issues`. Refusing to start on an unset `LLM_MODEL` turned
+  "set one variable" into an exit loop whose single line scrolled away with the pod. What must still be loud:
+  classification jobs end `LLM_UNAVAILABLE` quoting that report, so the reason is on the job and in the log.
 
 ## Note for integration
 `sync.py` (package root) still imports `ai_classification.config` — update to
