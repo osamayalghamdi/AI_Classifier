@@ -33,7 +33,16 @@ router = APIRouter(tags=["diagnostics"])
 # Return service health status (shape identical to the old
 # ai_classification.shared.store.get_health)
 def get_health() -> dict:
-    return {"status": "ok", "model": settings.llm_model, "store_ready": store.ready}
+    # Report the ACTIVE classifier — what will actually run. `settings.llm_model`
+    # falls back to a default id in config.py, so returning it bare made an
+    # unconfigured host look configured: /health named a model while /ready said
+    # "not configured" (the two disagreed about the same host).
+    active = settings.active_classifier_model
+    return {
+        "status": "ok",
+        "model": active.model_id if active else f"{settings.llm_model} (not configured)",
+        "store_ready": store.ready,
+    }
 
 
 # Health check

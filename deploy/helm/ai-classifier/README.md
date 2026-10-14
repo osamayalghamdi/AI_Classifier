@@ -231,9 +231,14 @@ These exist because each one otherwise fails *silently* at runtime.
 
 | Symptom | Cause / fix |
 |---|---|
+| **Not sure what is configured or what is missing** | run `backend/scripts/doctor.sh` — it prints the pod's real env, `/ready`, whether the model server answers *from the pod*, the secrets, and names the variable or command for each problem (read-only, exit 1 when something blocks) |
 | `ImagePullBackOff` on the backend | wrong registry/repository/tag, missing `imagePullSecrets`, or an image built for another architecture |
 | backend pod `0/1` for minutes then Ready | first boot creates/validates its tables — a slow or unreachable DB extends it; `/health` is up meanwhile |
+| `/ready` reports `llm: not configured: …` | no model selected (`LLM_MODEL` unset / its registry entry off) — the message names the variables; the app keeps hosting and only classification degrades |
+| `/ready` reports `llm: slow: no answer within Ns` | a local CPU model needs longer than a hosted API's ping: raise `backend.env.LLM_PROBE_TIMEOUT_S` (60 locally) |
+| `/ready` reports `llm: unreachable` but the model works on the host | a pod cannot use `localhost`: point `backend.env.LLM_API_BASE` at the host's LAN address |
 | `/ready` reports `llm: error` | LLM egress blocked from the cluster or `LLM_API_KEY` missing — `/health` and the dashboard still work |
+| Changed `values.yaml` and nothing happened | the pod holds the ConfigMap from its start: `helm upgrade …`, and if the code changed, rebuild + `kind load docker-image` first. `doctor.sh` fails on this drift by name |
 | readiness flapping | readiness is pointing at `/ready` while LLM egress is flaky — keep it on `/health` |
 
 ---

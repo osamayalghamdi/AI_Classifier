@@ -204,6 +204,14 @@ source scripts/env-from-chart.sh          # exports values.yaml's backend.env + 
 .venv/bin/python -m uvicorn ai_classification.app:app --host 0.0.0.0 --port 8000
 ```
 
+**Is it healthy? What is still missing?** One read-only command answers both, and
+names the variable or command for anything it finds wrong:
+
+```bash
+backend/scripts/doctor.sh                     # the cluster deployment
+backend/scripts/doctor.sh --api http://localhost:8000   # a host-side run
+```
+
 Either way the models are unmissable: an unconfigured model does **not** stop
 the app — the startup log and `GET /ready` (`models.issues`) name the missing
 value, the variable to set, and what degrades meanwhile.

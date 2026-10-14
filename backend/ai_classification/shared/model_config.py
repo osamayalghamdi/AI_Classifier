@@ -91,16 +91,22 @@ def _cluster_only_host(url: str) -> str | None:
 # ── Classifier (the one capability that must fail the job loudly) ──────
 
 def classifier_issues(settings) -> list[ModelIssue]:
+    import os
+
     entry = _get(settings, "active_classifier_model", None)
+    # The ENV value, not settings.llm_model: that setting falls back to a
+    # default id in config.py, and reporting that default as "LLM_MODEL=…" made
+    # "you never set it" look like "you set it wrong" — the opposite fix.
+    llm_model_env = (os.environ.get("LLM_MODEL") or "").strip()
     llm_model = (_get(settings, "llm_model", "") or "").strip()
     llm_base = (_get(settings, "llm_api_base", "") or "").strip()
 
     if entry is None:
         issues = [ModelIssue(
             capability="classifier",
-            summary=("no classifier model is ENABLED"
-                     + (f" (LLM_MODEL={llm_model!r} enables none)" if llm_model
-                        else " (LLM_MODEL is unset)")),
+            summary=("no classifier model is ENABLED ("
+                     + (f"LLM_MODEL={llm_model_env!r} selects none" if llm_model_env
+                        else "LLM_MODEL is unset") + ")"),
             env=("LLM_MODEL", "MODEL_<NAME>_ENABLED"),
             fix="LLM_MODEL=ollama/classifier-qwen with LLM_API_BASE=http://<host>:11434 (local Ollama, "
                 "the default), or LLM_MODEL=openai/qwen3.6 with BASE_URL + UNIVERSAL_API_KEY for the "
@@ -109,7 +115,7 @@ def classifier_issues(settings) -> list[ModelIssue]:
                    "job (no service / system / severity). Ingest, the dashboard, review and the "
                    "E1-E9 API keep working.",
         )]
-        if llm_model.startswith("ollama/"):
+        if llm_model_env.startswith("ollama/"):
             issues.append(ModelIssue(
                 capability="classifier",
                 summary="LLM_MODEL names a local Ollama model but the local entry is switched OFF",

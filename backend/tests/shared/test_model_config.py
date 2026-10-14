@@ -53,7 +53,8 @@ def _settings(**over) -> SimpleNamespace:
 
 
 class TestClassifierReport:
-    def test_no_enabled_model_names_the_variables_that_fix_it(self):
+    def test_no_enabled_model_names_the_variables_that_fix_it(self, monkeypatch):
+        monkeypatch.delenv("LLM_MODEL", raising=False)
         issues = classifier_issues(_settings(active_classifier_model=None, llm_model="",
                                              llm_api_base=None, llm_api_key=None))
         assert [i.capability for i in issues] == ["classifier"]
@@ -85,6 +86,23 @@ class TestClassifierReport:
         assert "no API key" in issues[0].summary
         assert "UNIVERSAL_API_KEY" in issues[0].env
         assert classifier_blocking(settings) is not None
+
+    def test_an_unset_llm_model_is_not_reported_as_a_default_id(self, monkeypatch):
+        """"LLM_MODEL is unset" must not read as "LLM_MODEL=<config default>":
+        the second sends you to edit a value you never set, which is the whole
+        complaint this report exists to answer."""
+        monkeypatch.delenv("LLM_MODEL", raising=False)
+        issues = classifier_issues(_settings(active_classifier_model=None,
+                                            llm_model="ollama/qwen2.5:7b"))  # config default
+        assert len(issues) == 1                       # no bogus "switched OFF" hint either
+        assert "LLM_MODEL is unset" in issues[0].summary
+        assert "qwen2.5:7b" not in issues[0].summary
+
+    def test_a_set_but_unmatched_llm_model_is_quoted(self, monkeypatch):
+        monkeypatch.setenv("LLM_MODEL", "gemma3:latest")
+        issues = classifier_issues(_settings(active_classifier_model=None,
+                                            llm_model="gemma3:latest"))
+        assert "LLM_MODEL='gemma3:latest' selects none" in issues[0].summary
 
     def test_a_local_ollama_entry_needs_no_key(self):
         """The local default is unauthenticated — reporting it as unconfigured
@@ -154,7 +172,8 @@ class TestEndpointReports:
         assert len(issues) >= 1                      # the classifier is unknown → reported
         assert all(i.capability for i in issues)
 
-    def test_summary_exposes_blocking_and_advisory_separately(self):
+    def test_summary_exposes_blocking_and_advisory_separately(self, monkeypatch):
+        monkeypatch.delenv("LLM_MODEL", raising=False)
         body = summary(_settings(active_classifier_model=None, llm_model="",
                                  attachments_enabled=True,
                                  attachment_reader_configured=lambda: False))
@@ -177,6 +196,7 @@ class TestEndpointReports:
 def unconfigured(monkeypatch):
     """Every settings reader in the app pointed at a host with no classifier."""
     from ai_classification.shared.config import settings as real
+    import ai_classification.api.diagnostics as diagnostics_mod
     import ai_classification.api.integration as integration_mod
     import ai_classification.app as app_mod
 
@@ -190,6 +210,7 @@ def unconfigured(monkeypatch):
     })
     monkeypatch.setattr(app_mod, "settings", stub)
     monkeypatch.setattr(integration_mod, "settings", stub)
+    monkeypatch.setattr(diagnostics_mod, "settings", stub)   # /health reads its own import
     return stub
 
 
@@ -214,7 +235,11 @@ def test_the_app_hosts_and_names_the_missing_model(unconfigured, isolated_store)
     from ai_classification.app import app
 
     with TestClient(app) as client:               # used to raise at startup
-        assert client.get("/health").status_code == 200
+        health = client.get("/health").json()
+        assert health["status"] == "ok"
+        # /health must not name a model as if it were configured: it used to
+        # report settings.llm_model's default while /ready said the opposite.
+        assert "(not configured)" in health["model"]
 
         ready = client.get("/ready", params={"llm": "true"})
         body = ready.json()
