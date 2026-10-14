@@ -56,7 +56,9 @@ try:
                 raw = r.read()
         except urllib.error.HTTPError as exc:
             raw = exc.read() or b""
-        body = json.loads(raw.decode() or "{}")
+    # Parse OUTSIDE both branches: inside the else, the already-fetched-JSON
+    # path (used by the cluster check) died with NameError on `body`.
+    body = json.loads(raw.decode() or "{}")
 except Exception as exc:                     # noqa: BLE001 — this IS the report
     print(f"UNREACHABLE\t{type(exc).__name__}: {exc}")
     raise SystemExit(0)
