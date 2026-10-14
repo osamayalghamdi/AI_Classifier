@@ -34,6 +34,18 @@ it). Endpoint methods are then 1–2 lines each.
 
 ## Run it
 
+In this repo the configuration comes from the Helm chart, so prefer the helper —
+it reads `deploy/helm/ai-classifier/values.yaml` (`smax.env`) and takes the
+integration account from the Kubernetes Secret:
+
+```bash
+backend/scripts/smax-from-chart.sh --check    # resolved config, masked, no network
+backend/scripts/smax-from-chart.sh            # normal operation
+```
+
+By hand, on any machine that reaches SMAX (everything below is this connector's
+own environment):
+
 ```bash
 # From the repo root (env-driven, no code config):
 export SMAX_BASE=https://smax.example.com

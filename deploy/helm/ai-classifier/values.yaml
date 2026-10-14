@@ -250,6 +250,52 @@ database:
   existingSecret: "ai-classifier-db"   # key: PG_PASSWORD
   passwordKey: PG_PASSWORD
 
+# ── SMAX connector — a SEPARATE PROCESS, not a pod in this chart ──────
+# This is why SMAX has no account here: the app never logs into SMAX. The
+# connector does (`python -m integrations.smax.main` from `backend/`), it pushes
+# changed tickets into the app's integration API, and it can run on any machine
+# that reaches both SMAX and the app. Its settings are split like every other
+# credential in this project:
+#
+#   * the NON-SECRET half lives here, so the configuration still has one home;
+#   * the integration ACCOUNT (SMAX_USER / SMAX_PASS) is a credential and can
+#     NEVER be in this file — it belongs to the Secret named below, which you
+#     create once:
+#         kubectl -n ai-classifier create secret generic ai-classifier-smax \
+#           --from-literal=SMAX_USER='<integration account>' \
+#           --from-literal=SMAX_PASS='<password>'
+#
+# Then run the connector with this file as its config (the account and the
+# app's INTEGRATION_API_TOKEN are read from the Secrets, never typed, never
+# written to disk):
+#     backend/scripts/smax-from-chart.sh --check      # resolved config, masked
+#     backend/scripts/smax-from-chart.sh --probe <id> # one ticket, nothing submitted
+#     backend/scripts/smax-from-chart.sh --once       # one real tick, write-back dry
+#     backend/scripts/smax-from-chart.sh              # normal operation
+smax:
+  secrets:
+    existingSecret: "ai-classifier-smax"   # keys: SMAX_USER, SMAX_PASS
+  env:
+    # REQUIRED — the SMAX server. Leave empty until you have the real URL (an
+    # empty value fails loudly by name instead of looking configured).
+    SMAX_BASE: ""
+    SMAX_TENANT: ""                 # TENANTID on the login call
+    # The app this connector feeds. A port-forward or a host run both answer on
+    # localhost:8000; from another machine, use its address.
+    CLASSIFIER_API_URL: "http://localhost:8000"
+    # Behaviour (defaults mirror the connector's own documented defaults).
+    SMAX_ENTITY_FIELD: "Entity_c"
+    SMAX_UTC_OFFSET_HOURS: "3"      # Riyadh
+    SMAX_PAGE_SIZE: "250"           # the SMAX API caps at 250
+    SMAX_TIMEOUT_S: "120"
+    SMAX_TOKEN_TTL_S: "1500"
+    SMAX_POLL_S: "60"
+    SMAX_MAX_INCIDENTS_PER_TICK: "0"   # set 1 for a first live run
+    SMAX_MAX_ATTACHMENT_MB: "15"
+    SMAX_DRY_RUN: "true"            # write-back stays log-only (no write endpoint)
+    SMAX_WRITE_BACK: "suggestions"
+    SMAX_SYNC_STAMP_PATH: "/tmp/.last_sync"
+
 # ── Ingress (EXTERNAL EXPOSURE — opt-in, OFF by default) ──────────────
 # Enabling this publishes the app outside the cluster. Only turn it on in an
 # environment that is *meant* to be reachable, and pair it with TLS. Left off,

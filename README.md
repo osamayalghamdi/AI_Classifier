@@ -200,7 +200,6 @@ compares a source file inside each pod against your working tree by sha256 and
 prints the release overrides (empty = the file is the only source).
 
 A host-side run instead of a pod (same config source, nothing to keep in sync):
-
 ```bash
 cd backend
 source scripts/env-from-chart.sh          # exports values.yaml's backend.env + database.*
@@ -222,6 +221,35 @@ its tooltip, when the app is merely degraded rather than blocked).
 Either way the models are unmissable: an unconfigured model does **not** stop
 the app — the startup log and `GET /ready` (`models.issues`) name the missing
 value, the variable to set, and what degrades meanwhile.
+
+### The SMAX connector (a separate process, not a pod)
+
+The app never logs into SMAX. The connector does — `python -m
+integrations.smax.main` from `backend/`, pushing changed tickets into the app's
+integration API — and it can run wherever it reaches both SMAX and the app. Its
+settings are split exactly like every other credential here:
+
+- **non-secret** (base URL, tenant, page size, poll, dry-run, …) → `values.yaml`
+  under `smax.env`. The chart does not deploy the connector, but the file is
+  still the one place configuration lives.
+- **the integration account** → a Secret, created once (never in `values.yaml`):
+
+```bash
+kubectl -n ai-classifier create secret generic ai-classifier-smax \
+  --from-literal=SMAX_USER='<integration account>' \
+  --from-literal=SMAX_PASS='<password>'
+```
+
+Then run it with the chart as its config — the account and the app's
+`INTEGRATION_API_TOKEN` are read from the Secrets into the process, so the
+password is never typed on a command line, never printed and never on disk:
+
+```bash
+backend/scripts/smax-from-chart.sh --check         # resolved config, masked, no network
+backend/scripts/smax-from-chart.sh --probe <id>    # one ticket: proves login + filter
+backend/scripts/smax-from-chart.sh --once --limit 1  # one real tick, write-back dry
+backend/scripts/smax-from-chart.sh                 # normal operation
+```
 
 # Tests (needs a Postgres; see .github/workflows/test.yml for the CI env)
 cd ~/projects/AI_Classifier/backend && uv run pytest -q
