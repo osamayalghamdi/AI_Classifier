@@ -25,9 +25,10 @@ from ai_classification.shared.model_config import (
 
 
 def _entry(**over) -> ModelEntry:
-    base = dict(name="QWEN3_6_OR", role="classifier", provider="openrouter",
-                enabled=True, model_id="openrouter/qwen/qwen3.6-35b-a3b",
-                api_base="https://openrouter.ai/api/v1", api_key="sk-or-test")
+    """The LOCAL Ollama classifier — the default shape of this project."""
+    base = dict(name="LOCAL_LLM", role="classifier", provider="ollama",
+                enabled=True, model_id="ollama/classifier-qwen",
+                api_base="http://192.168.1.50:11434", api_key="")
     base.update(over)
     return ModelEntry(**base)
 
@@ -35,9 +36,9 @@ def _entry(**over) -> ModelEntry:
 def _settings(**over) -> SimpleNamespace:
     """The settings surface the report reads — nothing else."""
     base = dict(
-        llm_model="openrouter/qwen/qwen3.6-35b-a3b",
-        llm_api_base="https://openrouter.ai/api/v1",
-        llm_api_key="sk-or-test",
+        llm_model="ollama/classifier-qwen",
+        llm_api_base="http://192.168.1.50:11434",
+        llm_api_key=None,
         active_classifier_model=_entry(),
         embedding_provider="external",
         embedding_api_url="https://embed.example/v1",
@@ -63,22 +64,33 @@ class TestClassifierReport:
         assert "LLM_UNAVAILABLE" in issue.effect    # what the caller will see
         assert "still" in issue.effect or "keep working" in issue.effect
 
-    def test_an_ollama_model_is_named_as_enabling_nothing(self):
-        """The trap that reads as "my server is up, why no classification?": an
-        ollama/ LLM_MODEL matches no catalog provider, so no entry is enabled."""
+    def test_an_explicitly_disabled_local_entry_is_named(self):
+        """`ollama/...` enables LOCAL_LLM by itself, so this only happens when
+        someone switched it off — and that reads as "my Ollama is up, why no
+        classification?" unless the report says which switch to flip."""
         issues = classifier_issues(_settings(active_classifier_model=None,
                                              llm_model="ollama/qwen2.5:7b"))
         assert len(issues) == 2
-        ollama = issues[1]
-        assert "ollama" in ollama.summary and "enables NO registry entry" in ollama.summary
-        assert "LLM_MODEL=" in ollama.fix
+        local = issues[1]
+        assert "local entry is switched OFF" in local.summary
+        assert "MODEL_LOCAL_LLM_ENABLED" in local.env
 
     def test_an_enabled_entry_without_a_key_is_reported_with_its_variable(self):
-        issues = classifier_issues(_settings(active_classifier_model=_entry(api_key="")))
+        remote = _entry(name="QWEN3_6", provider="elm", model_id="openai/qwen3.6",
+                        api_base="https://llms.elm.sa/v1", api_key="")
+        settings = _settings(active_classifier_model=remote, llm_model="openai/qwen3.6",
+                             llm_api_base="https://llms.elm.sa/v1")
+        issues = classifier_issues(settings)
         assert len(issues) == 1
         assert "no API key" in issues[0].summary
-        assert "LLM_API_KEY" in issues[0].env
-        assert classifier_blocking(_settings(active_classifier_model=_entry(api_key=""))) is not None
+        assert "UNIVERSAL_API_KEY" in issues[0].env
+        assert classifier_blocking(settings) is not None
+
+    def test_a_local_ollama_entry_needs_no_key(self):
+        """The local default is unauthenticated — reporting it as unconfigured
+        would make a perfectly working local setup look broken."""
+        assert classifier_issues(_settings()) == []
+        assert classifier_blocking(_settings()) is None
 
     def test_an_elm_entry_needs_a_base_url(self):
         issues = classifier_issues(_settings(
@@ -97,12 +109,12 @@ class TestClassifierReport:
         """/ready probes LLM_MODEL while the cascade calls the registry entry: a
         mismatch must be visible without making the host look broken."""
         issues = classifier_issues(_settings(active_classifier_model=_entry(
-            model_id="openrouter/qwen/qwen3.6-72b")))
+            model_id="ollama/qwen2.5:7b")))
         assert [i.capability for i in issues] == ["classifier-probe"]
         assert issues[0].blocking is False
         assert "disagree on the model" in issues[0].summary
         assert classifier_blocking(_settings(active_classifier_model=_entry(
-            model_id="openrouter/qwen/qwen3.6-72b"))) is None
+            model_id="ollama/qwen2.5:7b"))) is None
 
 
 class TestEndpointReports:
@@ -232,7 +244,7 @@ def test_ready_still_probes_a_configured_model(unconfigured, isolated_store, mon
     from ai_classification.app import app
 
     unconfigured.active_classifier_model = _entry()
-    unconfigured.llm_model = "openrouter/qwen/qwen3.6-35b-a3b"
+    unconfigured.llm_model = "ollama/classifier-qwen"
 
     def boom(**kwargs):
         raise ConnectionError("no route to host")
@@ -241,3 +253,46 @@ def test_ready_still_probes_a_configured_model(unconfigured, isolated_store, mon
     with TestClient(app) as client:
         checks = client.get("/ready", params={"llm": "true"}).json()["checks"]
     assert checks["llm"] == "unreachable: ConnectionError"
+
+
+class TestLocalModelWiring:
+    """The default setup is a local Ollama: one LLM_MODEL line must be enough."""
+
+    def test_an_ollama_llm_model_enables_the_local_entry(self, monkeypatch):
+        import ai_classification.shared.config as cfg
+        monkeypatch.setenv("LLM_MODEL", "ollama/qwen2.5:7b")
+        monkeypatch.delenv("MODEL_LOCAL_LLM_ENABLED", raising=False)
+        monkeypatch.delenv("MODEL_LOCAL_LLM_ID", raising=False)
+        monkeypatch.setenv("LLM_API_BASE", "http://192.168.1.50:11434")
+        reg = cfg._build_model_registry()
+        assert reg["LOCAL_LLM"].enabled is True
+        assert reg["LOCAL_LLM"].model_id == "ollama/qwen2.5:7b"      # LLM_MODEL wins
+        assert reg["LOCAL_LLM"].api_base == "http://192.168.1.50:11434"
+        assert reg["LOCAL_LLM"].api_key == ""                        # no key needed
+
+    def test_the_local_entry_falls_back_to_the_loopback_base(self, monkeypatch):
+        import ai_classification.shared.config as cfg
+        monkeypatch.setenv("LLM_MODEL", "ollama/classifier-qwen")
+        monkeypatch.delenv("LLM_API_BASE", raising=False)
+        monkeypatch.delenv("MODEL_LOCAL_LLM_API_BASE", raising=False)
+        assert cfg._build_model_registry()["LOCAL_LLM"].api_base == "http://localhost:11434"
+
+    def test_nothing_in_the_catalog_is_openrouter(self):
+        """Dropped on purpose: the project runs locally (Ollama) or on the
+        company endpoint. A leftover entry would resurface as a "fix" in the
+        report and in docs, which is how it came back the first time."""
+        import ai_classification.shared.config as cfg
+        providers = {entry[1] for entry in cfg.MODEL_CATALOG.values()}
+        assert "openrouter" not in providers
+        assert providers == {"ollama", "elm"}
+
+    def test_a_loopback_ollama_base_is_advisory_inside_a_cluster(self):
+        """`localhost` is the right answer on the host and the wrong one in a
+        pod: say so without calling a working local setup broken."""
+        issues = classifier_issues(_settings(
+            active_classifier_model=_entry(api_base="http://localhost:11434"),
+            llm_api_base="http://localhost:11434"))
+        assert [i.capability for i in issues] == ["classifier"]
+        assert issues[0].blocking is False
+        assert "the container itself" in issues[0].summary
+        assert "LLM_API_BASE" in issues[0].env

@@ -4,7 +4,9 @@ set -e
 # ── LLM backend detection ─────────────────────────────────────────────
 # Ollama is OPTIONAL: wait/pull only when the backend IS Ollama
 # (LLM_MODEL starts with ollama/ or LLM_API_BASE points at an ollama host).
-# With a remote API (OpenRouter: LLM_MODEL=openrouter/... + LLM_API_KEY)
+# That is the LOCAL default (a model on this machine: Ollama on the host,
+# LLM_API_BASE=http://<host-lan-ip>:11434, no API key). With a remote API
+# (ELM endpoint: LLM_MODEL=openai/... + BASE_URL + UNIVERSAL_API_KEY)
 # there is nothing to wait for — start uvicorn immediately.
 # The wait is BOUNDED (OLLAMA_WAIT_S, default 60): an Ollama that never
 # answers must not keep the dashboard/API dark — the app hosts anyway and

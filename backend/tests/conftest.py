@@ -15,6 +15,13 @@ import os
 # (documented convention: INTEGRATION_TOKEN=test-token).
 os.environ.setdefault("INTEGRATION_TOKEN", "test-token")
 os.environ.setdefault("INTEGRATION_WORKER_ENABLED", "0")
+# A classifier model must be ENABLED for the suite to exercise the classify
+# path: the registry is built at import time from the environment, and with
+# nothing enabled `call_llm` refuses (correctly) with "No classifier model is
+# ENABLED". The id is irrelevant — every LLM call in this suite is faked — but
+# the suite must NOT depend on a developer's shell exports or on a stray .env
+# (a leftover repo-root .env used to supply this, which hid the dependency).
+os.environ.setdefault("LLM_MODEL", "ollama/qwen2.5:7b")
 # The admin console token is SEPARATE from the integration token. In the test
 # environment it must stay UNSET so /admin/* falls back to the integration
 # token (the pre-existing tests authenticate with INTEGRATION_TOKEN); the

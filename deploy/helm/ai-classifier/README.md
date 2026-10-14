@@ -156,28 +156,29 @@ Notes for whoever builds and deploys:
 
 | Key | Default | Notes |
 |---|---|---|
-| `image.repository` / `.tag` | `REGISTRY/ai-classifier` / `""` | Tag empty → `Chart.appVersion` (stale `0.2.0` — set the tag CI pushed). Ships no model: ~1.1 GB |
+| `image.repository` / `.tag` / `.pullPolicy` | `ai_classifier-api` / `latest` / `IfNotPresent` | Local default: the image is built and `kind load`ed, so nothing is pulled. Ships no model: ~1.1 GB |
 | `imagePullSecrets` | `[]` | Registry pull secret(s) |
 | `backend.replicas` | `1` | **Keep 1** — the process runs in-process workers; see DEPLOYMENT_GUIDE §6 |
 | `backend.port` | `8000` | Container/service port |
-| `backend.env` | LLM + integration settings | Non-secret env, merged verbatim |
+| `backend.env` | LLM + integration settings | Non-secret env, merged verbatim. **This block is the configuration** — there is no `.env` in the project. Local defaults: `LLM_MODEL=ollama/classifier-qwen` + `LLM_API_BASE=http://<this host>:11434` |
 
 **The models are the only external (third-party) services — the image ships none:**
 
 | Values | Default | What it means |
 |---|---|---|
-| `backend.env.EMBEDDING_PROVIDER` / `.EMBEDDING_API_URL` / `.EMBEDDING_MODEL_ID` / `.EMBEDDING_DIM` | `external` / — / `bge-m3` / `1024` | Embeddings for similarity/clustering come from an OpenAI-compatible `/embeddings` endpoint. `EMBEDDING_DIM` must match what it returns — it is baked into the vector column at first startup. Key: `EMBEDDING_API_KEY` in `backend.existingSecret` (optional). |
-| `backend.env.OCR_ENABLED` / `.OCR_SERVICE_URL` | `"1"` / `https://ocr.example.internal/ocr` | The API POSTs every incident attachment to the OCR service (a **separate deployment**) and stores the returned text on the record (`extracted_text` + file names in `documents`). Empty URL → attachments recorded by name only. |
-| `backend.existingSecret` | `ai-classifier-secrets` | `LLM_API_KEY`, `INTEGRATION_API_TOKEN`, `ADMIN_TOKEN`, `TICKETING_API_TOKEN`, `EMBEDDING_API_KEY` (all optional except `LLM_API_KEY`) |
+| `backend.env.EMBEDDING_PROVIDER` / `.EMBEDDING_API_URL` / `.EMBEDDING_MODEL_ID` / `.EMBEDDING_DIM` | `external` / `http://<this host>:11434/v1` / `bge-m3` / `1024` | Embeddings for similarity/clustering come from an OpenAI-compatible `/embeddings` endpoint — locally the same Ollama (`ollama pull bge-m3`). `EMBEDDING_DIM` must match what it returns — it is baked into the vector column at first startup. Key: `EMBEDDING_API_KEY` in `backend.existingSecret` (not needed for a local endpoint). |
+| `backend.env.OCR_ENABLED` / `.OCR_SERVICE_URL` | `"0"` / `""` | The API POSTs every incident attachment to the OCR service (a **separate deployment**) and stores the returned text on the record (`extracted_text` + file names in `documents`). Off locally → attachments are recorded by name only; set `OCR_ENABLED=1` and the URL where the service exists. |
+| `backend.existingSecret` | `ai-classifier-secrets` | `LLM_API_KEY`, `INTEGRATION_API_TOKEN`, `ADMIN_TOKEN`, `TICKETING_API_TOKEN`, `EMBEDDING_API_KEY` — all optional: a local Ollama needs no key, and the API hosts without one (it reports what is missing instead of refusing to start) |
 | `backend.resources` | 250m/512Mi → 2/5Gi | No model in the image — the LLM, embeddings and OCR run on external endpoints |
 | `backend.probes.*` | `/health` | Switch readiness to `/ready` once LLM egress is confirmed |
 | `backend.strategy` | `Recreate` | No overlap between replicas (worker duplication) |
 | `backend.service.type` / `.port` | `ClusterIP` / `""` | Avoid `NodePort`/`LoadBalancer` outside dev |
 | `frontend.enabled` / `.replicas` / `.port` | `true` / `1` / `8082` | nginx dashboard + API proxy |
-| `frontend.image.*` | `REGISTRY/ai-classifier-frontend` | Baked dashboard files |
+| `frontend.image.*` | `ai-classifier-frontend:latest` | Baked dashboard files (locally built + `kind load`ed) |
+| `frontend.pullPolicy` | `IfNotPresent` | Same reason as the backend image |
 | `frontend.service.*` | `ClusterIP` | Same warnings as the backend Service |
 | `frontend.configMap.conf` | nginx server block | The whole config is a value (rendered with `tpl`) |
-| `database.*` | host required | §3 |
+| `database.*` | host `db.platform-db.svc.cluster.local` (local) | §3 — the DB is required infrastructure, wired here, never deployed by the chart |
 | `ingress.enabled` | **`false`** | Turning it on publishes the app — opt in per environment |
 | `ingress.className` / `.host` / `.tls` / `.annotations` | `""` / example / `[]` / `{}` | Ask your controller which class; add TLS before exposing. Routing is fixed (everything → frontend, or the API when `frontend.enabled=false`) |
 

@@ -15,8 +15,9 @@ token:
 Authorization: Bearer <INTEGRATION_TOKEN>
 ```
 
-The token is set server-side via the `INTEGRATION_TOKEN` environment
-variable (from `.env`). There is **no default** — if it is not configured,
+The token is set server-side via the `INTEGRATION_API_TOKEN` environment
+variable (the chart's Secret — see `deploy/helm/ai-classifier/values.yaml` and
+`backend.existingSecret`). There is **no default** — if it is not configured,
 all integration endpoints reject requests with `401 UNAUTHORIZED`.
 
 ```
@@ -364,8 +365,9 @@ end-to-end (accept → process → persist → result).
 ## 8. Working examples (curl)
 
 ```bash
-# token
-export INTEGRATION_TOKEN=$(grep ^INTEGRATION_TOKEN .env | cut -d= -f2-)
+# token (read it from the cluster Secret, not from a file in the repo)
+export INTEGRATION_TOKEN=$(kubectl -n ai-classifier get secret ai-classifier-secrets \
+  -o jsonpath='{.data.INTEGRATION_API_TOKEN}' | base64 -d)
 AUTH="Authorization: Bearer $INTEGRATION_TOKEN"
 
 # E1 ingest

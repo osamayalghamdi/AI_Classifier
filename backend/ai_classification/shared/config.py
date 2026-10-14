@@ -1,12 +1,16 @@
 """Application configuration loaded from environment.
-Pipeline position: 00_config — settings/env, read by every stage."""
+Pipeline position: 00_config — settings/env, read by every stage.
+
+ENVIRONMENT ONLY — there is deliberately no `.env` load here. The single
+source of configuration is the chart's `backend.env` block
+(`deploy/helm/ai-classifier/values.yaml`), with secrets from `existingSecret`;
+`scripts/env-from-chart.sh` exports the same values for a host-side run. Until
+this changed, `load_dotenv()` walked up the tree and silently picked up a
+leftover repo-root `.env`, so a "clean" run inherited stale LLM settings.
+"""
 
 from os import getenv
 from dataclasses import dataclass, field
-from dotenv import load_dotenv
-
-
-load_dotenv()
 
 
 def _split_csv(value: str) -> list[str]:
@@ -41,34 +45,41 @@ def _map_write_back(value: str) -> str:
 # Per-model enable/disable control across providers. The classifier uses
 # the first ENABLED role=classifier entry; OCR the enabled role=ocr; the
 # reranker role=reranker. The admin console → Models tab toggles
-# MODEL_<NAME>_ENABLED (writes to the env file, restart applies).
+# MODEL_<NAME>_ENABLED (it writes to the runtime registry; a restart re-reads
+# the environment, i.e. the chart's values.yaml).
 #
-# Providers: each catalog entry is wired to OpenRouter (dev/testing —
-# reachable from this box) or ELM (company endpoint — used at deploy;
-# llms.elm.sa is NXDOMAIN from dev boxes, resolves on the deployment VM).
+# Providers: each catalog entry is wired to a LOCAL Ollama (this box — the
+# default: the whole project runs locally, models included) or to the ELM
+# company endpoint (used when it is deployed on the customer's network;
+# llms.elm.sa is NXDOMAIN from dev boxes, resolves there).
 #
-# Env surface per model (<NAME> = registry key, e.g. QWEN3_6):
+# Env surface per model (<NAME> = registry key, e.g. LOCAL_LLM):
 #   MODEL_<NAME>_ENABLED=1|0            — the toggle (default: off)
-#   MODEL_<NAME>_ID=openai/qwen3.6      — litellm model id (optional)
+#   MODEL_<NAME>_ID=ollama/qwen2.5:7b   — litellm model id (optional)
 #   MODEL_<NAME>_API_BASE=...           — optional per-model base URL
 #   MODEL_<NAME>_API_KEY=...            — optional per-model key
 #
 # Provider wiring (used when a model has no per-model override):
-#   openrouter → api_base = LLM_API_BASE (empty = OpenRouter default),
-#                api_key  = LLM_API_KEY
-#   elm        → api_base = BASE_URL (https://llms.elm.sa/v1) or LLM_API_BASE,
-#                api_key  = UNIVERSAL_API_KEY or LLM_API_KEY
+#   ollama → api_base = LLM_API_BASE or http://localhost:11434, no key
+#   elm    → api_base = BASE_URL (https://llms.elm.sa/v1) or LLM_API_BASE,
+#            api_key  = UNIVERSAL_API_KEY or LLM_API_KEY
 #
 # Backward compat: when the legacy LLM_MODEL is set, the matching provider's
-# classifier entry defaults to ENABLED (openrouter/... → OpenRouter entry,
-# openai/... → ELM entry) so existing .env files keep working unchanged.
+# classifier entry defaults to ENABLED (ollama/... → LOCAL_LLM, openai/... →
+# ELM entry), so a single LLM_MODEL line in the chart values is enough —
+# no registry incantation to remember.
+#
+# There is NO .env anywhere in this project: the environment is the chart's
+# `backend.env` block in deploy/helm/ai-classifier/values.yaml (secrets via
+# `existingSecret`). This module reads os.environ only — a stray .env file in a
+# parent directory can no longer change behaviour behind your back.
 
 # Registry catalog: key -> (role, provider, default litellm id, description).
 MODEL_CATALOG: dict[str, tuple[str, str, str, str]] = {
-    # ── OpenRouter (dev/testing — reachable from this box) ──────────────
-    "QWEN3_6_OR": ("classifier", "openrouter", "openrouter/qwen/qwen3.6-35b-a3b",
-                   "Qwen3.6 via OpenRouter — dev/testing classifier"),
-    # ── ELM company endpoint (used at deploy) ───────────────────────────
+    # ── Local Ollama on this box (the default: 100% local run) ──────────
+    "LOCAL_LLM": ("classifier", "ollama", "ollama/classifier-qwen",
+                  "Local Ollama classifier (this machine — default)"),
+    # ── ELM company endpoint (used at deploy on the customer network) ────
     "QWEN3_6":              ("classifier", "elm", "openai/qwen3.6", "Qwen3.6 — primary classifier (ELM)"),
     "GEMMA_4":              ("classifier", "elm", "openai/gemma-4", "Gemma 4 — classifier alternative (ELM)"),
     "GPT_OSS_120B":         ("classifier", "elm", "openai/gpt-oss-120b", "GPT-OSS 120B — classifier alternative (ELM)"),
@@ -97,10 +108,13 @@ class ModelEntry:
 
 def _provider_wiring(provider: str) -> tuple[str, str]:
     """Default (api_base, api_key) for a provider, when a model has no
-    per-model override. Provider-specific so an OpenRouter model never
+    per-model override. Provider-specific so a local Ollama model never
     inherits the ELM base (and vice versa)."""
-    if provider == "openrouter":
-        return getenv("LLM_API_BASE", ""), getenv("LLM_API_KEY", "")
+    if provider == "ollama":
+        # No key: a local Ollama is unauthenticated. Inside a container
+        # "localhost" is the container itself, so a deployment sets
+        # LLM_API_BASE to the host running Ollama.
+        return getenv("LLM_API_BASE", "") or "http://localhost:11434", ""
     # elm — company endpoint
     base = getenv("BASE_URL", "") or getenv("LLM_API_BASE", "")
     key = getenv("UNIVERSAL_API_KEY", "") or getenv("LLM_API_KEY", "")
@@ -114,13 +128,16 @@ def _build_model_registry() -> dict[str, ModelEntry]:
         default_model = default_id
         # Backward compat: an existing LLM_MODEL overrides the matching
         # provider's classifier default id, and that entry defaults ENABLED.
+        # `ollama/...` counts too — it IS the local setup, and requiring a
+        # MODEL_*_ENABLED incantation for the most common local case is how
+        # "my model is up but nothing classifies" happens.
         legacy_match = False
-        if provider == "openrouter" and legacy_model.startswith("openrouter/"):
+        if provider == "ollama" and legacy_model.startswith("ollama/"):
             default_model = getenv("LLM_MODEL", default_id)
             legacy_match = True
         elif provider == "elm" and legacy_model.startswith(("openai/", "elm/")):
             legacy_match = True
-        enabled_default = "1" if (name in ("QWEN3_6_OR", "QWEN3_6") and legacy_match) else "0"
+        enabled_default = "1" if (name in ("LOCAL_LLM", "QWEN3_6") and legacy_match) else "0"
         default_base, default_key = _provider_wiring(provider)
         registry[name] = ModelEntry(
             name=name,
@@ -176,6 +193,10 @@ class Settings:
     # ── LLM resilience (call_llm) ────────────────────────────────────────
     # Request timeout per LLM call, seconds (0 = provider default).
     llm_timeout_s: float = float(getenv("LLM_TIMEOUT_S", "60"))
+    # Liveness probe budget (/ready, /status, /test/llm). A local model on CPU
+    # needs far more than the 5s that suits a hosted API — with 5s a perfectly
+    # working Ollama reads as "unreachable: Timeout".
+    llm_probe_timeout_s: float = float(getenv("LLM_PROBE_TIMEOUT_S", "5"))
     # Retries for TRANSIENT failures only (429 / 500 / 502 / 503 / 504 /
     # connection & read timeouts) — exponential backoff + jitter, honouring
     # Retry-After. Auth (401/403), credits (402), unknown model (404), and

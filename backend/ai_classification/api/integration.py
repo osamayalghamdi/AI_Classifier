@@ -224,11 +224,15 @@ def readiness(llm: bool = Query(True, description="false = skip the live LLM pro
     else:
         try:
             from litellm import completion
+            # Generous by default for a LOCAL model: on CPU even one token can
+            # take longer than a hosted API's whole round trip, and reporting a
+            # working model as down is worse than waiting (LLM_PROBE_TIMEOUT_S).
+            probe_timeout = float(getattr(settings, "llm_probe_timeout_s", 5.0) or 5.0)
             kwargs: dict = dict(
                 model=settings.llm_model,
                 max_tokens=1,
                 temperature=0.0,
-                timeout=5.0,
+                timeout=probe_timeout,
                 messages=[{"role": "user", "content": "ping"}],
             )
             if settings.llm_api_base:
@@ -238,7 +242,16 @@ def readiness(llm: bool = Query(True, description="false = skip the live LLM pro
             completion(**kwargs)
             checks["llm"] = "ok"
         except Exception as exc:  # noqa: BLE001
-            checks["llm"] = f"unreachable: {type(exc).__name__}"
+            name = type(exc).__name__
+            if "timeout" in name.lower() or "timeout" in str(exc).lower():
+                # Say the useful thing: a slow model is not a missing one.
+                checks["llm"] = (
+                    f"slow: no answer within {float(getattr(settings, 'llm_probe_timeout_s', 5.0) or 5.0):.0f}s "
+                    f"({name}) — a local model on CPU needs longer; raise LLM_PROBE_TIMEOUT_S "
+                    "(classification itself uses LLM_TIMEOUT_S)"
+                )
+            else:
+                checks["llm"] = f"unreachable: {name}"
 
     degraded = checks.get("db") != "ok" or not checks.get("embedding", "").startswith("ok")
     status = "ok" if (not degraded and checks.get("llm") in ("ok", "skipped")) else (

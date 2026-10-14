@@ -30,10 +30,11 @@ Rules of thumb:
 - `EMBEDDING_DIM` (default `1024`) must match what the embeddings endpoint
   returns — it is written into the `vector(N)` column on first startup, so set
   it before the first run.
-- The classifier needs an **enabled model registry entry**: setting `LLM_MODEL`
-  to an `openrouter/…` or `openai/…` id enables the matching entry
-  automatically; anything else needs `MODEL_<NAME>_ENABLED=1`
-  (`MODEL_<NAME>_ID` / `_API_BASE` / `_API_KEY` override that model's endpoint).
+- The classifier needs an **enabled model registry entry**, and `LLM_MODEL` is
+  enough: an `ollama/…` id (the local model) or an `openai/…` id (the company
+  endpoint) enables the matching entry automatically. Anything else needs
+  `MODEL_<NAME>_ENABLED=1` (`MODEL_<NAME>_ID` / `_API_BASE` / `_API_KEY`
+  override that model's endpoint).
 - A missing model **does not stop the app**: it hosts with whatever is
   configured and names every gap. The startup log carries the list (variable,
   example value, what degrades meanwhile) and `GET /ready` serves the same as
@@ -171,14 +172,41 @@ AI_Classifier/
 └── README.md  ARCHITECTURE.md
 ```
 
-## Running locally (dev only — deployment is Helm)
+## Running locally (no .env, one config file)
+
+The whole thing runs on this machine: kind for the cluster, Ollama for the
+models, the PostgreSQL in namespace `platform-db` for the database. **The only
+config file is `deploy/helm/ai-classifier/values.yaml`** — there is no `.env`
+anywhere in the project.
 
 ```bash
-# There is no .env: export what you need, or render it from the chart values.
-cd ~/projects/AI_Classifier/backend
-export PG_HOST=localhost PG_USER=aiuser PG_PASSWORD=… PG_DATABASE=ai_incidents
-export LLM_MODEL=openai/qwen3.6 LLM_API_BASE=https://llms.elm.sa/v1 LLM_API_KEY=…
-uv run uvicorn ai_classification.api.routes:app --host 0.0.0.0 --port 8000
+# 1. models (once): the classifier + the embedding model the values point at
+ollama pull classifier-qwen && ollama pull bge-m3
+
+# 2. images (after any code change)
+docker build -f backend/Dockerfile   -t ai_classifier-api:latest        backend/
+docker build -f frontend/Dockerfile  -t ai-classifier-frontend:latest   frontend/
+kind load docker-image ai_classifier-api:latest ai-classifier-frontend:latest --name ai-classifier
+
+# 3. the app
+helm upgrade --install ai-classifier deploy/helm/ai-classifier -n ai-classifier
+
+# 4. reach it
+kubectl -n ai-classifier port-forward svc/ai-classifier-ai-classifier-frontend 8085:8082
+#   dashboard http://localhost:8085   ·   API http://localhost:8000 via the same proxy
+```
+
+A host-side run instead of a pod (same config source, nothing to keep in sync):
+
+```bash
+cd backend
+source scripts/env-from-chart.sh          # exports values.yaml's backend.env + database.*
+.venv/bin/python -m uvicorn ai_classification.app:app --host 0.0.0.0 --port 8000
+```
+
+Either way the models are unmissable: an unconfigured model does **not** stop
+the app — the startup log and `GET /ready` (`models.issues`) name the missing
+value, the variable to set, and what degrades meanwhile.
 
 # Tests (needs a Postgres; see .github/workflows/test.yml for the CI env)
 cd ~/projects/AI_Classifier/backend && uv run pytest -q
@@ -210,9 +238,10 @@ at the top. Full release steps: `deploy/helm/ai-classifier/README.md` §2.
 
 | What you want to change | Where (chart `values.yaml`) |
 |---|---|
-| The AI model | `backend.env.LLM_MODEL` (e.g. `openai/qwen3.6`) |
-| The AI service URL | `backend.env.LLM_API_BASE` (e.g. `https://llms.elm.sa/v1`) |
-| The AI API key | Secret `backend.existingSecret` → `LLM_API_KEY` |
+| The AI model | `backend.env.LLM_MODEL` (`ollama/classifier-qwen` local, `openai/qwen3.6` for the company endpoint) |
+| The AI service URL | `backend.env.LLM_API_BASE` (`http://<host>:11434` local Ollama, `https://llms.elm.sa/v1` at the customer) |
+| The AI API key | Secret `backend.existingSecret` → `LLM_API_KEY` / `UNIVERSAL_API_KEY` (not needed for a local Ollama) |
+| Embeddings endpoint | `backend.env.EMBEDDING_API_URL` + `EMBEDDING_MODEL_ID` / `EMBEDDING_DIM` |
 | Database connection | `database.host` / `.port` / `.name` / `.user` + `database.existingSecret` (password) |
 | Integration API token | Secret `backend.existingSecret` → `INTEGRATION_API_TOKEN` |
 | Duplicate-ticket threshold | `backend.env.SIMILARITY_THRESHOLD` |
@@ -276,8 +305,8 @@ over the network; the chart holds only the connection values (`database.*`).
 
 Just two things:
 1. **Base URL**: the API Service — `http://ai-classifier-backend.<ns>.svc:8000` in-cluster, or your ingress host
-2. **Auth token**: `INTEGRATION_API_TOKEN` from `.env` — every `/api/v1/*`
-   call needs `Authorization: Bearer <token>`
+2. **Auth token**: `INTEGRATION_API_TOKEN` from the Secret — every `/api/v1/*`
+   call needs an `Authorization: Bearer <token>` header.
 
 Full contract (payload shapes, error codes, retry semantics, curl example
 per endpoint) is in `docs/INTEGRATION_GUIDE.md`.

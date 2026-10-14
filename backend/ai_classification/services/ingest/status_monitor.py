@@ -88,13 +88,17 @@ class _Monitor:
             st.status = "unreachable"
             st.detail = f"not configured: {blocked.summary}"
             return st
+        # A local CPU model needs longer than a hosted API's ping budget; 5s made
+        # a working Ollama read as unreachable (LLM_PROBE_TIMEOUT_S).
+        probe_timeout = float(getattr(settings, "llm_probe_timeout_s", 5.0) or 5.0)
+        st.resolved["probe_timeout_s"] = probe_timeout
         try:
             from litellm import completion
             kwargs: dict = dict(
                 model=settings.llm_model,
                 max_tokens=1,
                 temperature=0.0,
-                timeout=5.0,
+                timeout=probe_timeout,
                 messages=[{"role": "user", "content": "ping"}],
             )
             if settings.llm_api_base:
@@ -104,8 +108,14 @@ class _Monitor:
             completion(**kwargs)
             st.status, st.detail = "ok", ""
         except Exception as exc:  # noqa: BLE001
-            st.status = "unreachable"
-            st.detail = f"{type(exc).__name__}: {str(exc)[:200]}"
+            name = type(exc).__name__
+            if "timeout" in name.lower() or "timeout" in str(exc).lower():
+                st.status = "unreachable"
+                st.detail = (f"slow: no answer within {probe_timeout:.0f}s — a local model on CPU needs "
+                             "longer; raise LLM_PROBE_TIMEOUT_S (classification uses LLM_TIMEOUT_S)")
+            else:
+                st.status = "unreachable"
+                st.detail = f"{name}: {str(exc)[:200]}"
         return st
 
     # ── orchestration ─────────────────────────────────────────────────

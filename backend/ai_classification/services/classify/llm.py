@@ -132,7 +132,7 @@ def call_llm(
             or when no classifier model is enabled.
     """
     if model:
-        entry = ModelEntry(name="explicit", role="classifier", provider="openrouter",
+        entry = ModelEntry(name="explicit", role="classifier", provider="explicit",
                            enabled=True, model_id=model,
                            api_base=settings.llm_api_base or "",
                            api_key=settings.llm_api_key or "")
@@ -141,10 +141,11 @@ def call_llm(
         if entry is None:
             raise ValueError(
                 "No classifier model is ENABLED — nothing can classify until one is. Set "
-                "LLM_MODEL=openai/qwen3.6 with BASE_URL + UNIVERSAL_API_KEY (company endpoint), or "
-                "LLM_MODEL=openrouter/qwen/qwen3.6-35b-a3b with LLM_API_KEY, or enable a catalog "
-                "entry directly with MODEL_<NAME>_ENABLED=1 (admin console → Models). GET /ready "
-                "lists every missing model value and what to set."
+                "LLM_MODEL=ollama/classifier-qwen with LLM_API_BASE=http://<host>:11434 (local "
+                "Ollama, the default), or LLM_MODEL=openai/qwen3.6 with BASE_URL + "
+                "UNIVERSAL_API_KEY for the company endpoint, or enable a catalog entry directly "
+                "with MODEL_<NAME>_ENABLED=1 (admin console → Models). GET /ready lists every "
+                "missing model value and what to set."
             )
 
     kwargs: dict = dict(

@@ -44,9 +44,9 @@ async def lifespan(app: FastAPI):
     # tests/services/ingest/test_integration_api.py) — the lifespan must
     # see the swap.
     store = store_mod.store
-    # D2: resolved LLM/DB/embedding config as the FIRST log line — explicit,
-    # no implicit defaults. (load_dotenv is CWD-relative: env must be set
-    # deliberately by the caller — compose .env, systemd, or export.)
+    # Resolved LLM/DB/embedding config as the FIRST log line — explicit,
+    # no implicit defaults. The environment is the chart's backend.env
+    # (values.yaml); this module loads no .env on purpose.
     _log.info(
         "Starting app — model=%s, api_base=%s, db=%s:%s/%s, embedding_model=%s",
         settings.llm_model,

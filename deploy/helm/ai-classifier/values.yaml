@@ -1,14 +1,32 @@
 # ── AI Classifier Helm values ─────────────────────────────────────────
-# Everything the chart renders comes from this file: Service, ConfigMap,
-# Deployment, Ingress. Secrets are NEVER here — they come from a pre-created
-# K8s Secret (`existingSecret`). Override per environment with an overlay
-# (values-dev.yaml / values-prod.yaml).
+# THIS FILE IS THE ONLY CONFIGURATION. There is no .env anywhere in the
+# project — not at the repo root, not in backend/. Change a setting here,
+# run `helm upgrade`, done; `backend.env` below is what the API reads.
+# Secrets are the one exception: they come from a pre-created K8s Secret
+# (`existingSecret`), never from this file.
+#
+# The defaults below are the 100% LOCAL run: the app, its database and the
+# models all live on this machine (Ollama serves the models, kind runs the
+# cluster). Switching to the customer's network means editing the marked
+# lines here and nothing else.
+#
+# Local run, end to end:
+#   docker build -f backend/Dockerfile -t ai_classifier-api:latest backend/
+#   docker build -f frontend/Dockerfile -t ai-classifier-frontend:latest frontend/
+#   kind load docker-image ai_classifier-api:latest ai-classifier-frontend:latest --name ai-classifier
+#   helm upgrade --install ai-classifier deploy/helm/ai-classifier -n ai-classifier
+#   kubectl -n ai-classifier port-forward svc/ai-classifier-ai-classifier-frontend 8085:8082
+# (A host-side run instead of a pod: `scripts/env-from-chart.sh` exports the
+#  same values — one source, two ways to run it.)
 
 image:
-  # API image (CI-built from the repo Dockerfile). Ships NO model (~1.1 GB):
-  # the LLM, embeddings and OCR are external endpoints (backend.env.*).
-  repository: REGISTRY/ai-classifier
-  tag: ""                    # blank → Chart.appVersion
+  # LOCAL image, loaded into the kind cluster by `kind load docker-image`
+  # above — no registry involved.
+  repository: ai_classifier-api
+  tag: "latest"
+  # IfNotPresent: nothing is pulled when the image is already on the node
+  # (which is exactly how a kind-loaded image arrives).
+  pullPolicy: IfNotPresent
 
 imagePullSecrets: []
 #  - name: regcred
@@ -21,31 +39,42 @@ backend:
   port: 8000
 
   # ══ ENV — the single configuration surface ══════════════════════════
-  # This is the ONLY env file: everything the API reads is here, except
-  #   • secrets           → `existingSecret` below (never in values),
-  #   • the DB connection → `database.*` below.
-  # There is no .env in this repo. Edit this file (or an overlay), then
-  # `helm upgrade`. Every value is a string — the app coerces them.
+  # Everything the API reads is here, except secrets (`existingSecret`
+  # below) and the DB connection (`database.*`). There is no .env in this
+  # project: edit this file, `helm upgrade`, and the pod picks it up.
   env:
-    # ── LLM — classification (external chat-completions endpoint) ────────
-    LLM_MODEL: "openai/qwen3.6"
-    LLM_API_BASE: "https://llms.elm.sa/v1"
-    LLM_TIMEOUT_S: "60"          # 0 = provider default
+    # ── LLM — classification ────────────────────────────────────────────
+    # LOCAL Ollama (the default run). The API runs in a pod, so it must use
+    # the host's LAN address — "localhost" inside a pod is the pod itself.
+    # An `ollama/...` LLM_MODEL enables the LOCAL_LLM registry entry on its
+    # own; no MODEL_*_ENABLED line is needed (models: `ollama list` — the
+    # repo's default is the local classifier-qwen).
+    #
+    # ── for the customer's network, change these two lines only ──
+    #   LLM_MODEL:    "openai/qwen3.6"
+    #   LLM_API_BASE: "https://llms.elm.sa/v1"     (key: UNIVERSAL_API_KEY)
+    LLM_MODEL: "ollama/classifier-qwen"
+    LLM_API_BASE: "http://192.168.1.50:11434"
+    LLM_TIMEOUT_S: "120"         # a 7B model on CPU is slow: generous, 0 = provider default
+    LLM_PROBE_TIMEOUT_S: "60"    # the /ready + /status ping budget (5s suits a hosted API, not a CPU model)
     LLM_MAX_RETRIES: "3"         # transient only (429/5xx/timeout)
     LLM_RETRY_BASE_S: "2"
 
-    # ── Embeddings — similarity / clustering (external /embeddings) ──────
-    # EMBEDDING_DIM must equal what the endpoint returns: it sizes the
-    # pgvector column created at first startup — set it before the first run.
+    # ── Embeddings — similarity / clustering ────────────────────────────
+    # Same local Ollama, OpenAI-compatible /embeddings (bge-m3 is 1024-dim).
+    # EMBEDDING_DIM sizes the pgvector column at first startup, so
+    # `ollama pull bge-m3` BEFORE the first run.
     EMBEDDING_PROVIDER: "external"
-    EMBEDDING_API_URL: "https://llms.elm.sa/v1"
+    EMBEDDING_API_URL: "http://192.168.1.50:11434/v1"
     EMBEDDING_MODEL_ID: "bge-m3"
     EMBEDDING_DIM: "1024"
     EMBEDDING_TIMEOUT_S: "30"
 
-    # ── OCR — attachment text (a SEPARATE service; "" = names only) ──────
-    OCR_ENABLED: "1"
-    OCR_SERVICE_URL: ""          # empty = attachments recorded by name only
+    # ── OCR — attachment text (a SEPARATE service, not deployed locally) ─
+    # Off by default here: attachments are recorded by name. When the OCR
+    # service exists, set OCR_ENABLED=1 and point OCR_SERVICE_URL at it.
+    OCR_ENABLED: "0"
+    OCR_SERVICE_URL: ""
     OCR_TIMEOUT_S: "60"
     OCR_MAX_ATTACHMENT_MB: "15"
     OCR_MAX_TEXT_CHARS: "20000"
@@ -138,8 +167,9 @@ frontend:
   enabled: true
   replicas: 1
   image:
-    repository: REGISTRY/ai-classifier-frontend
-    tag: ""
+    repository: ai-classifier-frontend
+    tag: "latest"
+  pullPolicy: IfNotPresent
   port: 8082
   resources:
     requests: { cpu: "50m", memory: "64Mi" }
@@ -210,7 +240,10 @@ frontend:
 #       kubectl -n <ns> create secret generic ai-classifier-db \
 #         --from-literal=PG_PASSWORD='<password>'
 database:
-  host: ""                     # REQUIRED — e.g. pg.internal or a managed host
+  # LOCAL default: the PostgreSQL this cluster already runs (namespace
+  # `platform-db`, pgvector installed). For the handover, replace `host`
+  # with the server the platform team provides — nothing else changes.
+  host: "db.platform-db.svc.cluster.local"
   port: 5432
   name: ai_incidents
   user: aiuser

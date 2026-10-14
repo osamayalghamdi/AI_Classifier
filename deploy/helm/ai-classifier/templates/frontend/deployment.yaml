@@ -29,7 +29,7 @@ spec:
       containers:
         - name: nginx
           image: "{{ .Values.frontend.image.repository }}:{{ .Values.frontend.image.tag | default .Chart.AppVersion }}"
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: {{ .Values.frontend.pullPolicy | default "IfNotPresent" }}
           ports:
             - name: http
               containerPort: {{ .Values.frontend.port }}

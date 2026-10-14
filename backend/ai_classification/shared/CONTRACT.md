@@ -18,8 +18,10 @@ Consumers: services/classify, services/ingest, services/jobs, services/cluster, 
 - Lazy imports inside lifespan/`_invalidate_cluster_caches` avoid import cycles.
 
 ## config.py — env-based settings, fail-loud
-- Frozen dataclass `Settings`; `load_dotenv()` is CWD-relative — env must be exported by the
-  caller (compose/systemd). All knobs env-driven (LLM, PG, integration E1-E9, heal, repool).
+- Frozen dataclass `Settings`; the environment is the chart's `backend.env` (`values.yaml`) or
+  `scripts/env-from-chart.sh` for a host run. This module loads **no `.env`** — a stray file in a
+  parent directory used to change behaviour silently. All knobs env-driven (LLM, PG, integration
+  E1-E9, heal, repool).
 - Fail-loud on the pieces that must be right: an empty `integration_token` → 401 on every protected endpoint
   (never a default secret).
 - **A missing model is NOT fatal** (revised): the lifespan logs a

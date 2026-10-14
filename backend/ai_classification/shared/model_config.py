@@ -69,6 +69,12 @@ def _get(settings, name: str, default: Any = "") -> Any:
     return getattr(settings, name, default)
 
 
+def _is_loopback(url: str) -> bool:
+    """True for a base URL that only reaches the machine you are already on."""
+    host = (urlsplit(url).hostname or "") if url else ""
+    return host in ("localhost", "127.0.0.1", "::1", "0.0.0.0")
+
+
 def _cluster_only_host(url: str) -> str | None:
     """The host of a URL that can only resolve inside the cluster (a bare name).
 
@@ -95,10 +101,10 @@ def classifier_issues(settings) -> list[ModelIssue]:
             summary=("no classifier model is ENABLED"
                      + (f" (LLM_MODEL={llm_model!r} enables none)" if llm_model
                         else " (LLM_MODEL is unset)")),
-            env=("LLM_MODEL", "LLM_API_KEY", "MODEL_<NAME>_ENABLED"),
-            fix="LLM_MODEL=openrouter/qwen/qwen3.6-35b-a3b with LLM_API_KEY=sk-or-…, or the company "
-                "endpoint LLM_MODEL=openai/qwen3.6 with BASE_URL=https://llms.elm.sa/v1 and "
-                "UNIVERSAL_API_KEY=… — or enable a catalog entry directly: MODEL_QWEN3_6_ENABLED=1",
+            env=("LLM_MODEL", "MODEL_<NAME>_ENABLED"),
+            fix="LLM_MODEL=ollama/classifier-qwen with LLM_API_BASE=http://<host>:11434 (local Ollama, "
+                "the default), or LLM_MODEL=openai/qwen3.6 with BASE_URL + UNIVERSAL_API_KEY for the "
+                "company endpoint — or enable a catalog entry directly: MODEL_<NAME>_ENABLED=1",
             effect="every classification job ends LLM_UNAVAILABLE with this message recorded on the "
                    "job (no service / system / severity). Ingest, the dashboard, review and the "
                    "E1-E9 API keep working.",
@@ -106,21 +112,20 @@ def classifier_issues(settings) -> list[ModelIssue]:
         if llm_model.startswith("ollama/"):
             issues.append(ModelIssue(
                 capability="classifier",
-                summary="LLM_MODEL selects a local ollama model, which enables NO registry entry",
-                env=("LLM_MODEL", "MODEL_<NAME>_ENABLED"),
-                fix="LLM_MODEL=openai/qwen3.6 (company endpoint, with BASE_URL + "
-                    "UNIVERSAL_API_KEY) or LLM_MODEL=openrouter/qwen/qwen3.6-35b-a3b "
-                    "(OpenRouter, with LLM_API_KEY) — ollama/ is not a catalog provider, so "
-                    "name a real one or enable an entry with MODEL_<NAME>_ENABLED=1",
-                effect="jobs fail fast with LLM_UNAVAILABLE — an ollama/ value never selects a model "
-                       "from the catalog, however reachable the server is",
+                summary="LLM_MODEL names a local Ollama model but the local entry is switched OFF",
+                env=("MODEL_LOCAL_LLM_ENABLED", "LLM_MODEL"),
+                fix="set MODEL_LOCAL_LLM_ENABLED=1 (an `ollama/...` LLM_MODEL enables the LOCAL_LLM "
+                    "entry on its own — only an explicit MODEL_LOCAL_LLM_ENABLED=0 disables it)",
+                effect="jobs fail fast with LLM_UNAVAILABLE while the Ollama server may be perfectly "
+                       "healthy — check /ready rather than the Ollama logs",
             ))
         return issues
 
     provider = (entry.provider or "").strip().lower()
     issues: list[ModelIssue] = []
 
-    if not (entry.api_key or "").strip():
+    # A local Ollama needs no key; every remote provider does.
+    if provider != "ollama" and not (entry.api_key or "").strip():
         key_vars = ("LLM_API_KEY", f"MODEL_{entry.name}_API_KEY")
         if provider == "elm":
             key_vars = ("UNIVERSAL_API_KEY", "LLM_API_KEY", f"MODEL_{entry.name}_API_KEY")
@@ -131,6 +136,19 @@ def classifier_issues(settings) -> list[ModelIssue]:
             fix=f"UNIVERSAL_API_KEY=… (company endpoint) or LLM_API_KEY=…, or per-model "
                 f"MODEL_{entry.name}_API_KEY=…",
             effect="every call is rejected 401 → jobs end LLM_UNAVAILABLE",
+        ))
+
+    if provider == "ollama" and _is_loopback(entry.api_base):
+        issues.append(ModelIssue(
+            capability="classifier",
+            summary=f"classifier '{entry.name}' points at {entry.api_base} — inside a pod or "
+                    "container that is the container itself, not this machine",
+            env=("LLM_API_BASE", f"MODEL_{entry.name}_API_BASE"),
+            fix="LLM_API_BASE=http://192.168.1.50:11434 (the host running Ollama; use the host's "
+                "LAN address, not localhost, for anything deployed)",
+            effect="the call is refused (connection refused) and jobs end LLM_UNAVAILABLE, while the "
+                   "same model answers fine from a shell on the host",
+            blocking=False,
         ))
 
     if not (entry.api_base or "").strip():
