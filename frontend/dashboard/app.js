@@ -879,6 +879,9 @@ setInterval(updateTimer, 1000);
 // Service status indicator — db / embedding / llm, refreshed with the
 // data poll. Red dot + label when any service is down (e.g. the company
 // LLM endpoint unreachable), green when all ok, gray while warming.
+// An UNCONFIGURED model is not an outage: it reads "needs setup" (amber) with
+// the variable to set in the tooltip, so nobody hunts an egress problem when
+// the real answer is one env var (see GET /ready -> models.issues).
 async function updateServiceStatus() {
   const el = $("#svcStatus");
   if (!el) return;
@@ -887,14 +890,21 @@ async function updateServiceStatus() {
     const d = await r.json();
     const svcs = d.services || {};
     const names = { db: "db", embedding: "embed", llm: "llm" };
-    const parts = Object.keys(names)
-      .filter((k) => svcs[k])
-      .map((k) => {
-        const st = svcs[k].status === "ok";
-        return `<span style="color:${st ? "var(--minor)" : "var(--crit)"}">${names[k]}:${st ? "ok" : "DOWN"}</span>`;
-      });
-    const anyDown = Object.values(svcs).some((s) => s.status !== "ok");
-    el.innerHTML = (anyDown ? "⚠ " : "● ") + parts.join(" ");
+    const keys = Object.keys(names).filter((k) => svcs[k]);
+    const anyDown = keys.some((k) => svcs[k].status !== "ok");
+    el.textContent = anyDown ? "⚠ " : "● ";
+    keys.forEach((k, i) => {
+      const s = svcs[k];
+      const ok = s.status === "ok";
+      const notConfigured = !ok && /not configured/i.test(s.detail || "");
+      const span = document.createElement("span");
+      span.textContent = `${names[k]}:${ok ? "ok" : notConfigured ? "needs setup" : "DOWN"}`;
+      span.style.color = ok ? "var(--minor)" : notConfigured ? "var(--amber)" : "var(--crit)";
+      const fix = s.resolved && s.resolved.fix ? ` — ${s.resolved.fix}` : "";
+      span.title = ok ? "" : `${s.detail || "unreachable"}${fix}`;
+      if (i) el.append(" ");
+      el.appendChild(span);
+    });
     el.style.color = anyDown ? "var(--crit)" : "var(--minor)";
   } catch (e) {
     el.textContent = "● status:n/a";
