@@ -183,18 +183,21 @@ anywhere in the project.
 # 1. models (once): the classifier + the embedding model the values point at
 ollama pull classifier-qwen && ollama pull bge-m3
 
-# 2. images (after any code change)
-docker build -f backend/Dockerfile   -t ai_classifier-api:latest        backend/
-docker build -f frontend/Dockerfile  -t ai-classifier-frontend:latest   frontend/
-kind load docker-image ai_classifier-api:latest ai-classifier-frontend:latest --name ai-classifier
+# 2. build + load + apply + restart + verify, in one command
+backend/scripts/local-deploy.sh
 
-# 3. the app
-helm upgrade --install ai-classifier deploy/helm/ai-classifier -n ai-classifier
-
-# 4. reach it
+# 3. reach it
 kubectl -n ai-classifier port-forward svc/ai-classifier-ai-classifier-frontend 8085:8082
 #   dashboard http://localhost:8085   ·   API http://localhost:8000 via the same proxy
 ```
+
+`local-deploy.sh` exists because two things silently serve stale code, and both
+look like "my change did nothing": a same-tag image (`:latest`) does not change
+the pod template, so `helm upgrade` has nothing to roll; and a release keeps its
+own user-supplied values, which *shadow* `values.yaml`. The script loads the
+images, applies the file with `--reset-values`, restarts the deployments, then
+compares a source file inside each pod against your working tree by sha256 and
+prints the release overrides (empty = the file is the only source).
 
 A host-side run instead of a pod (same config source, nothing to keep in sync):
 
@@ -211,6 +214,10 @@ names the variable or command for anything it finds wrong:
 backend/scripts/doctor.sh                     # the cluster deployment
 backend/scripts/doctor.sh --api http://localhost:8000   # a host-side run
 ```
+
+The dashboard says it too: a red **banner** at the top lists every missing piece
+with the variables to set (amber "needs setup" in the service strip, detail in
+its tooltip, when the app is merely degraded rather than blocked).
 
 Either way the models are unmissable: an unconfigured model does **not** stop
 the app — the startup log and `GET /ready` (`models.issues`) name the missing

@@ -238,7 +238,9 @@ These exist because each one otherwise fails *silently* at runtime.
 | `/ready` reports `llm: slow: no answer within Ns` | a local CPU model needs longer than a hosted API's ping: raise `backend.env.LLM_PROBE_TIMEOUT_S` (60 locally) |
 | `/ready` reports `llm: unreachable` but the model works on the host | a pod cannot use `localhost`: point `backend.env.LLM_API_BASE` at the host's LAN address |
 | `/ready` reports `llm: error` | LLM egress blocked from the cluster or `LLM_API_KEY` missing — `/health` and the dashboard still work |
-| Changed `values.yaml` and nothing happened | the pod holds the ConfigMap from its start: `helm upgrade …`, and if the code changed, rebuild + `kind load docker-image` first. `doctor.sh` fails on this drift by name |
+| Changed `values.yaml` and nothing happened | a release keeps its OWN user-supplied values and they shadow the file: `helm get values <rel> -n <ns>` shows them, `helm upgrade … --reset-values` clears them. `backend/scripts/local-deploy.sh` does this for you and prints the result |
+| Rebuilt the image, redeployed, still the old code | a same-tag image (`:latest`) does not change the pod template, so there is nothing to roll — restart the Deployment after `kind load` (`local-deploy.sh` does that too, then verifies by sha256 that the pod matches the working tree) |
+| The dashboard shows an old UI | same two causes; the banner/UI comes from the frontend image, and a release override like `frontend.image.tag: try` pins an old one |
 | readiness flapping | readiness is pointing at `/ready` while LLM egress is flaky — keep it on `/health` |
 
 ---

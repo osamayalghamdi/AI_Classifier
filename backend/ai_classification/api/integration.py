@@ -296,5 +296,12 @@ def service_status():
     any_down = any(st.status != "ok" for st in snap.values())
     return _json_response(
         200 if not any_down else 503,
-        {"status": "degraded" if any_down else "ok", "services": services},
+        {
+            "status": "degraded" if any_down else "ok",
+            "services": services,
+            # The configuration report rides along so the dashboard can render a
+            # banner from the SAME 60s poll it already makes, instead of asking
+            # a second endpoint and risking the two disagreeing.
+            "models": model_config_summary(settings),
+        },
     )

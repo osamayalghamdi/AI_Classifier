@@ -257,6 +257,33 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
 <div class="wrap">
 
+  <!-- Configuration alert: filled by app.js from /status -> models.
+       Shown when a model or endpoint is missing — the app hosts anyway, so this
+       is the unmissable version of the startup report (each row names the
+       variables to set in deploy/helm/ai-classifier/values.yaml). -->
+  <div id="configAlert" style="display:none"></div>
+
+  <style>
+    .cfg-box { border:1px solid var(--crit); background:var(--crit-bg);
+               border-radius:10px; padding:14px 16px; margin:0 0 14px; }
+    .cfg-box.cfg-soft { border-color:var(--amber); background:var(--amber-soft); }
+    .cfg-title { font-weight:800; font-size:13.5px; color:var(--crit); margin-bottom:8px; }
+    .cfg-box.cfg-soft .cfg-title { color:var(--amber-deep); }
+    .cfg-row { border-top:1px solid var(--border); padding:8px 0 6px; }
+    .cfg-row:first-of-type { border-top:0; }
+    .cfg-head { display:flex; gap:8px; align-items:baseline; flex-wrap:wrap; }
+    .cfg-tag { font-size:10px; font-weight:800; letter-spacing:.4px; padding:1px 6px;
+               border-radius:4px; background:var(--crit); color:#fff; }
+    .cfg-row.cfg-advisory .cfg-tag { background:var(--amber); color:#3a2a00; }
+    .cfg-cap { font-size:11px; color:var(--text-faint); text-transform:uppercase; letter-spacing:.4px; }
+    .cfg-sum { font-size:13px; font-weight:600; }
+    .cfg-set { font-size:12px; margin-top:3px; }
+    .cfg-set code, .cfg-fix code, .cfg-foot code { background:var(--bg-input); padding:1px 5px;
+               border-radius:4px; font-size:11.5px; }
+    .cfg-fix, .cfg-effect { font-size:11.5px; color:var(--text-faint); margin-top:2px; }
+    .cfg-foot { font-size:11.5px; color:var(--text-faint); margin-top:9px; }
+  </style>
+
   <!-- ══════════ EMPLOYEE VIEW ══════════ -->
   <div class="view active" id="view-employee">
     <div class="headline"><h1 id="empHeadline">—</h1></div>

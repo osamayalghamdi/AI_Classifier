@@ -882,6 +882,52 @@ setInterval(updateTimer, 1000);
 // An UNCONFIGURED model is not an outage: it reads "needs setup" (amber) with
 // the variable to set in the tooltip, so nobody hunts an egress problem when
 // the real answer is one env var (see GET /ready -> models.issues).
+// The same payload carries the full configuration report, which is rendered as
+// the banner above: the app HOSTS without its models on purpose, so the missing
+// pieces are shown as an error at the top of the page instead of being left in
+// the logs. Blocking issues are errors and stay until configured; advisories are
+// notes, because the app works and only the *reading* would mislead you.
+function cfgEsc(value) {
+  const div = document.createElement("div");
+  div.textContent = value == null ? "" : String(value);
+  return div.innerHTML;
+}
+
+function renderConfigAlert(models) {
+  const el = document.getElementById("configAlert");
+  if (!el) return;
+  const issues = (models && models.issues) || [];
+  if (!issues.length) {
+    el.style.display = "none";
+    el.innerHTML = "";
+    return;
+  }
+  const blocking = issues.filter((i) => i.blocking).length;
+  const title = blocking
+    ? `Configuration problem — ${blocking} item(s) must be set before classification works`
+    : `Configuration note — ${issues.length} item(s) are degraded`;
+  const rows = issues.map((i) => `
+    <div class="cfg-row ${i.blocking ? "" : "cfg-advisory"}">
+      <div class="cfg-head">
+        <span class="cfg-tag">${i.blocking ? "ERROR" : "NOTE"}</span>
+        <span class="cfg-cap">${cfgEsc(i.capability)}</span>
+        <span class="cfg-sum">${cfgEsc(i.summary)}</span>
+      </div>
+      <div class="cfg-set">set: <code>${cfgEsc((i.env || []).join("  /  "))}</code></div>
+      <div class="cfg-fix">${cfgEsc(i.fix)}</div>
+      <div class="cfg-effect">${cfgEsc(i.effect)}</div>
+    </div>`).join("");
+  el.innerHTML = `
+    <div class="cfg-box ${blocking ? "" : "cfg-soft"}">
+      <div class="cfg-title">${cfgEsc(title)}</div>
+      ${rows}
+      <div class="cfg-foot">The app keeps running — dashboard, ingest, review and the API work.
+        Values live in <code>deploy/helm/ai-classifier/values.yaml</code>: edit, then <code>helm upgrade</code>.
+        Full check: <code>backend/scripts/doctor.sh</code>.</div>
+    </div>`;
+  el.style.display = "block";
+}
+
 async function updateServiceStatus() {
   const el = $("#svcStatus");
   if (!el) return;
@@ -906,6 +952,7 @@ async function updateServiceStatus() {
       el.appendChild(span);
     });
     el.style.color = anyDown ? "var(--crit)" : "var(--minor)";
+    renderConfigAlert(d.models);
   } catch (e) {
     el.textContent = "● status:n/a";
     el.style.color = "var(--text-faint)";
